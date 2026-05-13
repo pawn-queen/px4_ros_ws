@@ -77,11 +77,11 @@ class UwbSimulatorNode(Node):
         self.declare_parameter("publish_rate_hz", 20.0)
         self.declare_parameter("range_noise_std_m", 0.08)
         self.declare_parameter("range_min_m", 0.05)
-        self.declare_parameter("range_max_m", 80.0)
+        self.declare_parameter("range_max_m", 220.0)
         self.declare_parameter("random_seed", 42)
         self.declare_parameter(
             "uwb_anchors",
-            [-8.0, -8.0, 3.0, 8.0, -8.0, 3.0, 8.0, 8.0, 3.0, -8.0, 8.0, 3.0, 0.0, 0.0, 7.0],
+            [-10.0, -10.0, 5.0, 110.0, -10.0, 5.0, 110.0, 110.0, 5.0, -10.0, 110.0, 5.0, 50.0, 50.0, 80.0],
         )
         self.declare_parameter(
             "uwb_anchor_names",
@@ -189,4 +189,3 @@ def main(args: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

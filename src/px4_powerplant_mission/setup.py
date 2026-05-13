@@ -27,6 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "localization_node = px4_powerplant_mission.nodes.localization_node:main",
+            "external_vision_bridge_node = px4_powerplant_mission.nodes.external_vision_bridge_node:main",
             "uwb_simulator_node = px4_powerplant_mission.nodes.uwb_simulator_node:main",
             "voxel_mapper_node = px4_powerplant_mission.nodes.voxel_mapper_node:main",
             "yolo_detector_node = px4_powerplant_mission.nodes.yolo_detector_node:main",

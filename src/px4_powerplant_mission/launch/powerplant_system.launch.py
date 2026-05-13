@@ -19,6 +19,7 @@ def generate_launch_description() -> LaunchDescription:
         [
             DeclareLaunchArgument("config_file", default_value=default_config),
             DeclareLaunchArgument("use_localization", default_value="true"),
+            DeclareLaunchArgument("use_external_vision", default_value="true"),
             DeclareLaunchArgument("use_uwb", default_value="true"),
             DeclareLaunchArgument("use_mapping", default_value="true"),
             DeclareLaunchArgument("use_yolo", default_value="false"),
@@ -35,6 +36,14 @@ def generate_launch_description() -> LaunchDescription:
                 output="screen",
                 parameters=[config_file],
                 condition=IfCondition(LaunchConfiguration("use_localization")),
+            ),
+            Node(
+                package="px4_powerplant_mission",
+                executable="external_vision_bridge_node",
+                name="powerplant_external_vision_bridge",
+                output="screen",
+                parameters=[config_file],
+                condition=IfCondition(LaunchConfiguration("use_external_vision")),
             ),
             Node(
                 package="px4_powerplant_mission",

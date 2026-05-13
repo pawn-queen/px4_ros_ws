@@ -23,6 +23,18 @@ powerplant_localization:
     floor_z_enu_m: 0.0
     depth_center_fraction: 0.18
 
+powerplant_external_vision_bridge:
+  ros__parameters:
+    localized_odom_topic: /powerplant/localization/odom
+    visual_odometry_topic: /fmu/in/vehicle_visual_odometry
+    # This localization stack is position/yaw oriented. Keep PX4 EKF2_EV_CTRL at
+    # 11 unless replacing it with a VIO source that provides reliable velocity.
+    use_velocity: false
+    position_variance_m2: 0.08
+    height_variance_m2: 0.12
+    yaw_variance_rad2: 0.05
+    velocity_variance_m2ps2: 0.25
+
 powerplant_uwb_simulator:
   ros__parameters:
     truth_vehicle_local_position_topic: /fmu/out/vehicle_local_position
@@ -34,10 +46,10 @@ powerplant_uwb_simulator:
     publish_rate_hz: 20.0
     range_noise_std_m: 0.08
     range_min_m: 0.05
-    range_max_m: 80.0
+    range_max_m: 220.0
     random_seed: 42
-    # ENU meters: x=east, y=north, z=up. These are simulation anchors.
-    uwb_anchors: [-8.0, -8.0, 3.0, 8.0, -8.0, 3.0, 8.0, 8.0, 3.0, -8.0, 8.0, 3.0, 0.0, 0.0, 7.0]
+    # ENU meters: x=east, y=north, z=up. Sized for the 100 m search square.
+    uwb_anchors: [-10.0, -10.0, 5.0, 110.0, -10.0, 5.0, 110.0, 110.0, 5.0, -10.0, 110.0, 5.0, 50.0, 50.0, 80.0]
     uwb_anchor_names: [anchor_0, anchor_1, anchor_2, anchor_3, anchor_4]
 
 powerplant_voxel_mapper:
@@ -93,14 +105,16 @@ powerplant_offboard_mission:
     depth_camera_info_topic: /depth_camera/camera_info
     rgb_image_topic: /camera
     vehicle_status_topic: /fmu/out/vehicle_status
+    vehicle_command_ack_topic: /fmu/out/vehicle_command_ack
     offboard_control_mode_topic: /fmu/in/offboard_control_mode
     trajectory_setpoint_topic: /fmu/in/trajectory_setpoint
     vehicle_command_topic: /fmu/in/vehicle_command
     mission_status_topic: /powerplant/control/mission_status
     auto_start: false
     arm_on_start: true
-    takeoff_height_m: 2.5
-    return_home_height_m: 2.5
+    command_retry_interval_s: 1.0
+    takeoff_height_m: 50.0
+    return_home_height_m: 50.0
     target_acceptance_m: 0.45
     yaw_acceptance_rad: 0.25
     cruise_yaw_enu_rad: 0.0
@@ -110,9 +124,10 @@ powerplant_offboard_mission:
     target_class_name: gas_cylinder
     min_target_confidence: 0.35
     target_memory_s: 8.0
-    search_timeout_s: 120.0
+    loop_search_waypoints: true
+    search_timeout_s: 300.0
     target_standoff_m: 2.2
-    inspection_altitude_m: 2.5
+    inspection_altitude_m: 50.0
     inspection_orbit_points: 4
     inspection_required_photos: 4
     inspection_photo_dir: /home/pawn/px4_ros_ws/inspection_photos
@@ -128,5 +143,5 @@ powerplant_offboard_mission:
     max_depth_age_s: 1.0
     land_complete_height_m: 0.25
     land_complete_timeout_s: 20.0
-    # ENU waypoints around a small inspection square. Tune these for the plant.
-    mission_waypoints_enu: [0.0, 0.0, 2.5, 5.0, 0.0, 2.5, 5.0, 5.0, 2.5, 0.0, 5.0, 2.5, 0.0, 0.0, 2.5]
+    # ENU waypoints around a 100 m square search route. Tune these for the plant.
+    mission_waypoints_enu: [0.0, 0.0, 50.0, 100.0, 0.0, 50.0, 100.0, 100.0, 50.0, 0.0, 100.0, 50.0, 0.0, 0.0, 50.0]

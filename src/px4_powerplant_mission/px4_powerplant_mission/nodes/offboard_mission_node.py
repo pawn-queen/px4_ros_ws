@@ -13,7 +13,13 @@ import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
-from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleStatus
+from px4_msgs.msg import (
+    OffboardControlMode,
+    TrajectorySetpoint,
+    VehicleCommand,
+    VehicleCommandAck,
+    VehicleStatus,
+)
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
@@ -71,6 +77,9 @@ class OffboardMissionNode(Node):
         self.offboard_counter = 0
         self.active = bool(self.get_parameter("auto_start").value)
         self.phase = PHASE_START if self.active else PHASE_IDLE
+        self.last_offboard_request_ns = 0
+        self.last_arm_request_ns = 0
+        self.last_command_ack: VehicleCommandAck | None = None
 
         self.base_waypoints = self._parse_waypoints(self.get_parameter("mission_waypoints_enu").value)
         self.active_waypoints = list(self.base_waypoints)
@@ -89,6 +98,7 @@ class OffboardMissionNode(Node):
         self.inspection_photo_count = 0
         self.mission_started_ns = 0
         self.search_started_ns = 0
+        self.search_loop_count = 0
         self.landing_started_ns = 0
         self.landing_command_sent = False
         self.return_reason = ""
@@ -137,6 +147,12 @@ class OffboardMissionNode(Node):
             px4_qos_profile(),
         )
         self.create_subscription(
+            VehicleCommandAck,
+            self.get_parameter("vehicle_command_ack_topic").value,
+            self._vehicle_command_ack_callback,
+            px4_qos_profile(),
+        )
+        self.create_subscription(
             OccupancyGrid,
             self.get_parameter("occupancy_grid_topic").value,
             self._occupancy_grid_callback,
@@ -182,14 +198,16 @@ class OffboardMissionNode(Node):
         self.declare_parameter("depth_camera_info_topic", "/depth_camera/camera_info")
         self.declare_parameter("rgb_image_topic", "/camera")
         self.declare_parameter("vehicle_status_topic", "/fmu/out/vehicle_status")
+        self.declare_parameter("vehicle_command_ack_topic", "/fmu/out/vehicle_command_ack")
         self.declare_parameter("offboard_control_mode_topic", "/fmu/in/offboard_control_mode")
         self.declare_parameter("trajectory_setpoint_topic", "/fmu/in/trajectory_setpoint")
         self.declare_parameter("vehicle_command_topic", "/fmu/in/vehicle_command")
         self.declare_parameter("mission_status_topic", "/powerplant/control/mission_status")
         self.declare_parameter("auto_start", False)
         self.declare_parameter("arm_on_start", True)
-        self.declare_parameter("takeoff_height_m", 2.5)
-        self.declare_parameter("return_home_height_m", 2.5)
+        self.declare_parameter("command_retry_interval_s", 1.0)
+        self.declare_parameter("takeoff_height_m", 50.0)
+        self.declare_parameter("return_home_height_m", 50.0)
         self.declare_parameter("target_acceptance_m", 0.45)
         self.declare_parameter("yaw_acceptance_rad", 0.25)
         self.declare_parameter("cruise_yaw_enu_rad", 0.0)
@@ -199,9 +217,10 @@ class OffboardMissionNode(Node):
         self.declare_parameter("target_class_name", "gas_cylinder")
         self.declare_parameter("min_target_confidence", 0.35)
         self.declare_parameter("target_memory_s", 8.0)
-        self.declare_parameter("search_timeout_s", 120.0)
+        self.declare_parameter("loop_search_waypoints", True)
+        self.declare_parameter("search_timeout_s", 300.0)
         self.declare_parameter("target_standoff_m", 2.2)
-        self.declare_parameter("inspection_altitude_m", 2.5)
+        self.declare_parameter("inspection_altitude_m", 50.0)
         self.declare_parameter("inspection_orbit_points", 4)
         self.declare_parameter("inspection_required_photos", 4)
         self.declare_parameter("inspection_photo_dir", "/home/pawn/px4_ros_ws/inspection_photos")
@@ -220,11 +239,11 @@ class OffboardMissionNode(Node):
         self.declare_parameter(
             "mission_waypoints_enu",
             [
-                0.0, 0.0, 2.5,
-                5.0, 0.0, 2.5,
-                5.0, 5.0, 2.5,
-                0.0, 5.0, 2.5,
-                0.0, 0.0, 2.5,
+                0.0, 0.0, 50.0,
+                100.0, 0.0, 50.0,
+                100.0, 100.0, 50.0,
+                0.0, 100.0, 50.0,
+                0.0, 0.0, 50.0,
             ],
         )
 
@@ -259,6 +278,18 @@ class OffboardMissionNode(Node):
 
     def _vehicle_status_callback(self, msg: VehicleStatus) -> None:
         self.vehicle_status = msg
+
+    def _vehicle_command_ack_callback(self, msg: VehicleCommandAck) -> None:
+        self.last_command_ack = msg
+        if msg.result not in (
+            VehicleCommandAck.VEHICLE_CMD_RESULT_ACCEPTED,
+            VehicleCommandAck.VEHICLE_CMD_RESULT_IN_PROGRESS,
+        ):
+            self.get_logger().warn(
+                "PX4 command %s was not accepted: %s"
+                % (self._command_name(msg.command), self._command_result_name(msg.result)),
+                throttle_duration_sec=1.0,
+            )
 
     def _occupancy_grid_callback(self, msg: OccupancyGrid) -> None:
         data = np.asarray(msg.data, dtype=np.int16).reshape(msg.info.height, msg.info.width)
@@ -422,6 +453,9 @@ class OffboardMissionNode(Node):
         self.inspection_photo_count = 0
         self.landing_command_sent = False
         self.return_reason = ""
+        self.last_offboard_request_ns = 0
+        self.last_arm_request_ns = 0
+        self.search_loop_count = 0
         self.mission_started_ns = self.get_clock().now().nanoseconds
         response.success = True
         response.message = "mission requested: START"
@@ -464,16 +498,33 @@ class OffboardMissionNode(Node):
         self.home_position_enu = self.current_position_enu.copy()
         self.phase = PHASE_TAKING_OFF
         self.search_started_ns = 0
+        self.search_loop_count = 0
         self.active_waypoints = []
         self.goal_waypoint_indices.clear()
         self.waypoint_index = 0
         self._publish_event("mission_initialized", {"home_enu": self._round_list(self.home_position_enu)})
 
     def _maybe_engage_offboard(self) -> None:
-        if self.offboard_counter == 10:
-            self._engage_offboard()
-            if bool(self.get_parameter("arm_on_start").value):
+        if self.offboard_counter >= 10:
+            retry_interval_ns = int(float(self.get_parameter("command_retry_interval_s").value) * 1e9)
+            now_ns = self.get_clock().now().nanoseconds
+            if (
+                self.vehicle_status.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD
+                and now_ns - self.last_offboard_request_ns >= retry_interval_ns
+            ):
+                self.last_offboard_request_ns = now_ns
+                self.get_logger().info("requesting PX4 Offboard mode", throttle_duration_sec=2.0)
+                self._engage_offboard()
+            if (
+                bool(self.get_parameter("arm_on_start").value)
+                and self.vehicle_status.arming_state != VehicleStatus.ARMING_STATE_ARMED
+                and now_ns - self.last_arm_request_ns >= retry_interval_ns
+            ):
+                self.last_arm_request_ns = now_ns
+                self.get_logger().info("requesting PX4 arm", throttle_duration_sec=2.0)
                 self._arm()
+        elif self.offboard_counter == 0:
+            self.get_logger().info("warming up Offboard setpoints", throttle_duration_sec=2.0)
         self.offboard_counter = min(self.offboard_counter + 1, 1000)
 
     def _select_target_and_yaw(self) -> tuple[np.ndarray, float]:
@@ -510,11 +561,16 @@ class OffboardMissionNode(Node):
             if self._target_is_recent():
                 self._enter_targeting_cycle()
                 return
-            if self.search_started_ns and self._age_s(self.search_started_ns) > float(self.get_parameter("search_timeout_s").value):
+            search_timeout_s = float(self.get_parameter("search_timeout_s").value)
+            if (
+                search_timeout_s > 0.0
+                and self.search_started_ns
+                and self._age_s(self.search_started_ns) > search_timeout_s
+            ):
                 self._enter_return_home("search timeout")
                 return
             if self._advance_path_if_reached(target):
-                self._enter_return_home("target not found")
+                self._handle_search_path_complete()
             return
 
         if self.phase == PHASE_TARGETING_CYCLE:
@@ -527,11 +583,27 @@ class OffboardMissionNode(Node):
     def _enter_global_search(self) -> None:
         self.phase = PHASE_GLOBAL_SEARCH
         self.search_started_ns = self.get_clock().now().nanoseconds
+        self.search_loop_count = 0
         self._set_navigation_goals(self.base_waypoints)
         self._publish_event(
             "phase_changed",
             {"phase": self.phase, "search_waypoints": len(self.active_waypoints)},
         )
+
+    def _handle_search_path_complete(self) -> None:
+        if bool(self.get_parameter("loop_search_waypoints").value) and self.base_waypoints:
+            self.search_loop_count += 1
+            self._set_navigation_goals(self.base_waypoints)
+            self._publish_event(
+                "search_loop_completed",
+                {
+                    "search_loop_count": self.search_loop_count,
+                    "search_age_s": round(self._age_s(self.search_started_ns), 2),
+                    "next_waypoints": len(self.active_waypoints),
+                },
+            )
+            return
+        self._enter_return_home("target not found")
 
     def _enter_targeting_cycle(self) -> None:
         if self.target_observation is None:
@@ -815,8 +887,23 @@ class OffboardMissionNode(Node):
             "waypoint_index": self.waypoint_index,
             "waypoint_count": len(self.active_waypoints),
             "nav_state": int(self.vehicle_status.nav_state),
+            "arming_state": int(self.vehicle_status.arming_state),
+            "pre_flight_checks_pass": bool(self.vehicle_status.pre_flight_checks_pass),
+            "accepts_offboard_setpoints": bool(self.vehicle_status.accepts_offboard_setpoints),
             "photos": self.inspection_photo_count,
         }
+        if self.phase == PHASE_GLOBAL_SEARCH:
+            payload["search_loop_count"] = self.search_loop_count
+            payload["search_age_s"] = round(self._age_s(self.search_started_ns), 2)
+        if self.active_waypoints:
+            payload["current_waypoint_enu"] = self._round_list(
+                self.active_waypoints[min(self.waypoint_index, len(self.active_waypoints) - 1)]
+            )
+        if self.last_command_ack is not None:
+            payload["last_command_ack"] = {
+                "command": self._command_name(self.last_command_ack.command),
+                "result": self._command_result_name(self.last_command_ack.result),
+            }
         if target is not None:
             payload["setpoint_enu"] = self._round_list(target)
         if self.current_position_enu is not None:
@@ -846,6 +933,29 @@ class OffboardMissionNode(Node):
 
     def _timestamp_us(self) -> int:
         return int(self.get_clock().now().nanoseconds / 1000)
+
+    def _command_name(self, command: int) -> str:
+        names = {
+            VehicleCommand.VEHICLE_CMD_DO_SET_MODE: "DO_SET_MODE",
+            VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM: "ARM_DISARM",
+            VehicleCommand.VEHICLE_CMD_NAV_LAND: "NAV_LAND",
+        }
+        return names.get(int(command), str(int(command)))
+
+    def _command_result_name(self, result: int) -> str:
+        names = {
+            VehicleCommandAck.VEHICLE_CMD_RESULT_ACCEPTED: "ACCEPTED",
+            VehicleCommandAck.VEHICLE_CMD_RESULT_TEMPORARILY_REJECTED: "TEMPORARILY_REJECTED",
+            VehicleCommandAck.VEHICLE_CMD_RESULT_DENIED: "DENIED",
+            VehicleCommandAck.VEHICLE_CMD_RESULT_UNSUPPORTED: "UNSUPPORTED",
+            VehicleCommandAck.VEHICLE_CMD_RESULT_FAILED: "FAILED",
+            VehicleCommandAck.VEHICLE_CMD_RESULT_IN_PROGRESS: "IN_PROGRESS",
+            VehicleCommandAck.VEHICLE_CMD_RESULT_CANCELLED: "CANCELLED",
+            VehicleCommandAck.VEHICLE_CMD_RESULT_COMMAND_LONG_ONLY: "COMMAND_LONG_ONLY",
+            VehicleCommandAck.VEHICLE_CMD_RESULT_COMMAND_INT_ONLY: "COMMAND_INT_ONLY",
+            VehicleCommandAck.VEHICLE_CMD_RESULT_UNSUPPORTED_MAV_FRAME: "UNSUPPORTED_MAV_FRAME",
+        }
+        return names.get(int(result), str(int(result)))
 
 
 def main(args: list[str] | None = None) -> None:

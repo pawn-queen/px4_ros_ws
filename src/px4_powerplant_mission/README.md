@@ -5,6 +5,7 @@
 ## 包结构
 
 - `nodes/localization_node.py`：订阅 PX4 IMU、local position、odometry、深度图和 UWB 位姿，统一输出 ROS ENU/FLU 下的 `/powerplant/localization/odom`。
+- `nodes/external_vision_bridge_node.py`：把 `/powerplant/localization/odom` 转成 PX4 NED 下的 `/fmu/in/vehicle_visual_odometry`，供 PX4 EKF 室内解锁和 Offboard 位置控制使用。
 - `nodes/uwb_simulator_node.py`：用仿真真值位置和 YAML 中的 UWB anchor 生成 range，并发布 `/uwb/pose`。
 - `nodes/voxel_mapper_node.py`：从深度图、`LaserScan`、`PointCloud2` 生成体素占据地图、2D occupancy grid 和 RViz marker。
 - `nodes/yolo_detector_node.py`：加载包内 `models/yolo/best.pt`，发布 JSON 检测结果和标注图。
@@ -32,6 +33,23 @@ source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
 source install/setup.bash
 ```
+
+首次用室内定位飞行前，建议在 PX4 shell 或 QGC 参数页设置一次 PX4 室内参数。目标是：不要求 GPS/磁罗盘，把 ROS 室内定位作为 EKF external vision 输入：
+
+```bash
+param set EKF2_EV_CTRL 11
+param set EKF2_HGT_REF 3
+param set EKF2_GPS_CTRL 0
+param set SYS_HAS_GPS 0
+param set SYS_HAS_MAG 0
+param set EKF2_MAG_TYPE 5
+param set COM_RC_IN_MODE 4
+param set COM_ARM_WO_GPS 2
+param save
+reboot
+```
+
+其中 `EKF2_EV_CTRL=11` 表示融合 external vision 的水平位置、高度和 yaw，不融合速度；当前 UWB/室内定位链路更适合这种配置。如果换成能稳定输出速度的 VIO，可以把 `powerplant_external_vision_bridge.use_velocity` 改为 `true`，并把 `EKF2_EV_CTRL` 改为 `15`。
 
 终端 1，启动 PX4 DDS Agent：
 
@@ -68,6 +86,15 @@ ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true us
 ros2 service call /start_powerplant_mission std_srvs/srv/Trigger
 ros2 service call /land_powerplant_mission std_srvs/srv/Trigger
 ```
+
+如果 QGC 仍显示 `Heading estimate invalid`、`Found 0 compass` 或 `No valid position estimate`，先确认 `/fmu/in/vehicle_visual_odometry` 正在发布，再等 EKF 收敛几秒：
+
+```bash
+ros2 topic hz /fmu/in/vehicle_visual_odometry
+ros2 topic echo /fmu/out/vehicle_local_position --once
+```
+
+`vehicle_local_position` 里的 `xy_valid` 和 `z_valid` 变成 `true` 后，再调用 `/start_powerplant_mission`。
 
 `/start_powerplant_mission` 会进入完整巡检流程：
 
@@ -106,6 +133,7 @@ ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py \
 ## 重要输出话题
 
 - `/powerplant/localization/odom`：融合后的室内位姿，`nav_msgs/Odometry`
+- `/fmu/in/vehicle_visual_odometry`：桥接给 PX4 EKF 的室内 external vision 位姿，`px4_msgs/VehicleOdometry`
 - `/powerplant/localization/status`：定位状态 JSON
 - `/uwb/pose`、`/uwb/range/<anchor>`：仿真 UWB 结果
 - `/powerplant/map/occupied_voxels`：3D 体素点云
@@ -136,5 +164,8 @@ ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true us
 如果某台机器临时仍想用虚拟环境，只覆盖启动参数即可：
 
 ```bash
-ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true yolo_python:=/path/to/venv/bin/python
+ros2 launch px4_powerplant_mission powerplant_system.launch.py \
+  use_yolo:=true \
+  use_control:=true \
+  yolo_python:=/home/pawn/px4_ros_ws/.venv/bin/python
 ```
