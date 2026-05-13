@@ -23,6 +23,11 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("use_mapping", default_value="true"),
             DeclareLaunchArgument("use_yolo", default_value="false"),
             DeclareLaunchArgument("use_control", default_value="false"),
+            DeclareLaunchArgument(
+                "yolo_python",
+                default_value="/usr/bin/python3",
+                description="Python interpreter used to run the YOLO detector.",
+            ),
             Node(
                 package="px4_powerplant_mission",
                 executable="localization_node",
@@ -52,6 +57,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="yolo_detector_node",
                 name="powerplant_yolo_detector",
                 output="screen",
+                prefix=LaunchConfiguration("yolo_python"),
                 parameters=[config_file],
                 condition=IfCondition(LaunchConfiguration("use_yolo")),
             ),

@@ -27,8 +27,9 @@ PX4 uORB 使用 `NED/FRD`，本包内部和对外发布使用 ROS 常用的 `ENU
 
 ```bash
 cd /home/pawn/px4_ros_ws
+deactivate 2>/dev/null || true
 source /opt/ros/jazzy/setup.bash
-colcon build --symlink-install
+colcon build --symlink-install --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
 source install/setup.bash
 ```
 
@@ -103,4 +104,21 @@ ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py \
 
 ## YOLO 说明
 
-默认模型路径是 `/home/pawn/yolo/runs/detect/train3/weights/best.pt`，回退到 `/home/pawn/yolo/yolov8n.pt`。当前节点会自动把 `/home/pawn/yolo/ultralytics` 加到 `PYTHONPATH`，但仍需要本机 Python 环境具备 `torch` 等 Ultralytics 依赖。
+默认模型已经放在包内的 `models/yolo/best.pt`，回退模型是 `models/yolo/yolov8n.pt`。当前 `best.pt` 检测类别见 `models/yolo/data.yaml`，已有类别为 `gas_cylinder`。
+
+工作区构建继续使用系统 Python，YOLO 依赖不要参与 `colcon build`。如果希望不使用虚拟环境运行 YOLO，需要把推理依赖安装到系统/用户 Python：
+
+```bash
+cd /home/pawn/px4_ros_ws
+python3 -m pip install --user --break-system-packages -r src/px4_powerplant_mission/requirements-yolo.txt
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install --packages-select px4_powerplant_mission --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+source install/setup.bash
+ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
+```
+
+如果某台机器临时仍想用虚拟环境，只覆盖启动参数即可：
+
+```bash
+ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true yolo_python:=/path/to/venv/bin/python
+```

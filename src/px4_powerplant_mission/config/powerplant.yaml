@@ -73,9 +73,9 @@ powerplant_yolo_detector:
     image_topic: /camera
     detections_topic: /powerplant/perception/yolo_detections
     annotated_image_topic: /powerplant/perception/yolo_annotated
-    model_path: /home/pawn/yolo/runs/detect/train3/weights/best.pt
-    fallback_model_path: /home/pawn/yolo/yolov8n.pt
-    ultralytics_repo: /home/pawn/yolo/ultralytics
+    model_path: models/yolo/best.pt
+    fallback_model_path: models/yolo/yolov8n.pt
+    ultralytics_repo: ""
     confidence_threshold: 0.35
     iou_threshold: 0.45
     image_size: 640
