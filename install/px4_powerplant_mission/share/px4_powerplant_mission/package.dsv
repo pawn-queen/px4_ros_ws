@@ -1,0 +1,9 @@
+source;share/px4_powerplant_mission/hook/pythonpath.ps1
+source;share/px4_powerplant_mission/hook/pythonpath.dsv
+source;share/px4_powerplant_mission/hook/pythonpath.sh
+source;share/px4_powerplant_mission/hook/ament_prefix_path.ps1
+source;share/px4_powerplant_mission/hook/ament_prefix_path.dsv
+source;share/px4_powerplant_mission/hook/ament_prefix_path.sh
+source;../../build/px4_powerplant_mission/share/px4_powerplant_mission/hook/pythonpath_develop.ps1
+source;../../build/px4_powerplant_mission/share/px4_powerplant_mission/hook/pythonpath_develop.dsv
+source;../../build/px4_powerplant_mission/share/px4_powerplant_mission/hook/pythonpath_develop.sh

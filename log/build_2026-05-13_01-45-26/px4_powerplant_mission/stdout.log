@@ -1,0 +1,32 @@
+running develop
+running egg_info
+creating px4_powerplant_mission.egg-info
+writing px4_powerplant_mission.egg-info/PKG-INFO
+writing dependency_links to px4_powerplant_mission.egg-info/dependency_links.txt
+writing entry points to px4_powerplant_mission.egg-info/entry_points.txt
+writing requirements to px4_powerplant_mission.egg-info/requires.txt
+writing top-level names to px4_powerplant_mission.egg-info/top_level.txt
+writing manifest file 'px4_powerplant_mission.egg-info/SOURCES.txt'
+reading manifest file 'px4_powerplant_mission.egg-info/SOURCES.txt'
+writing manifest file 'px4_powerplant_mission.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/pawn/px4_ros_ws/install/px4_powerplant_mission/lib/python3.12/site-packages/px4-powerplant-mission.egg-link (link to .)
+Installing localization_node script to /home/pawn/px4_ros_ws/install/px4_powerplant_mission/lib/px4_powerplant_mission
+Installing offboard_mission_node script to /home/pawn/px4_ros_ws/install/px4_powerplant_mission/lib/px4_powerplant_mission
+Installing uwb_simulator_node script to /home/pawn/px4_ros_ws/install/px4_powerplant_mission/lib/px4_powerplant_mission
+Installing voxel_mapper_node script to /home/pawn/px4_ros_ws/install/px4_powerplant_mission/lib/px4_powerplant_mission
+Installing yolo_detector_node script to /home/pawn/px4_ros_ws/install/px4_powerplant_mission/lib/px4_powerplant_mission
+
+Installed /home/pawn/px4_ros_ws/build/px4_powerplant_mission
+running symlink_data
+creating /home/pawn/px4_ros_ws/install/px4_powerplant_mission/share/ament_index
+creating /home/pawn/px4_ros_ws/install/px4_powerplant_mission/share/ament_index/resource_index
+creating /home/pawn/px4_ros_ws/install/px4_powerplant_mission/share/ament_index/resource_index/packages
+symbolically linking /home/pawn/px4_ros_ws/build/px4_powerplant_mission/resource/px4_powerplant_mission -> /home/pawn/px4_ros_ws/install/px4_powerplant_mission/share/ament_index/resource_index/packages
+symbolically linking /home/pawn/px4_ros_ws/build/px4_powerplant_mission/package.xml -> /home/pawn/px4_ros_ws/install/px4_powerplant_mission/share/px4_powerplant_mission
+symbolically linking /home/pawn/px4_ros_ws/build/px4_powerplant_mission/README.md -> /home/pawn/px4_ros_ws/install/px4_powerplant_mission/share/px4_powerplant_mission
+creating /home/pawn/px4_ros_ws/install/px4_powerplant_mission/share/px4_powerplant_mission/config
+symbolically linking /home/pawn/px4_ros_ws/build/px4_powerplant_mission/config/powerplant.yaml -> /home/pawn/px4_ros_ws/install/px4_powerplant_mission/share/px4_powerplant_mission/config
+creating /home/pawn/px4_ros_ws/install/px4_powerplant_mission/share/px4_powerplant_mission/launch
+symbolically linking /home/pawn/px4_ros_ws/build/px4_powerplant_mission/launch/powerplant_system.launch.py -> /home/pawn/px4_ros_ws/install/px4_powerplant_mission/share/px4_powerplant_mission/launch
+symbolically linking /home/pawn/px4_ros_ws/build/px4_powerplant_mission/launch/gz_sensor_bridge.launch.py -> /home/pawn/px4_ros_ws/install/px4_powerplant_mission/share/px4_powerplant_mission/launch

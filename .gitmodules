@@ -1,0 +1,6 @@
+[submodule "src/px4_msgs"]
+	path = src/px4_msgs
+	url = ./src/px4_msgs
+[submodule "src/px4_ros_com"]
+	path = src/px4_ros_com
+	url = ./src/px4_ros_com

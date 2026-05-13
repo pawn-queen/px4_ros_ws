@@ -1,0 +1,1 @@
+ament_cmake_symlink_install_targets("TARGET_FILES" "/home/pawn/px4_ros_ws/build/px4_msgs/rosidl_generator_py/px4_msgs/px4_msgs_s__rosidl_typesupport_introspection_c.so" "TARGETS" "px4_msgs_s__rosidl_typesupport_introspection_c" "DESTINATION" "lib/python3.12/site-packages/px4_msgs")

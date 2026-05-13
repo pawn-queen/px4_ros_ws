@@ -1,0 +1,103 @@
+powerplant_localization:
+  ros__parameters:
+    vehicle_imu_topic: /fmu/out/vehicle_imu
+    vehicle_local_position_topic: /fmu/out/vehicle_local_position
+    vehicle_odometry_topic: /fmu/out/vehicle_odometry
+    depth_image_topic: /depth_camera
+    uwb_pose_topic: /uwb/pose
+    localized_odom_topic: /powerplant/localization/odom
+    localized_pose_topic: /powerplant/localization/pose
+    status_topic: /powerplant/localization/status
+    map_frame: map
+    odom_frame: map
+    base_frame: base_link
+    publish_tf: true
+    publish_rate_hz: 30.0
+    px4_position_alpha: 0.35
+    uwb_position_alpha: 0.55
+    depth_z_alpha: 0.12
+    max_integrated_speed_mps: 8.0
+    # x500_depth mounts the OakD-Lite forward by default. Set to "downward"
+    # only after changing the camera mount in SDF.
+    depth_mount: forward
+    floor_z_enu_m: 0.0
+    depth_center_fraction: 0.18
+
+powerplant_uwb_simulator:
+  ros__parameters:
+    truth_vehicle_local_position_topic: /fmu/out/vehicle_local_position
+    truth_odom_topic: /model/x500_depth/odometry
+    uwb_pose_topic: /uwb/pose
+    uwb_range_topic_prefix: /uwb/range
+    anchor_marker_topic: /uwb/anchors
+    map_frame: map
+    publish_rate_hz: 20.0
+    range_noise_std_m: 0.08
+    range_min_m: 0.05
+    range_max_m: 80.0
+    random_seed: 42
+    # ENU meters: x=east, y=north, z=up. These are simulation anchors.
+    uwb_anchors: [-8.0, -8.0, 3.0, 8.0, -8.0, 3.0, 8.0, 8.0, 3.0, -8.0, 8.0, 3.0, 0.0, 0.0, 7.0]
+    uwb_anchor_names: [anchor_0, anchor_1, anchor_2, anchor_3, anchor_4]
+
+powerplant_voxel_mapper:
+  ros__parameters:
+    localized_odom_topic: /powerplant/localization/odom
+    depth_image_topic: /depth_camera
+    depth_camera_info_topic: /depth_camera/camera_info
+    laser_scan_topic: /mapping_lidar
+    pointcloud_topic: /points
+    occupied_voxels_topic: /powerplant/map/occupied_voxels
+    occupancy_grid_topic: /powerplant/map/occupancy_grid
+    voxel_marker_topic: /powerplant/map/voxel_markers
+    map_frame: map
+    base_frame: base_link
+    voxel_resolution_m: 0.25
+    publish_rate_hz: 2.0
+    depth_stride_px: 8
+    max_depth_range_m: 18.0
+    min_depth_range_m: 0.25
+    camera_fx: 430.0
+    camera_fy: 430.0
+    camera_cx: 320.0
+    camera_cy: 240.0
+    camera_translation_flu: [0.12, -0.03, 0.24]
+    lidar_translation_flu: [0.0, 0.0, 0.32]
+    pointcloud_frame: base_link
+    max_publish_points: 60000
+    grid_z_min_m: -0.3
+    grid_z_max_m: 4.0
+
+powerplant_yolo_detector:
+  ros__parameters:
+    image_topic: /camera
+    detections_topic: /powerplant/perception/yolo_detections
+    annotated_image_topic: /powerplant/perception/yolo_annotated
+    model_path: /home/pawn/yolo/runs/detect/train3/weights/best.pt
+    fallback_model_path: /home/pawn/yolo/yolov8n.pt
+    ultralytics_repo: /home/pawn/yolo/ultralytics
+    confidence_threshold: 0.35
+    iou_threshold: 0.45
+    image_size: 640
+    publish_annotated: true
+    device: cpu
+
+powerplant_offboard_mission:
+  ros__parameters:
+    localized_odom_topic: /powerplant/localization/odom
+    occupancy_grid_topic: /powerplant/map/occupancy_grid
+    vehicle_status_topic: /fmu/out/vehicle_status
+    offboard_control_mode_topic: /fmu/in/offboard_control_mode
+    trajectory_setpoint_topic: /fmu/in/trajectory_setpoint
+    vehicle_command_topic: /fmu/in/vehicle_command
+    mission_status_topic: /powerplant/control/mission_status
+    auto_start: false
+    arm_on_start: true
+    takeoff_height_m: 2.5
+    target_acceptance_m: 0.45
+    cruise_yaw_enu_rad: 0.0
+    use_occupancy_grid_planner: true
+    planner_inflation_radius_m: 0.6
+    path_waypoint_stride: 4
+    # ENU waypoints around a small inspection square. Tune these for the plant.
+    mission_waypoints_enu: [0.0, 0.0, 2.5, 5.0, 0.0, 2.5, 5.0, 5.0, 2.5, 0.0, 5.0, 2.5, 0.0, 0.0, 2.5]

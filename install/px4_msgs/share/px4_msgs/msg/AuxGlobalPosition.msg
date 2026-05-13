@@ -1,0 +1,1 @@
+/home/pawn/px4_ros_ws/src/px4_msgs/msg/AuxGlobalPosition.msg
