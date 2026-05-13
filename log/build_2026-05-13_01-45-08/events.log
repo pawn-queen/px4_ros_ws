@@ -1,7 +1,0 @@
-[0.000000] (-) TimerEvent: {}
-[0.000501] (-) JobUnselected: {'identifier': 'px4_msgs'}
-[0.000620] (-) JobUnselected: {'identifier': 'px4_ros_com'}
-[0.000722] (px4_powerplant_mission) JobQueued: {'identifier': 'px4_powerplant_mission', 'dependencies': OrderedDict({'px4_msgs': '/home/pawn/px4_ros_ws/install/px4_msgs'})}
-[0.001406] (px4_powerplant_mission) JobStarted: {'identifier': 'px4_powerplant_mission'}
-[0.024938] (px4_powerplant_mission) JobEnded: {'identifier': 'px4_powerplant_mission', 'rc': 1}
-[0.035662] (-) EventReactorShutdown: {}

@@ -1,1 +1,0 @@
-/home/pawn/px4_ros_ws/build/px4_powerplant_mission/launch/gz_sensor_bridge.launch.py

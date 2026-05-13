@@ -1,1 +1,0 @@
-/home/pawn/px4_ros_ws/src/px4_powerplant_mission/launch/powerplant_system.launch.py

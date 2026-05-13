@@ -1,7 +1,0 @@
-Metadata-Version: 2.1
-Name: px4-powerplant-mission
-Version: 0.1.0
-Summary: PX4 Gazebo powerplant simulation stack with localization, mapping, YOLO perception, and offboard mission control.
-Maintainer: pawn
-Maintainer-email: pawn@example.com
-License: BSD-3-Clause
