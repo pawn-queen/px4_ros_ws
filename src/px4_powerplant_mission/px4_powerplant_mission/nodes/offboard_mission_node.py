@@ -206,8 +206,8 @@ class OffboardMissionNode(Node):
         self.declare_parameter("auto_start", False)
         self.declare_parameter("arm_on_start", True)
         self.declare_parameter("command_retry_interval_s", 1.0)
-        self.declare_parameter("takeoff_height_m", 50.0)
-        self.declare_parameter("return_home_height_m", 50.0)
+        self.declare_parameter("takeoff_height_m", 5.0)
+        self.declare_parameter("return_home_height_m", 5.0)
         self.declare_parameter("target_acceptance_m", 0.45)
         self.declare_parameter("yaw_acceptance_rad", 0.25)
         self.declare_parameter("cruise_yaw_enu_rad", 0.0)
@@ -220,7 +220,7 @@ class OffboardMissionNode(Node):
         self.declare_parameter("loop_search_waypoints", True)
         self.declare_parameter("search_timeout_s", 300.0)
         self.declare_parameter("target_standoff_m", 2.2)
-        self.declare_parameter("inspection_altitude_m", 50.0)
+        self.declare_parameter("inspection_altitude_m", 5.0)
         self.declare_parameter("inspection_orbit_points", 4)
         self.declare_parameter("inspection_required_photos", 4)
         self.declare_parameter("inspection_photo_dir", "/home/pawn/px4_ros_ws/inspection_photos")
@@ -239,11 +239,11 @@ class OffboardMissionNode(Node):
         self.declare_parameter(
             "mission_waypoints_enu",
             [
-                0.0, 0.0, 50.0,
-                100.0, 0.0, 50.0,
-                100.0, 100.0, 50.0,
-                0.0, 100.0, 50.0,
-                0.0, 0.0, 50.0,
+                0.0, 0.0, 5.0,
+                24.0, 0.0, 5.0,
+                24.0, 24.0, 5.0,
+                0.0, 24.0, 5.0,
+                0.0, 0.0, 5.0,
             ],
         )
 

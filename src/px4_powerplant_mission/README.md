@@ -6,7 +6,7 @@
 
 - `nodes/localization_node.py`：订阅 PX4 IMU、local position、odometry、深度图和 UWB 位姿，统一输出 ROS ENU/FLU 下的 `/powerplant/localization/odom`。
 - `nodes/external_vision_bridge_node.py`：把 `/powerplant/localization/odom` 转成 PX4 NED 下的 `/fmu/in/vehicle_visual_odometry`，供 PX4 EKF 室内解锁和 Offboard 位置控制使用。
-- `nodes/uwb_simulator_node.py`：用仿真真值位置和 YAML 中的 UWB anchor 生成 range，并发布 `/uwb/pose`。
+- `nodes/uwb_simulator_node.py`：用 Gazebo 真值 odometry 和 YAML 中的 UWB anchor 生成 range，并发布 `/uwb/pose`。
 - `nodes/voxel_mapper_node.py`：从深度图、`LaserScan`、`PointCloud2` 生成体素占据地图、2D occupancy grid 和 RViz marker。
 - `nodes/yolo_detector_node.py`：加载包内 `models/yolo/best.pt`，发布 JSON 检测结果和标注图。
 - `nodes/offboard_mission_node.py`：PX4 Offboard 状态机，负责起飞、YOLO 全局搜索、目标三维定位、对准拍照、避障返航。
@@ -21,6 +21,7 @@ PX4 uORB 使用 `NED/FRD`，本包内部和对外发布使用 ROS 常用的 `ENU
 - ENU：`x=east, y=north, z=up`
 - NED 到 ENU：`[north, east, down] -> [east, north, -down]`
 - FRD 到 FLU：`[forward, right, down] -> [forward, -right, -down]`
+- Gazebo odometry 是 ENU；`mission_waypoints_enu` 和 `uwb_anchors` 直接使用 Gazebo world 的 x/y/z。
 
 ## 运行顺序
 
@@ -43,13 +44,14 @@ param set EKF2_GPS_CTRL 0
 param set SYS_HAS_GPS 0
 param set SYS_HAS_MAG 0
 param set EKF2_MAG_TYPE 5
+param set SIM_GZ_EN_ODOM 1
 param set COM_RC_IN_MODE 4
 param set COM_ARM_WO_GPS 2
 param save
 reboot
 ```
 
-其中 `EKF2_EV_CTRL=11` 表示融合 external vision 的水平位置、高度和 yaw，不融合速度；当前 UWB/室内定位链路更适合这种配置。如果换成能稳定输出速度的 VIO，可以把 `powerplant_external_vision_bridge.use_velocity` 改为 `true`，并把 `EKF2_EV_CTRL` 改为 `15`。
+其中 `EKF2_EV_CTRL=11` 表示融合 external vision 的水平位置、高度和 yaw，不融合速度；当前仿真链路会把 Gazebo 真值姿态作为 UWB pose 的仿真 yaw 来源，避免把 PX4 自己的 yaw 再回灌给 EKF。如果把 `powerplant_uwb_simulator.publish_truth_orientation` 改成 `false`，对应把 `EKF2_EV_CTRL` 改为 `3`，只融合 external vision 的水平位置和高度。
 
 终端 1，启动 PX4 DDS Agent：
 
@@ -74,7 +76,7 @@ source install/setup.bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py
 ```
 
-默认不会启动 YOLO 和飞控。需要时显式打开：
+这个 launch 会默认启动 `/model/x500_depth/odometry_with_covariance` 的 `ros_gz_bridge`，供 UWB 仿真使用 Gazebo 真值；如果你已经在别处桥接同一 odometry topic，可以加 `use_gazebo_truth_bridge:=false`。默认不会启动 YOLO 和飞控。需要时显式打开：
 
 ```bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
@@ -90,6 +92,8 @@ ros2 service call /land_powerplant_mission std_srvs/srv/Trigger
 如果 QGC 仍显示 `Heading estimate invalid`、`Found 0 compass` 或 `No valid position estimate`，先确认 `/fmu/in/vehicle_visual_odometry` 正在发布，再等 EKF 收敛几秒：
 
 ```bash
+ros2 topic echo /model/x500_depth/odometry_with_covariance --once
+ros2 topic echo /uwb/pose --once
 ros2 topic hz /fmu/in/vehicle_visual_odometry
 ros2 topic echo /fmu/out/vehicle_local_position --once
 ```
@@ -100,7 +104,7 @@ ros2 topic echo /fmu/out/vehicle_local_position --once
 
 1. `START`：记录当前 ENU 位置为 home，重置目标、航点、照片计数和状态。
 2. `TAKING_OFF`：发布 PX4 Offboard 位置 setpoint，起飞到 `takeoff_height_m`。
-3. `GLOBAL_SEARCH`：沿 `mission_waypoints_enu` 全局搜索；YOLO 在 `/camera` 上检测 `target_class_name`，飞控节点结合 `/depth_camera` 和 `/depth_camera/camera_info` 把 bbox 中心深度反投影成 ENU 三维坐标，并发布 `/powerplant/perception/target_position`。
+3. `GLOBAL_SEARCH`：沿 `mission_waypoints_enu` 全局搜索；默认航点位于 Gazebo 正向任务区 `x/y=0..24 m`、高度 `12 m`，避开电厂模型的低空碰撞区域。YOLO 在 `/camera` 上检测 `target_class_name`，飞控节点结合 `/depth_camera` 和 `/depth_camera/camera_info` 把 bbox 中心深度反投影成 ENU 三维坐标，并发布 `/powerplant/perception/target_position`。
 4. `TARGETING_CYCLE`：围绕目标生成 `inspection_orbit_points` 个巡检拍照点，机头持续朝向目标；到达航点且 yaw 误差小于 `yaw_acceptance_rad` 后保存照片到 `inspection_photo_dir`，并在 `/powerplant/control/inspection_events` 发布拍照事件。
 5. `RETURN_HOME`：拍照完成或搜索超时后规划回 home。
 6. `LANDING` / `COMPLETE`：发送 PX4 land command，落地或超时后标记任务完成。

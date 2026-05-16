@@ -13,9 +13,17 @@ powerplant_localization:
     base_frame: base_link
     publish_tf: true
     publish_rate_hz: 30.0
-    px4_position_alpha: 0.35
-    uwb_position_alpha: 0.55
+    px4_position_alpha: 0.20
+    px4_position_alpha_when_uwb_recent: 0.02
+    uwb_position_alpha: 0.25
+    uwb_z_alpha: 0.08
+    uwb_recent_timeout_s: 0.5
+    uwb_outlier_threshold_m: 4.0
+    use_uwb_orientation: true
+    max_uwb_yaw_variance_rad2: 0.5
+    external_yaw_timeout_s: 0.5
     depth_z_alpha: 0.12
+    use_imu_prediction: false
     max_integrated_speed_mps: 8.0
     # x500_depth mounts the OakD-Lite forward by default. Set to "downward"
     # only after changing the camera mount in SDF.
@@ -27,18 +35,22 @@ powerplant_external_vision_bridge:
   ros__parameters:
     localized_odom_topic: /powerplant/localization/odom
     visual_odometry_topic: /fmu/in/vehicle_visual_odometry
-    # This localization stack is position/yaw oriented. Keep PX4 EKF2_EV_CTRL at
-    # 11 unless replacing it with a VIO source that provides reliable velocity.
+    # EKF2_EV_CTRL=11 is appropriate while UWB simulation publishes Gazebo truth
+    # yaw. If publish_truth_orientation=false, use EKF2_EV_CTRL=3 instead.
     use_velocity: false
-    position_variance_m2: 0.08
-    height_variance_m2: 0.12
-    yaw_variance_rad2: 0.05
+    position_variance_m2: 0.20
+    height_variance_m2: 0.35
+    yaw_variance_rad2: 0.12
     velocity_variance_m2ps2: 0.25
 
 powerplant_uwb_simulator:
   ros__parameters:
     truth_vehicle_local_position_topic: /fmu/out/vehicle_local_position
-    truth_odom_topic: /model/x500_depth/odometry
+    truth_odom_topic: /model/x500_depth/odometry_with_covariance
+    truth_source: gazebo_odometry
+    truth_timeout_s: 1.0
+    publish_truth_orientation: true
+    truth_yaw_variance_rad2: 0.02
     uwb_pose_topic: /uwb/pose
     uwb_range_topic_prefix: /uwb/range
     anchor_marker_topic: /uwb/anchors
@@ -46,10 +58,11 @@ powerplant_uwb_simulator:
     publish_rate_hz: 20.0
     range_noise_std_m: 0.08
     range_min_m: 0.05
-    range_max_m: 220.0
+    range_max_m: 80.0
     random_seed: 42
-    # ENU meters: x=east, y=north, z=up. Sized for the 100 m search square.
-    uwb_anchors: [-10.0, -10.0, 5.0, 110.0, -10.0, 5.0, 110.0, 110.0, 5.0, -10.0, 110.0, 5.0, 50.0, 50.0, 80.0]
+    # ENU meters: x=east, y=north, z=up. These anchors bound the
+    # power_plant_env include at world pose (10, 10, 0) and the 0..24 m route.
+    uwb_anchors: [-10.0, -10.0, 6.0, 34.0, -10.0, 6.0, 34.0, 34.0, 6.0, -10.0, 34.0, 6.0, 12.0, 12.0, 26.0]
     uwb_anchor_names: [anchor_0, anchor_1, anchor_2, anchor_3, anchor_4]
 
 powerplant_voxel_mapper:
@@ -113,8 +126,8 @@ powerplant_offboard_mission:
     auto_start: false
     arm_on_start: true
     command_retry_interval_s: 1.0
-    takeoff_height_m: 50.0
-    return_home_height_m: 50.0
+    takeoff_height_m: 5.0
+    return_home_height_m: 5.0
     target_acceptance_m: 0.45
     yaw_acceptance_rad: 0.25
     cruise_yaw_enu_rad: 0.0
@@ -127,7 +140,7 @@ powerplant_offboard_mission:
     loop_search_waypoints: true
     search_timeout_s: 300.0
     target_standoff_m: 2.2
-    inspection_altitude_m: 50.0
+    inspection_altitude_m: 5.0
     inspection_orbit_points: 4
     inspection_required_photos: 4
     inspection_photo_dir: /home/pawn/px4_ros_ws/inspection_photos
@@ -143,5 +156,12 @@ powerplant_offboard_mission:
     max_depth_age_s: 1.0
     land_complete_height_m: 0.25
     land_complete_timeout_s: 20.0
-    # ENU waypoints around a 100 m square search route. Tune these for the plant.
-    mission_waypoints_enu: [0.0, 0.0, 50.0, 100.0, 0.0, 50.0, 100.0, 100.0, 50.0, 0.0, 100.0, 50.0, 0.0, 0.0, 50.0]
+    # ENU waypoints in Gazebo world coordinates. Keep x/y positive so the
+    # aircraft flies from the land zone toward the power plant task area.
+    mission_waypoints_enu: [
+                0.0, 0.0, 5.0,
+                24.0, 0.0, 5.0,
+                24.0, 24.0, 5.0,
+                0.0, 24.0, 5.0,
+                0.0, 0.0, 5.0,
+            ]

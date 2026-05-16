@@ -45,6 +45,7 @@ class LocalizationNode(Node):
         self.last_depth_stamp_ns = 0
         self.last_uwb_stamp_ns = 0
         self.last_px4_stamp_ns = 0
+        self.last_external_yaw_stamp_ns = 0
         self.depth_frame_id = "camera_link"
 
         self.odom_pub = self.create_publisher(
@@ -106,15 +107,25 @@ class LocalizationNode(Node):
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("publish_tf", True)
         self.declare_parameter("publish_rate_hz", 30.0)
-        self.declare_parameter("px4_position_alpha", 0.35)
-        self.declare_parameter("uwb_position_alpha", 0.55)
+        self.declare_parameter("px4_position_alpha", 0.20)
+        self.declare_parameter("px4_position_alpha_when_uwb_recent", 0.02)
+        self.declare_parameter("uwb_position_alpha", 0.25)
+        self.declare_parameter("uwb_z_alpha", 0.08)
+        self.declare_parameter("uwb_recent_timeout_s", 0.5)
+        self.declare_parameter("uwb_outlier_threshold_m", 4.0)
+        self.declare_parameter("use_uwb_orientation", True)
+        self.declare_parameter("max_uwb_yaw_variance_rad2", 0.5)
+        self.declare_parameter("external_yaw_timeout_s", 0.5)
         self.declare_parameter("depth_z_alpha", 0.12)
+        self.declare_parameter("use_imu_prediction", False)
         self.declare_parameter("max_integrated_speed_mps", 8.0)
         self.declare_parameter("depth_mount", "forward")
         self.declare_parameter("floor_z_enu_m", 0.0)
         self.declare_parameter("depth_center_fraction", 0.18)
 
     def _vehicle_imu_callback(self, msg: VehicleImu) -> None:
+        if not bool(self.get_parameter("use_imu_prediction").value):
+            return
         dt_s = float(msg.delta_velocity_dt) * 1e-6
         if dt_s <= 0.0:
             return
@@ -134,17 +145,22 @@ class LocalizationNode(Node):
             velocity = None
             if msg.v_xy_valid and msg.v_z_valid:
                 velocity = ned_to_enu([msg.vx, msg.vy, msg.vz])
-            self.state.yaw_enu = yaw_ned_to_enu(float(msg.heading))
+            if not self._external_yaw_is_recent():
+                self.state.yaw_enu = yaw_ned_to_enu(float(msg.heading))
             self.state.correct_position(
                 position,
-                float(self.get_parameter("px4_position_alpha").value),
+                self._px4_position_alpha(),
                 velocity,
             )
             self.last_px4_stamp_ns = self.get_clock().now().nanoseconds
 
     def _vehicle_odometry_callback(self, msg: VehicleOdometry) -> None:
         q_wxyz = np.asarray(msg.q, dtype=float)
-        if np.all(np.isfinite(q_wxyz)) and np.linalg.norm(q_wxyz) > 1e-6:
+        if (
+            not self._external_yaw_is_recent()
+            and np.all(np.isfinite(q_wxyz))
+            and np.linalg.norm(q_wxyz) > 1e-6
+        ):
             q_xyzw = normalize_quaternion_xyzw(quaternion_wxyz_to_xyzw(q_wxyz))
             yaw_ned = quaternion_xyzw_to_yaw(q_xyzw)
             self.state.yaw_enu = yaw_ned_to_enu(yaw_ned)
@@ -156,7 +172,7 @@ class LocalizationNode(Node):
                 velocity = ned_to_enu(msg.velocity)
             self.state.correct_position(
                 position,
-                float(self.get_parameter("px4_position_alpha").value) * 0.5,
+                self._px4_position_alpha() * 0.5,
                 velocity,
             )
 
@@ -169,10 +185,12 @@ class LocalizationNode(Node):
             ],
             dtype=float,
         )
-        self.state.correct_position(
-            position,
-            float(self.get_parameter("uwb_position_alpha").value),
-        )
+        if self._is_uwb_outlier(position):
+            return
+        xy_alpha = float(self.get_parameter("uwb_position_alpha").value)
+        z_alpha = float(self.get_parameter("uwb_z_alpha").value)
+        self.state.correct_position_axes(position, [xy_alpha, xy_alpha, z_alpha])
+        self._maybe_use_uwb_orientation(msg)
         self.last_uwb_stamp_ns = self.get_clock().now().nanoseconds
 
     def _depth_callback(self, msg: Image) -> None:
@@ -253,10 +271,10 @@ class LocalizationNode(Node):
         odom.twist.twist.linear.x = float(self.state.velocity_enu[0])
         odom.twist.twist.linear.y = float(self.state.velocity_enu[1])
         odom.twist.twist.linear.z = float(self.state.velocity_enu[2])
-        odom.pose.covariance[0] = 0.08
-        odom.pose.covariance[7] = 0.08
-        odom.pose.covariance[14] = 0.12
-        odom.pose.covariance[35] = 0.05
+        odom.pose.covariance[0] = 0.20
+        odom.pose.covariance[7] = 0.20
+        odom.pose.covariance[14] = 0.35
+        odom.pose.covariance[35] = 0.12
 
     def _status(self) -> dict[str, Any]:
         now_ns = self.get_clock().now().nanoseconds
@@ -275,7 +293,59 @@ class LocalizationNode(Node):
             "depth_age_s": age(self.last_depth_stamp_ns),
             "uwb_age_s": age(self.last_uwb_stamp_ns),
             "px4_age_s": age(self.last_px4_stamp_ns),
+            "external_yaw_age_s": age(self.last_external_yaw_stamp_ns),
         }
+
+    def _px4_position_alpha(self) -> float:
+        if self._uwb_is_recent():
+            return float(self.get_parameter("px4_position_alpha_when_uwb_recent").value)
+        return float(self.get_parameter("px4_position_alpha").value)
+
+    def _uwb_is_recent(self) -> bool:
+        if self.last_uwb_stamp_ns <= 0:
+            return False
+        timeout = float(self.get_parameter("uwb_recent_timeout_s").value)
+        return (self.get_clock().now().nanoseconds - self.last_uwb_stamp_ns) * 1e-9 <= timeout
+
+    def _external_yaw_is_recent(self) -> bool:
+        if self.last_external_yaw_stamp_ns <= 0:
+            return False
+        timeout = float(self.get_parameter("external_yaw_timeout_s").value)
+        return (self.get_clock().now().nanoseconds - self.last_external_yaw_stamp_ns) * 1e-9 <= timeout
+
+    def _is_uwb_outlier(self, position: np.ndarray) -> bool:
+        threshold = float(self.get_parameter("uwb_outlier_threshold_m").value)
+        if threshold <= 0.0 or not self.state.has_position or self.last_uwb_stamp_ns <= 0:
+            return False
+        distance = float(np.linalg.norm(position - self.state.position_enu))
+        if distance <= threshold:
+            return False
+        self.get_logger().warn(
+            f"rejecting UWB outlier: jump {distance:.2f} m > {threshold:.2f} m",
+            throttle_duration_sec=2.0,
+        )
+        return True
+
+    def _maybe_use_uwb_orientation(self, msg: PoseWithCovarianceStamped) -> None:
+        if not bool(self.get_parameter("use_uwb_orientation").value):
+            return
+        yaw_variance = float(msg.pose.covariance[35])
+        max_variance = float(self.get_parameter("max_uwb_yaw_variance_rad2").value)
+        if not math.isfinite(yaw_variance) or yaw_variance <= 0.0 or yaw_variance > max_variance:
+            return
+        q_xyzw = np.array(
+            [
+                msg.pose.pose.orientation.x,
+                msg.pose.pose.orientation.y,
+                msg.pose.pose.orientation.z,
+                msg.pose.pose.orientation.w,
+            ],
+            dtype=float,
+        )
+        if not np.all(np.isfinite(q_xyzw)) or np.linalg.norm(q_xyzw) <= 1e-6:
+            return
+        self.state.yaw_enu = quaternion_xyzw_to_yaw(normalize_quaternion_xyzw(q_xyzw))
+        self.last_external_yaw_stamp_ns = self.get_clock().now().nanoseconds
 
 
 def main(args: list[str] | None = None) -> None:
@@ -290,4 +360,3 @@ def main(args: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -54,7 +54,27 @@ class FusionState:
             if np.all(np.isfinite(velocity)):
                 self.velocity_enu = (1.0 - alpha) * self.velocity_enu + alpha * velocity
 
+    def correct_position_axes(
+        self,
+        measurement_enu: Sequence[float],
+        alpha_enu: Sequence[float],
+        velocity_measurement_enu: Sequence[float] | None = None,
+    ) -> None:
+        measurement = np.asarray(measurement_enu, dtype=float)
+        alpha = np.clip(np.asarray(alpha_enu, dtype=float), 0.0, 1.0)
+        if not np.all(np.isfinite(measurement)) or not np.all(np.isfinite(alpha)):
+            return
+        if not self.has_position:
+            self.position_enu = measurement.copy()
+            self.has_position = True
+        else:
+            self.position_enu = (1.0 - alpha) * self.position_enu + alpha * measurement
+        if velocity_measurement_enu is not None:
+            velocity = np.asarray(velocity_measurement_enu, dtype=float)
+            if np.all(np.isfinite(velocity)):
+                velocity_alpha = float(np.max(alpha))
+                self.velocity_enu = (1.0 - velocity_alpha) * self.velocity_enu + velocity_alpha * velocity
+
     @property
     def orientation_xyzw(self) -> np.ndarray:
         return yaw_to_quaternion_xyzw(self.yaw_enu)
-

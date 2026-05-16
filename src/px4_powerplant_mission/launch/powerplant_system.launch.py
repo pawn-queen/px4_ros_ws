@@ -21,6 +21,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("use_localization", default_value="true"),
             DeclareLaunchArgument("use_external_vision", default_value="true"),
             DeclareLaunchArgument("use_uwb", default_value="true"),
+            DeclareLaunchArgument("use_gazebo_truth_bridge", default_value="true"),
             DeclareLaunchArgument("use_mapping", default_value="true"),
             DeclareLaunchArgument("use_yolo", default_value="false"),
             DeclareLaunchArgument("use_control", default_value="false"),
@@ -44,6 +45,18 @@ def generate_launch_description() -> LaunchDescription:
                 output="screen",
                 parameters=[config_file],
                 condition=IfCondition(LaunchConfiguration("use_external_vision")),
+            ),
+            Node(
+                package="ros_gz_bridge",
+                executable="parameter_bridge",
+                name="powerplant_gz_truth_bridge",
+                output="screen",
+                arguments=[
+                    "/model/x500_depth/odometry_with_covariance"
+                    "@nav_msgs/msg/Odometry"
+                    "@gz.msgs.OdometryWithCovariance"
+                ],
+                condition=IfCondition(LaunchConfiguration("use_gazebo_truth_bridge")),
             ),
             Node(
                 package="px4_powerplant_mission",
