@@ -15,6 +15,8 @@ powerplant_localization:
     publish_rate_hz: 30.0
     px4_position_alpha: 0.20
     px4_position_alpha_when_uwb_recent: 0.02
+    use_px4_position_when_uwb_recent: false
+    px4_velocity_alpha: 0.15
     uwb_position_alpha: 0.25
     uwb_z_alpha: 0.08
     uwb_recent_timeout_s: 0.5
@@ -22,6 +24,10 @@ powerplant_localization:
     use_uwb_orientation: true
     max_uwb_yaw_variance_rad2: 0.5
     external_yaw_timeout_s: 0.5
+    independent_position_variance_m2: 0.20
+    independent_height_variance_m2: 0.35
+    fallback_position_variance_m2: 25.0
+    fallback_height_variance_m2: 9.0
     depth_z_alpha: 0.12
     use_imu_prediction: false
     max_integrated_speed_mps: 8.0
@@ -42,12 +48,20 @@ powerplant_external_vision_bridge:
     height_variance_m2: 0.35
     yaw_variance_rad2: 0.12
     velocity_variance_m2ps2: 0.25
+    require_independent_position: true
+    max_publish_position_variance_m2: 4.0
+    max_publish_height_variance_m2: 4.0
 
 powerplant_uwb_simulator:
   ros__parameters:
     truth_vehicle_local_position_topic: /fmu/out/vehicle_local_position
     truth_odom_topic: /model/x500_depth/odometry_with_covariance
-    truth_source: gazebo_odometry
+    truth_pose_topic: /world/powerplant/dynamic_pose/info
+    truth_model_name: x500_depth_0
+    # ros_gz_bridge maps gz.msgs.Pose_V to TFMessage but this Gazebo/Jazzy
+    # conversion leaves frame names empty, so index 0 is the x500 model pose.
+    truth_pose_index: 0
+    truth_source: gazebo_pose
     truth_timeout_s: 1.0
     publish_truth_orientation: true
     truth_yaw_variance_rad2: 0.02
@@ -59,6 +73,7 @@ powerplant_uwb_simulator:
     range_noise_std_m: 0.08
     range_min_m: 0.05
     range_max_m: 80.0
+    max_solution_rms_m: 0.75
     random_seed: 42
     # ENU meters: x=east, y=north, z=up. These anchors bound the
     # power_plant_env include at world pose (10, 10, 0) and the 0..24 m route.
@@ -118,6 +133,7 @@ powerplant_offboard_mission:
     depth_camera_info_topic: /depth_camera/camera_info
     rgb_image_topic: /camera
     vehicle_status_topic: /fmu/out/vehicle_status
+    failsafe_flags_topic: /fmu/out/failsafe_flags
     vehicle_command_ack_topic: /fmu/out/vehicle_command_ack
     offboard_control_mode_topic: /fmu/in/offboard_control_mode
     trajectory_setpoint_topic: /fmu/in/trajectory_setpoint
@@ -126,17 +142,29 @@ powerplant_offboard_mission:
     auto_start: false
     arm_on_start: true
     command_retry_interval_s: 1.0
+    offboard_warmup_setpoints: 20
+    require_localization_for_start: true
+    max_localization_age_s: 0.5
+    max_start_position_variance_m2: 4.0
+    max_start_height_variance_m2: 4.0
+    require_preflight_checks: true
+    require_accepts_offboard_setpoints: false
     takeoff_height_m: 5.0
     return_home_height_m: 5.0
     target_acceptance_m: 0.45
     yaw_acceptance_rad: 0.25
     cruise_yaw_enu_rad: 0.0
+    face_waypoint_during_search: true
+    max_horizontal_setpoint_speed_mps: 2.0
+    max_vertical_setpoint_speed_mps: 0.8
+    max_yaw_rate_radps: 0.6
     use_occupancy_grid_planner: true
     planner_inflation_radius_m: 0.6
     path_waypoint_stride: 4
     target_class_name: gas_cylinder
     min_target_confidence: 0.35
     target_memory_s: 8.0
+    lock_target_after_acquisition: true
     loop_search_waypoints: true
     search_timeout_s: 300.0
     target_standoff_m: 2.2

@@ -27,7 +27,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("use_control", default_value="false"),
             DeclareLaunchArgument(
                 "yolo_python",
-                default_value="/usr/bin/python3",
+                default_value="/home/pawn/px4_ros_ws/.venv/bin/python",
                 description="Python interpreter used to run the YOLO detector.",
             ),
             Node(
@@ -54,7 +54,10 @@ def generate_launch_description() -> LaunchDescription:
                 arguments=[
                     "/model/x500_depth/odometry_with_covariance"
                     "@nav_msgs/msg/Odometry"
-                    "@gz.msgs.OdometryWithCovariance"
+                    "[gz.msgs.OdometryWithCovariance",
+                    "/world/powerplant/dynamic_pose/info"
+                    "@tf2_msgs/msg/TFMessage"
+                    "[gz.msgs.Pose_V",
                 ],
                 condition=IfCondition(LaunchConfiguration("use_gazebo_truth_bridge")),
             ),

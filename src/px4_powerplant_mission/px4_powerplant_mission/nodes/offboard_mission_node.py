@@ -14,6 +14,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 from px4_msgs.msg import (
+    FailsafeFlags,
     OffboardControlMode,
     TrajectorySetpoint,
     VehicleCommand,
@@ -74,9 +75,17 @@ class OffboardMissionNode(Node):
         self.current_yaw_enu = 0.0
         self.home_position_enu: np.ndarray | None = None
         self.vehicle_status = VehicleStatus()
+        self.failsafe_flags = FailsafeFlags()
         self.offboard_counter = 0
         self.active = bool(self.get_parameter("auto_start").value)
         self.phase = PHASE_START if self.active else PHASE_IDLE
+        self.last_odom_stamp_ns = 0
+        self.odom_position_variance_m2 = math.inf
+        self.odom_height_variance_m2 = math.inf
+        self.command_wait_reason = ""
+        self.commanded_setpoint_enu: np.ndarray | None = None
+        self.commanded_yaw_enu = 0.0
+        self.last_setpoint_update_ns = 0
         self.last_offboard_request_ns = 0
         self.last_arm_request_ns = 0
         self.last_command_ack: VehicleCommandAck | None = None
@@ -147,6 +156,12 @@ class OffboardMissionNode(Node):
             px4_qos_profile(),
         )
         self.create_subscription(
+            FailsafeFlags,
+            self.get_parameter("failsafe_flags_topic").value,
+            self._failsafe_flags_callback,
+            px4_qos_profile(),
+        )
+        self.create_subscription(
             VehicleCommandAck,
             self.get_parameter("vehicle_command_ack_topic").value,
             self._vehicle_command_ack_callback,
@@ -198,6 +213,7 @@ class OffboardMissionNode(Node):
         self.declare_parameter("depth_camera_info_topic", "/depth_camera/camera_info")
         self.declare_parameter("rgb_image_topic", "/camera")
         self.declare_parameter("vehicle_status_topic", "/fmu/out/vehicle_status")
+        self.declare_parameter("failsafe_flags_topic", "/fmu/out/failsafe_flags")
         self.declare_parameter("vehicle_command_ack_topic", "/fmu/out/vehicle_command_ack")
         self.declare_parameter("offboard_control_mode_topic", "/fmu/in/offboard_control_mode")
         self.declare_parameter("trajectory_setpoint_topic", "/fmu/in/trajectory_setpoint")
@@ -206,17 +222,29 @@ class OffboardMissionNode(Node):
         self.declare_parameter("auto_start", False)
         self.declare_parameter("arm_on_start", True)
         self.declare_parameter("command_retry_interval_s", 1.0)
+        self.declare_parameter("offboard_warmup_setpoints", 20)
+        self.declare_parameter("require_localization_for_start", True)
+        self.declare_parameter("max_localization_age_s", 0.5)
+        self.declare_parameter("max_start_position_variance_m2", 4.0)
+        self.declare_parameter("max_start_height_variance_m2", 4.0)
+        self.declare_parameter("require_preflight_checks", True)
+        self.declare_parameter("require_accepts_offboard_setpoints", False)
         self.declare_parameter("takeoff_height_m", 5.0)
         self.declare_parameter("return_home_height_m", 5.0)
         self.declare_parameter("target_acceptance_m", 0.45)
         self.declare_parameter("yaw_acceptance_rad", 0.25)
         self.declare_parameter("cruise_yaw_enu_rad", 0.0)
+        self.declare_parameter("face_waypoint_during_search", True)
+        self.declare_parameter("max_horizontal_setpoint_speed_mps", 2.0)
+        self.declare_parameter("max_vertical_setpoint_speed_mps", 0.8)
+        self.declare_parameter("max_yaw_rate_radps", 0.6)
         self.declare_parameter("use_occupancy_grid_planner", True)
         self.declare_parameter("planner_inflation_radius_m", 0.6)
         self.declare_parameter("path_waypoint_stride", 4)
         self.declare_parameter("target_class_name", "gas_cylinder")
         self.declare_parameter("min_target_confidence", 0.35)
         self.declare_parameter("target_memory_s", 8.0)
+        self.declare_parameter("lock_target_after_acquisition", True)
         self.declare_parameter("loop_search_waypoints", True)
         self.declare_parameter("search_timeout_s", 300.0)
         self.declare_parameter("target_standoff_m", 2.2)
@@ -275,9 +303,18 @@ class OffboardMissionNode(Node):
             dtype=float,
         )
         self.current_yaw_enu = quaternion_xyzw_to_yaw(self.current_orientation_xyzw)
+        self.last_odom_stamp_ns = self.get_clock().now().nanoseconds
+        self.odom_position_variance_m2 = max(
+            self._positive_or_inf(msg.pose.covariance[0]),
+            self._positive_or_inf(msg.pose.covariance[7]),
+        )
+        self.odom_height_variance_m2 = self._positive_or_inf(msg.pose.covariance[14])
 
     def _vehicle_status_callback(self, msg: VehicleStatus) -> None:
         self.vehicle_status = msg
+
+    def _failsafe_flags_callback(self, msg: FailsafeFlags) -> None:
+        self.failsafe_flags = msg
 
     def _vehicle_command_ack_callback(self, msg: VehicleCommandAck) -> None:
         self.last_command_ack = msg
@@ -325,6 +362,12 @@ class OffboardMissionNode(Node):
 
     def _yolo_detections_callback(self, msg: String) -> None:
         if self.current_position_enu is None or self.latest_depth_m is None:
+            return
+        if (
+            self.phase == PHASE_TARGETING_CYCLE
+            and bool(self.get_parameter("lock_target_after_acquisition").value)
+            and self._target_is_recent()
+        ):
             return
         try:
             payload = json.loads(msg.data)
@@ -453,6 +496,8 @@ class OffboardMissionNode(Node):
         self.inspection_photo_count = 0
         self.landing_command_sent = False
         self.return_reason = ""
+        self.command_wait_reason = ""
+        self._reset_commanded_setpoint()
         self.last_offboard_request_ns = 0
         self.last_arm_request_ns = 0
         self.search_loop_count = 0
@@ -484,18 +529,23 @@ class OffboardMissionNode(Node):
             return
 
         if self.phase == PHASE_START:
+            if not self._ready_to_initialize_mission():
+                self._publish_status()
+                return
             self._initialize_mission()
 
+        nav_target, nav_yaw = self._select_target_and_yaw()
+        setpoint, setpoint_yaw = self._slew_setpoint(nav_target, nav_yaw)
+        self._publish_position_setpoint(setpoint, setpoint_yaw)
         self._maybe_engage_offboard()
-        target, yaw = self._select_target_and_yaw()
-        self._publish_position_setpoint(target, yaw)
-        self._update_phase(target, yaw)
-        self._publish_status(target)
+        self._update_phase(nav_target, nav_yaw)
+        self._publish_status(nav_target, setpoint)
 
     def _initialize_mission(self) -> None:
         if self.current_position_enu is None:
             return
         self.home_position_enu = self.current_position_enu.copy()
+        self._reset_commanded_setpoint()
         self.phase = PHASE_TAKING_OFF
         self.search_started_ns = 0
         self.search_loop_count = 0
@@ -505,27 +555,97 @@ class OffboardMissionNode(Node):
         self._publish_event("mission_initialized", {"home_enu": self._round_list(self.home_position_enu)})
 
     def _maybe_engage_offboard(self) -> None:
-        if self.offboard_counter >= 10:
-            retry_interval_ns = int(float(self.get_parameter("command_retry_interval_s").value) * 1e9)
-            now_ns = self.get_clock().now().nanoseconds
-            if (
-                self.vehicle_status.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD
-                and now_ns - self.last_offboard_request_ns >= retry_interval_ns
-            ):
-                self.last_offboard_request_ns = now_ns
-                self.get_logger().info("requesting PX4 Offboard mode", throttle_duration_sec=2.0)
-                self._engage_offboard()
-            if (
-                bool(self.get_parameter("arm_on_start").value)
-                and self.vehicle_status.arming_state != VehicleStatus.ARMING_STATE_ARMED
-                and now_ns - self.last_arm_request_ns >= retry_interval_ns
-            ):
-                self.last_arm_request_ns = now_ns
-                self.get_logger().info("requesting PX4 arm", throttle_duration_sec=2.0)
-                self._arm()
-        elif self.offboard_counter == 0:
-            self.get_logger().info("warming up Offboard setpoints", throttle_duration_sec=2.0)
         self.offboard_counter = min(self.offboard_counter + 1, 1000)
+        warmup_count = int(self.get_parameter("offboard_warmup_setpoints").value)
+        if self.offboard_counter < warmup_count:
+            self.command_wait_reason = f"warming up Offboard setpoints {self.offboard_counter}/{warmup_count}"
+            self.get_logger().info(self.command_wait_reason, throttle_duration_sec=2.0)
+            return
+
+        if not self._localization_is_ready():
+            self.command_wait_reason = "waiting for recent independent localization"
+            self.get_logger().warn(self.command_wait_reason, throttle_duration_sec=5.0)
+            return
+
+        retry_interval_ns = int(float(self.get_parameter("command_retry_interval_s").value) * 1e9)
+        now_ns = self.get_clock().now().nanoseconds
+        if (
+            self.vehicle_status.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD
+            and now_ns - self.last_offboard_request_ns >= retry_interval_ns
+        ):
+            self.last_offboard_request_ns = now_ns
+            self.get_logger().info("requesting PX4 Offboard mode", throttle_duration_sec=2.0)
+            self._engage_offboard()
+            return
+
+        if self.vehicle_status.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+            self.command_wait_reason = "waiting for PX4 to enter Offboard mode"
+            return
+
+        if (
+            bool(self.get_parameter("require_preflight_checks").value)
+            and not bool(self.vehicle_status.pre_flight_checks_pass)
+        ):
+            self.command_wait_reason = self._preflight_wait_reason()
+            self.get_logger().warn(self.command_wait_reason, throttle_duration_sec=5.0)
+            return
+
+        if (
+            bool(self.get_parameter("require_accepts_offboard_setpoints").value)
+            and not bool(self.vehicle_status.accepts_offboard_setpoints)
+        ):
+            self.command_wait_reason = "waiting for PX4 to accept Offboard setpoints"
+            self.get_logger().warn(self.command_wait_reason, throttle_duration_sec=5.0)
+            return
+
+        if (
+            bool(self.get_parameter("arm_on_start").value)
+            and self.vehicle_status.arming_state != VehicleStatus.ARMING_STATE_ARMED
+            and now_ns - self.last_arm_request_ns >= retry_interval_ns
+        ):
+            self.last_arm_request_ns = now_ns
+            self.get_logger().info("requesting PX4 arm", throttle_duration_sec=2.0)
+            self._arm()
+            return
+
+        self.command_wait_reason = ""
+
+    def _ready_to_initialize_mission(self) -> bool:
+        if self.current_position_enu is None:
+            self.command_wait_reason = "waiting for localization odometry"
+            return False
+        if not self._localization_is_ready():
+            self.command_wait_reason = "waiting for recent independent localization"
+            return False
+        self.command_wait_reason = ""
+        return True
+
+    def _localization_is_ready(self) -> bool:
+        if not bool(self.get_parameter("require_localization_for_start").value):
+            return self.current_position_enu is not None
+        if self.current_position_enu is None:
+            return False
+        if self._age_s(self.last_odom_stamp_ns) > float(self.get_parameter("max_localization_age_s").value):
+            return False
+        max_xy = float(self.get_parameter("max_start_position_variance_m2").value)
+        max_z = float(self.get_parameter("max_start_height_variance_m2").value)
+        return self.odom_position_variance_m2 <= max_xy and self.odom_height_variance_m2 <= max_z
+
+    def _preflight_wait_reason(self) -> str:
+        reasons: list[str] = []
+        if bool(self.failsafe_flags.local_position_invalid):
+            reasons.append("local position invalid")
+        if bool(self.failsafe_flags.global_position_invalid):
+            reasons.append("global position invalid")
+        if bool(self.failsafe_flags.home_position_invalid):
+            reasons.append("home position invalid")
+        if bool(self.failsafe_flags.manual_control_signal_lost):
+            reasons.append("manual control signal lost")
+        if bool(self.failsafe_flags.remote_id_unhealthy):
+            reasons.append("remote ID unhealthy")
+        if not reasons:
+            reasons.append("PX4 preflight checks not passed")
+        return "waiting for PX4 preflight checks: " + ", ".join(reasons)
 
     def _select_target_and_yaw(self) -> tuple[np.ndarray, float]:
         if self.current_position_enu is None:
@@ -542,6 +662,11 @@ class OffboardMissionNode(Node):
             yaw = float(self.get_parameter("cruise_yaw_enu_rad").value)
             if self.phase == PHASE_TARGETING_CYCLE and self.target_observation is not None:
                 yaw = self._yaw_to_face(self.target_observation.position_enu)
+            elif (
+                self.phase == PHASE_GLOBAL_SEARCH
+                and bool(self.get_parameter("face_waypoint_during_search").value)
+            ):
+                yaw = self._yaw_to_face(target)
             elif self.phase == PHASE_RETURN_HOME:
                 yaw = self._yaw_to_face(target)
             return target, yaw
@@ -839,6 +964,57 @@ class OffboardMissionNode(Node):
         msg.timestamp = self._timestamp_us()
         self.setpoint_pub.publish(msg)
 
+    def _slew_setpoint(self, target_enu: np.ndarray, yaw_enu: float) -> tuple[np.ndarray, float]:
+        if self.current_position_enu is None:
+            return target_enu, yaw_enu
+        now_ns = self.get_clock().now().nanoseconds
+        if self.commanded_setpoint_enu is None or self.last_setpoint_update_ns <= 0:
+            self.commanded_setpoint_enu = self.current_position_enu.copy()
+            self.commanded_yaw_enu = self.current_yaw_enu
+            self.last_setpoint_update_ns = now_ns
+
+        dt_s = (now_ns - self.last_setpoint_update_ns) * 1e-9
+        if dt_s <= 0.0 or dt_s > 1.0:
+            dt_s = 0.1
+        self.last_setpoint_update_ns = now_ns
+
+        setpoint = self.commanded_setpoint_enu.copy()
+        xy_delta = target_enu[:2] - setpoint[:2]
+        xy_distance = float(np.linalg.norm(xy_delta))
+        max_xy_step = float(self.get_parameter("max_horizontal_setpoint_speed_mps").value) * dt_s
+        if max_xy_step > 0.0 and xy_distance > max_xy_step:
+            setpoint[:2] += xy_delta / xy_distance * max_xy_step
+        else:
+            setpoint[:2] = target_enu[:2]
+
+        z_delta = float(target_enu[2] - setpoint[2])
+        max_z_step = float(self.get_parameter("max_vertical_setpoint_speed_mps").value) * dt_s
+        if max_z_step > 0.0 and abs(z_delta) > max_z_step:
+            setpoint[2] += math.copysign(max_z_step, z_delta)
+        else:
+            setpoint[2] = float(target_enu[2])
+
+        yaw_delta = wrap_pi(yaw_enu - self.commanded_yaw_enu)
+        max_yaw_step = float(self.get_parameter("max_yaw_rate_radps").value) * dt_s
+        if max_yaw_step > 0.0 and abs(yaw_delta) > max_yaw_step:
+            self.commanded_yaw_enu = wrap_pi(
+                self.commanded_yaw_enu + math.copysign(max_yaw_step, yaw_delta)
+            )
+        else:
+            self.commanded_yaw_enu = wrap_pi(yaw_enu)
+
+        self.commanded_setpoint_enu = setpoint
+        return setpoint.copy(), self.commanded_yaw_enu
+
+    def _reset_commanded_setpoint(self) -> None:
+        if self.current_position_enu is None:
+            self.commanded_setpoint_enu = None
+            self.last_setpoint_update_ns = 0
+            return
+        self.commanded_setpoint_enu = self.current_position_enu.copy()
+        self.commanded_yaw_enu = self.current_yaw_enu
+        self.last_setpoint_update_ns = self.get_clock().now().nanoseconds
+
     def _publish_target_position(self, observation: TargetObservation) -> None:
         msg = PointStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -880,7 +1056,8 @@ class OffboardMissionNode(Node):
         msg.timestamp = self._timestamp_us()
         self.command_pub.publish(msg)
 
-    def _publish_status(self, target: np.ndarray | None = None) -> None:
+    def _publish_status(self, target: np.ndarray | None = None, setpoint: np.ndarray | None = None) -> None:
+        odom_age_s = self._age_s(self.last_odom_stamp_ns)
         payload: dict[str, Any] = {
             "phase": self.phase,
             "active": self.active,
@@ -890,6 +1067,28 @@ class OffboardMissionNode(Node):
             "arming_state": int(self.vehicle_status.arming_state),
             "pre_flight_checks_pass": bool(self.vehicle_status.pre_flight_checks_pass),
             "accepts_offboard_setpoints": bool(self.vehicle_status.accepts_offboard_setpoints),
+            "localization_ready": self._localization_is_ready(),
+            "failsafe_flags": {
+                "local_position_invalid": bool(self.failsafe_flags.local_position_invalid),
+                "global_position_invalid": bool(self.failsafe_flags.global_position_invalid),
+                "home_position_invalid": bool(self.failsafe_flags.home_position_invalid),
+                "manual_control_signal_lost": bool(self.failsafe_flags.manual_control_signal_lost),
+                "offboard_control_signal_lost": bool(self.failsafe_flags.offboard_control_signal_lost),
+                "remote_id_unhealthy": bool(self.failsafe_flags.remote_id_unhealthy),
+                "mode_req_local_position": int(self.failsafe_flags.mode_req_local_position),
+                "mode_req_global_position": int(self.failsafe_flags.mode_req_global_position),
+                "mode_req_home_position": int(self.failsafe_flags.mode_req_home_position),
+                "mode_req_prevent_arming": int(self.failsafe_flags.mode_req_prevent_arming),
+            },
+            "odom_age_s": round(odom_age_s, 2) if math.isfinite(odom_age_s) else None,
+            "odom_position_variance_m2": round(float(self.odom_position_variance_m2), 3)
+            if math.isfinite(self.odom_position_variance_m2)
+            else None,
+            "odom_height_variance_m2": round(float(self.odom_height_variance_m2), 3)
+            if math.isfinite(self.odom_height_variance_m2)
+            else None,
+            "offboard_setpoints_sent": self.offboard_counter,
+            "command_wait_reason": self.command_wait_reason,
             "photos": self.inspection_photo_count,
         }
         if self.phase == PHASE_GLOBAL_SEARCH:
@@ -905,7 +1104,11 @@ class OffboardMissionNode(Node):
                 "result": self._command_result_name(self.last_command_ack.result),
             }
         if target is not None:
-            payload["setpoint_enu"] = self._round_list(target)
+            payload["nav_target_enu"] = self._round_list(target)
+        if setpoint is not None:
+            payload["setpoint_enu"] = self._round_list(setpoint)
+        elif self.commanded_setpoint_enu is not None:
+            payload["setpoint_enu"] = self._round_list(self.commanded_setpoint_enu)
         if self.current_position_enu is not None:
             payload["vehicle_enu"] = self._round_list(self.current_position_enu)
         if self.target_observation is not None:
@@ -927,6 +1130,10 @@ class OffboardMissionNode(Node):
         if stamp_ns <= 0:
             return math.inf
         return (self.get_clock().now().nanoseconds - stamp_ns) * 1e-9
+
+    @staticmethod
+    def _positive_or_inf(value: float) -> float:
+        return float(value) if math.isfinite(value) and value > 0.0 else math.inf
 
     def _round_list(self, values: np.ndarray, digits: int = 2) -> list[float]:
         return [round(float(v), digits) for v in values.tolist()]

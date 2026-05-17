@@ -48,6 +48,9 @@ class ExternalVisionBridgeNode(Node):
         self.declare_parameter("height_variance_m2", 0.12)
         self.declare_parameter("yaw_variance_rad2", 0.05)
         self.declare_parameter("velocity_variance_m2ps2", 0.25)
+        self.declare_parameter("require_independent_position", True)
+        self.declare_parameter("max_publish_position_variance_m2", 4.0)
+        self.declare_parameter("max_publish_height_variance_m2", 4.0)
 
     def _odom_callback(self, msg: Odometry) -> None:
         position_enu = np.array(
@@ -59,6 +62,15 @@ class ExternalVisionBridgeNode(Node):
             dtype=float,
         )
         if not np.all(np.isfinite(position_enu)):
+            return
+        if (
+            bool(self.get_parameter("require_independent_position").value)
+            and not self._has_publishable_position(msg)
+        ):
+            self.get_logger().warn(
+                "skipping external vision publish: localization has no recent independent UWB/Gazebo position",
+                throttle_duration_sec=5.0,
+            )
             return
 
         q_enu_xyzw = [
@@ -126,6 +138,14 @@ class ExternalVisionBridgeNode(Node):
         north_var = self._positive_or_value(msg.twist.covariance[7], default)
         up_var = self._positive_or_value(msg.twist.covariance[14], default)
         return [float(north_var), float(east_var), float(up_var)]
+
+    def _has_publishable_position(self, msg: Odometry) -> bool:
+        max_xy = float(self.get_parameter("max_publish_position_variance_m2").value)
+        max_z = float(self.get_parameter("max_publish_height_variance_m2").value)
+        east_var = self._positive_or_value(msg.pose.covariance[0], math.inf)
+        north_var = self._positive_or_value(msg.pose.covariance[7], math.inf)
+        up_var = self._positive_or_value(msg.pose.covariance[14], math.inf)
+        return max(east_var, north_var) <= max_xy and up_var <= max_z
 
     def _positive_or_default(self, value: float, parameter_name: str) -> float:
         return self._positive_or_value(value, float(self.get_parameter(parameter_name).value))

@@ -6,7 +6,7 @@
 
 - `nodes/localization_node.py`：订阅 PX4 IMU、local position、odometry、深度图和 UWB 位姿，统一输出 ROS ENU/FLU 下的 `/powerplant/localization/odom`。
 - `nodes/external_vision_bridge_node.py`：把 `/powerplant/localization/odom` 转成 PX4 NED 下的 `/fmu/in/vehicle_visual_odometry`，供 PX4 EKF 室内解锁和 Offboard 位置控制使用。
-- `nodes/uwb_simulator_node.py`：用 Gazebo 真值 odometry 和 YAML 中的 UWB anchor 生成 range，并发布 `/uwb/pose`。
+- `nodes/uwb_simulator_node.py`：用 Gazebo `dynamic_pose` 真值和 YAML 中的 UWB anchor 生成 range，并发布 `/uwb/pose`。
 - `nodes/voxel_mapper_node.py`：从深度图、`LaserScan`、`PointCloud2` 生成体素占据地图、2D occupancy grid 和 RViz marker。
 - `nodes/yolo_detector_node.py`：加载包内 `models/yolo/best.pt`，发布 JSON 检测结果和标注图。
 - `nodes/offboard_mission_node.py`：PX4 Offboard 状态机，负责起飞、YOLO 全局搜索、目标三维定位、对准拍照、避障返航。
@@ -21,7 +21,7 @@ PX4 uORB 使用 `NED/FRD`，本包内部和对外发布使用 ROS 常用的 `ENU
 - ENU：`x=east, y=north, z=up`
 - NED 到 ENU：`[north, east, down] -> [east, north, -down]`
 - FRD 到 FLU：`[forward, right, down] -> [forward, -right, -down]`
-- Gazebo odometry 是 ENU；`mission_waypoints_enu` 和 `uwb_anchors` 直接使用 Gazebo world 的 x/y/z。
+- Gazebo `dynamic_pose`/odometry 是 ENU；`mission_waypoints_enu` 和 `uwb_anchors` 直接使用 Gazebo world 的 x/y/z。
 
 ## 运行顺序
 
@@ -47,6 +47,8 @@ param set EKF2_MAG_TYPE 5
 param set SIM_GZ_EN_ODOM 1
 param set COM_RC_IN_MODE 4
 param set COM_ARM_WO_GPS 2
+param set COM_ARM_ODID 0
+param set COM_HOME_IN_AIR 1
 param save
 reboot
 ```
@@ -76,7 +78,7 @@ source install/setup.bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py
 ```
 
-这个 launch 会默认启动 `/model/x500_depth/odometry_with_covariance` 的 `ros_gz_bridge`，供 UWB 仿真使用 Gazebo 真值；如果你已经在别处桥接同一 odometry topic，可以加 `use_gazebo_truth_bridge:=false`。默认不会启动 YOLO 和飞控。需要时显式打开：
+这个 launch 会默认启动 Gazebo 真值桥接，UWB 默认使用 `/world/powerplant/dynamic_pose/info` 的模型位姿；`/model/x500_depth/odometry_with_covariance` 仍保留为可选 odometry 后备源。如果你已经在别处桥接同一 truth topic，可以加 `use_gazebo_truth_bridge:=false`。默认不会启动 YOLO 和飞控。需要时显式打开：
 
 ```bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
@@ -89,16 +91,49 @@ ros2 service call /start_powerplant_mission std_srvs/srv/Trigger
 ros2 service call /land_powerplant_mission std_srvs/srv/Trigger
 ```
 
+如果按“非虚拟环境”启动 ROS 任务栈，也可以直接 `use_yolo:=true`；launch 默认会用
+`/home/pawn/px4_ros_ws/.venv/bin/python` 运行 YOLO 节点，避免系统 Python 缺少
+`ultralytics` 时产生启动错误。若已经把 YOLO 依赖安装到系统 Python，可覆盖
+`yolo_python:=python3`。
+
 如果 QGC 仍显示 `Heading estimate invalid`、`Found 0 compass` 或 `No valid position estimate`，先确认 `/fmu/in/vehicle_visual_odometry` 正在发布，再等 EKF 收敛几秒：
 
 ```bash
-ros2 topic echo /model/x500_depth/odometry_with_covariance --once
-ros2 topic echo /uwb/pose --once
+export ROS2CLI_ENABLE_DAEMON=0
+ros2 topic echo /world/powerplant/dynamic_pose/info tf2_msgs/msg/TFMessage --once --timeout 5 --no-daemon
+ros2 topic echo /uwb/pose --once --timeout 5 --no-daemon
 ros2 topic hz /fmu/in/vehicle_visual_odometry
-ros2 topic echo /fmu/out/vehicle_local_position --once
+ros2 topic echo /fmu/out/estimator_status_flags px4_msgs/msg/EstimatorStatusFlags --once --timeout 5 --qos-reliability best_effort --no-daemon
+ros2 topic echo /fmu/out/failsafe_flags px4_msgs/msg/FailsafeFlags --once --timeout 5 --qos-reliability best_effort --no-daemon
 ```
 
-`vehicle_local_position` 里的 `xy_valid` 和 `z_valid` 变成 `true` 后，再调用 `/start_powerplant_mission`。
+`estimator_status_flags` 里 `cs_ev_pos`、`cs_ev_yaw`、`cs_ev_hgt` 变成 `true` 后，再调用 `/start_powerplant_mission`。
+如果不加 `--no-daemon` 时出现 `TimeoutError: [Errno 110] Connection timed out`，这是 ROS2 daemon
+卡住，不是 topic 没有数据；先执行 `ros2 daemon stop` 或继续使用上面的 `ROS2CLI_ENABLE_DAEMON=0`。
+
+当前 `powerplant` world 中 `/model/x500_depth/odometry_with_covariance` 可能只显示有 publisher 但不实际发布消息，所以不要把 UWB 卡在这个 topic 上。若 UWB 日志出现 `waiting for Gazebo dynamic pose truth`，优先检查 `/world/powerplant/dynamic_pose/info` 的 `ros_gz_bridge`；若 `/uwb/pose` 不发布，后面的 localization、external vision 和 PX4 EKF 都不会得到有效位置/航向。
+
+当前链路默认要求 UWB/Gazebo 真值是“独立定位源”：`localization_node` 会把 UWB 新鲜度写入
+`/powerplant/localization/status`，并在没有近期 UWB 时把 `/powerplant/localization/odom`
+协方差抬高；`external_vision_bridge_node` 检测到高协方差后不会继续把 PX4 自己的估计回灌给
+`/fmu/in/vehicle_visual_odometry`。因此如果 `/uwb/pose` 不发布，PX4 可能不会进入可控的室内
+Offboard 状态，这是有意的保护。先修复 `/world/powerplant/dynamic_pose/info` 到 `/uwb/pose`
+的真值链路，不要用 PX4 local position 当 UWB 真值源去绕过这个问题。
+
+飞行过程中 `/powerplant/control/mission_status` 里有两个位置：`nav_target_enu` 是当前逻辑航点，
+`setpoint_enu` 是经过限速后的实际 PX4 setpoint。正常情况下 `setpoint_enu` 会逐步靠近
+`nav_target_enu`，不是瞬间跳到远端航点。
+
+调用 `/start_powerplant_mission` 后，飞控节点会先等待起飞条件，不会立刻强行解锁。可用下面
+的话题确认等待原因：
+
+```bash
+ros2 topic echo /powerplant/control/mission_status std_msgs/msg/String --once --timeout 5 --spin-time 10 --full-length --no-daemon
+```
+
+其中 `localization_ready` 必须为 `true`，`pre_flight_checks_pass` 应为 `true`；
+`command_wait_reason` 会显示正在等待定位、preflight、Offboard setpoint 预热、或 PX4
+进入 Offboard。满足条件后节点按顺序请求 Offboard，然后再请求 arm。
 
 `/start_powerplant_mission` 会进入完整巡检流程：
 
@@ -165,7 +200,7 @@ source install/setup.bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
 ```
 
-如果某台机器临时仍想用虚拟环境，只覆盖启动参数即可：
+默认会使用 `/home/pawn/px4_ros_ws/.venv/bin/python` 运行 YOLO。也可以显式覆盖启动参数：
 
 ```bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py \

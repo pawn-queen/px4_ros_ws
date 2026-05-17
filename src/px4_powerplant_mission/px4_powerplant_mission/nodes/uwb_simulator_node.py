@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from px4_msgs.msg import VehicleLocalPosition
 from rclpy.node import Node
 from sensor_msgs.msg import Range
+from tf2_msgs.msg import TFMessage
 from visualization_msgs.msg import Marker, MarkerArray
 
 from px4_powerplant_mission.common.frames import ned_to_enu, normalize_quaternion_xyzw
@@ -27,12 +28,16 @@ class UwbSimulatorNode(Node):
         anchor_names = list(self.get_parameter("uwb_anchor_names").value)
         self.anchors = parse_anchor_list(anchor_values, anchor_names)
         self.rng = np.random.default_rng(int(self.get_parameter("random_seed").value))
-        self.gazebo_position_enu: np.ndarray | None = None
-        self.gazebo_orientation_xyzw: np.ndarray | None = None
-        self.gazebo_stamp_ns = 0
+        self.gazebo_odom_position_enu: np.ndarray | None = None
+        self.gazebo_odom_orientation_xyzw: np.ndarray | None = None
+        self.gazebo_odom_stamp_ns = 0
+        self.gazebo_pose_position_enu: np.ndarray | None = None
+        self.gazebo_pose_orientation_xyzw: np.ndarray | None = None
+        self.gazebo_pose_stamp_ns = 0
         self.px4_position_enu: np.ndarray | None = None
         self.px4_stamp_ns = 0
         self.last_solution_enu: np.ndarray | None = None
+        self._pose_name_fallback_warned = False
 
         self.pose_pub = self.create_publisher(
             PoseWithCovarianceStamped,
@@ -65,6 +70,12 @@ class UwbSimulatorNode(Node):
             self._truth_odom_callback,
             reliable_qos_profile(),
         )
+        self.create_subscription(
+            TFMessage,
+            self.get_parameter("truth_pose_topic").value,
+            self._truth_pose_callback,
+            reliable_qos_profile(),
+        )
 
         period = 1.0 / float(self.get_parameter("publish_rate_hz").value)
         self.timer = self.create_timer(period, self._timer_callback)
@@ -74,7 +85,10 @@ class UwbSimulatorNode(Node):
     def _declare_parameters(self) -> None:
         self.declare_parameter("truth_vehicle_local_position_topic", "/fmu/out/vehicle_local_position")
         self.declare_parameter("truth_odom_topic", "/model/x500_depth/odometry_with_covariance")
-        self.declare_parameter("truth_source", "gazebo_odometry")
+        self.declare_parameter("truth_pose_topic", "/world/powerplant/dynamic_pose/info")
+        self.declare_parameter("truth_model_name", "x500_depth_0")
+        self.declare_parameter("truth_pose_index", 0)
+        self.declare_parameter("truth_source", "gazebo_pose")
         self.declare_parameter("truth_timeout_s", 1.0)
         self.declare_parameter("publish_truth_orientation", True)
         self.declare_parameter("truth_yaw_variance_rad2", 0.02)
@@ -86,6 +100,7 @@ class UwbSimulatorNode(Node):
         self.declare_parameter("range_noise_std_m", 0.08)
         self.declare_parameter("range_min_m", 0.05)
         self.declare_parameter("range_max_m", 80.0)
+        self.declare_parameter("max_solution_rms_m", 0.75)
         self.declare_parameter("random_seed", 42)
         self.declare_parameter(
             "uwb_anchors",
@@ -102,7 +117,7 @@ class UwbSimulatorNode(Node):
             self.px4_stamp_ns = self.get_clock().now().nanoseconds
 
     def _truth_odom_callback(self, msg: Odometry) -> None:
-        self.gazebo_position_enu = np.array(
+        self.gazebo_odom_position_enu = np.array(
             [
                 msg.pose.pose.position.x,
                 msg.pose.pose.position.y,
@@ -120,8 +135,67 @@ class UwbSimulatorNode(Node):
             dtype=float,
         )
         if np.all(np.isfinite(q_xyzw)) and np.linalg.norm(q_xyzw) > 1e-6:
-            self.gazebo_orientation_xyzw = normalize_quaternion_xyzw(q_xyzw)
-        self.gazebo_stamp_ns = self.get_clock().now().nanoseconds
+            self.gazebo_odom_orientation_xyzw = normalize_quaternion_xyzw(q_xyzw)
+        self.gazebo_odom_stamp_ns = self.get_clock().now().nanoseconds
+
+    def _truth_pose_callback(self, msg: TFMessage) -> None:
+        transform = self._select_truth_pose_transform(msg)
+        if transform is None:
+            return
+
+        translation = transform.transform.translation
+        position = np.array([translation.x, translation.y, translation.z], dtype=float)
+        if not np.all(np.isfinite(position)):
+            return
+
+        rotation = transform.transform.rotation
+        q_xyzw = np.array([rotation.x, rotation.y, rotation.z, rotation.w], dtype=float)
+        if np.all(np.isfinite(q_xyzw)) and np.linalg.norm(q_xyzw) > 1e-6:
+            self.gazebo_pose_orientation_xyzw = normalize_quaternion_xyzw(q_xyzw)
+        self.gazebo_pose_position_enu = position
+        self.gazebo_pose_stamp_ns = self.get_clock().now().nanoseconds
+
+    def _select_truth_pose_transform(self, msg: TFMessage) -> TransformStamped | None:
+        if not msg.transforms:
+            self.get_logger().warn(
+                "Gazebo dynamic pose truth is empty",
+                throttle_duration_sec=5.0,
+            )
+            return None
+
+        model_name = str(self.get_parameter("truth_model_name").value).strip()
+        if model_name:
+            for transform in msg.transforms:
+                if self._matches_truth_model(transform.child_frame_id, model_name):
+                    return transform
+                if self._matches_truth_model(transform.header.frame_id, model_name):
+                    return transform
+
+            if not self._pose_name_fallback_warned:
+                self.get_logger().info(
+                    "Gazebo dynamic pose bridge did not expose model frame names; "
+                    f"using truth_pose_index={self.get_parameter('truth_pose_index').value}",
+                )
+                self._pose_name_fallback_warned = True
+
+        pose_index = int(self.get_parameter("truth_pose_index").value)
+        if 0 <= pose_index < len(msg.transforms):
+            return msg.transforms[pose_index]
+
+        self.get_logger().warn(
+            f"truth_pose_index={pose_index} is outside dynamic pose message with "
+            f"{len(msg.transforms)} transforms",
+            throttle_duration_sec=5.0,
+        )
+        return None
+
+    def _matches_truth_model(self, frame_name: str, model_name: str) -> bool:
+        if not frame_name:
+            return False
+        normalized = frame_name.strip()
+        if normalized == model_name:
+            return True
+        return normalized.endswith(f"::{model_name}") or normalized.endswith(f"/{model_name}")
 
     def _timer_callback(self) -> None:
         truth = self._current_truth()
@@ -143,6 +217,13 @@ class UwbSimulatorNode(Node):
             solution, rms = trilaterate(anchor_points, ranges, initial_enu=initial)
         except ValueError as exc:
             self.get_logger().warn(f"UWB solve skipped: {exc}")
+            return
+        max_rms = float(self.get_parameter("max_solution_rms_m").value)
+        if max_rms > 0.0 and rms > max_rms:
+            self.get_logger().warn(
+                f"UWB solve skipped: residual RMS {rms:.2f} m > {max_rms:.2f} m",
+                throttle_duration_sec=2.0,
+            )
             return
         self.last_solution_enu = solution
         self._publish_pose(solution, rms, truth_orientation_xyzw)
@@ -188,27 +269,40 @@ class UwbSimulatorNode(Node):
 
     def _current_truth(self) -> tuple[np.ndarray, np.ndarray | None] | None:
         source = str(self.get_parameter("truth_source").value).lower()
-        if source in ("gazebo", "gazebo_odometry", "gz", "gz_odometry"):
-            return self._gazebo_truth()
+        if source in ("gazebo", "gazebo_pose", "gz", "gz_pose", "dynamic_pose"):
+            return self._gazebo_pose_truth()
+        if source in ("gazebo_odometry", "gz_odometry"):
+            return self._gazebo_odom_truth()
         if source in ("px4", "px4_local_position", "vehicle_local_position"):
             return self._px4_truth()
         if source == "auto":
-            return self._gazebo_truth() or self._px4_truth()
+            return self._gazebo_pose_truth() or self._gazebo_odom_truth() or self._px4_truth()
         self.get_logger().warn(
-            f"unknown truth_source '{source}', expected gazebo_odometry, px4_local_position, or auto",
+            f"unknown truth_source '{source}', expected gazebo_pose, gazebo_odometry, "
+            "px4_local_position, or auto",
             throttle_duration_sec=5.0,
         )
         return None
 
-    def _gazebo_truth(self) -> tuple[np.ndarray, np.ndarray | None] | None:
-        if self.gazebo_position_enu is None or self._is_stale(self.gazebo_stamp_ns):
+    def _gazebo_pose_truth(self) -> tuple[np.ndarray, np.ndarray | None] | None:
+        if self.gazebo_pose_position_enu is None or self._is_stale(self.gazebo_pose_stamp_ns):
+            self.get_logger().warn(
+                "waiting for Gazebo dynamic pose truth; check the ros_gz bridge for "
+                f"{self.get_parameter('truth_pose_topic').value}",
+                throttle_duration_sec=5.0,
+            )
+            return None
+        return self.gazebo_pose_position_enu, self.gazebo_pose_orientation_xyzw
+
+    def _gazebo_odom_truth(self) -> tuple[np.ndarray, np.ndarray | None] | None:
+        if self.gazebo_odom_position_enu is None or self._is_stale(self.gazebo_odom_stamp_ns):
             self.get_logger().warn(
                 "waiting for Gazebo odometry truth; check the ros_gz bridge for "
                 f"{self.get_parameter('truth_odom_topic').value}",
                 throttle_duration_sec=5.0,
             )
             return None
-        return self.gazebo_position_enu, self.gazebo_orientation_xyzw
+        return self.gazebo_odom_position_enu, self.gazebo_odom_orientation_xyzw
 
     def _px4_truth(self) -> tuple[np.ndarray, np.ndarray | None] | None:
         if self.px4_position_enu is None or self._is_stale(self.px4_stamp_ns):

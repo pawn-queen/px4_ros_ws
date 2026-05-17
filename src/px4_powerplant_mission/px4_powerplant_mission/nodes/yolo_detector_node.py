@@ -72,8 +72,10 @@ class YoloDetectorNode(Node):
             from ultralytics import YOLO  # type: ignore
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(
-                "ultralytics is not importable. Install torch/ultralytics in this "
-                f"Python environment, or set ultralytics_repo to a local checkout: {exc}"
+                "ultralytics is not importable in "
+                f"{sys.executable}. Install torch/ultralytics in this Python "
+                "environment, pass yolo_python:=/path/to/python, or set "
+                f"ultralytics_repo to a local checkout: {exc}"
             )
             return
 
