@@ -148,7 +148,7 @@ ros2 topic echo /powerplant/control/mission_status std_msgs/msg/String --once --
 
 ## 可视化窗口
 
-建议先关掉卡住的 ROS2 daemon，后续窗口命令都可以复用同一个终端环境：
+建议先关掉卡住的 ROS2 daemon，后续诊断命令都可以复用同一个终端环境：
 
 ```bash
 cd /home/pawn/px4_ros_ws
@@ -158,23 +158,91 @@ ros2 daemon stop
 export ROS2CLI_ENABLE_DAEMON=0
 ```
 
-### 栅格地图和规划路径
+### 启动顺序
 
-用 RViz2 看避障栅格、A* 规划路径、UWB anchor 和飞机位姿：
+RViz 只负责显示，不会主动创建地图或路径。先按正常流程启动 PX4/Gazebo 和任务栈。若需要看到
+`/powerplant/control/planned_path`，任务栈必须带 `use_control:=true`，因为该 topic 由
+`offboard_mission_node.py` 发布；仅运行默认 `ros2 launch px4_powerplant_mission powerplant_system.launch.py`
+时不会启动飞控节点，也就不会有路径 topic。
+
+```bash
+cd /home/pawn/px4_ros_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
+```
+
+`use_control:=true` 只启动 Offboard 节点；默认 `auto_start=false`，不会自动解锁和起飞，仍需手动调用
+`/start_powerplant_mission`。
+
+如果图像、深度图或雷达 topic 没有出现，再启动 Gazebo sensor bridge：
+
+```bash
+cd /home/pawn/px4_ros_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py
+```
+
+### RViz 一键窗口
+
+推荐直接用本包的 RViz 配置启动，它已经预置栅格、路径、定位、UWB anchor 和点云显示：
+
+```bash
+cd /home/pawn/px4_ros_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch px4_powerplant_mission visualization.launch.py
+```
+
+RViz2 中 `Fixed Frame` 应为 `map`。预置显示项包括：
+
+- `Map`：topic 选 `/powerplant/map/occupancy_grid`
+- `Path`：topic 选 `/powerplant/control/planned_path`
+- `Odometry`：topic 选 `/powerplant/localization/odom`
+- `PointCloud2`：topic 选 `/powerplant/map/occupied_voxels`
+- `MarkerArray`：topic 选 `/uwb/anchors`
+- `MarkerArray`：topic 选 `/powerplant/map/voxel_markers`
+
+也可以手动启动空 RViz：
 
 ```bash
 rviz2
 ```
 
-RViz2 中把 `Fixed Frame` 设为 `map`，然后添加这些显示项：
+然后把 `Fixed Frame` 设为 `map`，按上面的 topic 添加显示项。
 
-- `Map`：topic 选 `/powerplant/map/occupancy_grid`
-- `Path`：topic 选 `/powerplant/control/planned_path`
-- `Odometry`：topic 选 `/powerplant/localization/odom`
-- `MarkerArray`：topic 选 `/uwb/anchors`
-- `MarkerArray`：topic 选 `/powerplant/map/voxel_markers`
+### 路径 Topic 找不到
 
-如果 `/powerplant/control/planned_path` 还没有显示，先调用 `/start_powerplant_mission`，因为路径会在任务进入搜索、目标巡检或返航并生成导航目标时发布。
+如果 RViz 里找不到 `/powerplant/control/planned_path`，优先检查是否启动了 `use_control:=true`：
+
+```bash
+ros2 node list --no-daemon --spin-time 10 | grep powerplant_offboard_mission
+ros2 topic list --no-daemon | grep planned_path
+```
+
+正常应能看到：
+
+```text
+/powerplant_offboard_mission
+/powerplant/control/planned_path
+```
+
+如果看不到 `/powerplant_offboard_mission`，重启任务栈并加上：
+
+```bash
+ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
+```
+
+如果 node 存在但 topic 还没显示，读取一次消息：
+
+```bash
+ros2 topic echo /powerplant/control/planned_path nav_msgs/msg/Path --once --timeout 5 --spin-time 10 --no-daemon
+```
+
+如果能 echo 到消息但 RViz 没有线，检查 RViz 的 `Fixed Frame` 是否为 `map`，`Path` display 的
+topic 是否手动填成 `/powerplant/control/planned_path`。路径 topic 会周期性重发，打开 RViz
+后不需要重新启动任务。
 
 ### 相机和深度图
 
@@ -212,18 +280,27 @@ sudo apt install ros-jazzy-rviz2 ros-jazzy-rqt-image-view ros-jazzy-image-view
 
 ### 点云
 
-用 RViz2 查看建图后的点云：
+点云显示依赖三件事：定位 `/powerplant/localization/odom` 正常、`voxel_mapper_node.py` 正在运行、
+至少一个建图传感器 topic 正常发布。先检查：
 
 ```bash
-rviz2
+ros2 node list --no-daemon --spin-time 10 | grep powerplant_voxel_mapper
+ros2 topic echo /powerplant/localization/odom nav_msgs/msg/Odometry --once --timeout 5 --spin-time 10 --no-daemon
+ros2 topic echo /depth_camera sensor_msgs/msg/Image --once --timeout 5 --spin-time 10 --no-daemon
+ros2 topic echo /mapping_lidar sensor_msgs/msg/LaserScan --once --timeout 5 --spin-time 10 --no-daemon
+ros2 topic echo /powerplant/map/occupied_voxels sensor_msgs/msg/PointCloud2 --once --timeout 5 --spin-time 10 --no-arr --no-daemon
 ```
 
-RViz2 中 `Fixed Frame` 设为 `map`，添加：
+`/depth_camera` 和 `/mapping_lidar` 只要有一个持续有数据，融合点云就会逐渐出现。若这两个 topic
+都没有数据，先启动 `gz_sensor_bridge.launch.py`，或用 `gz topic -l | grep -E 'camera|depth|scan|points'`
+确认 Gazebo 侧真实 topic 名称。
+
+用 RViz2 查看建图后的点云时，`Fixed Frame` 设为 `map`，添加：
 
 - `PointCloud2`：topic 选 `/powerplant/map/occupied_voxels`
 - `MarkerArray`：topic 选 `/powerplant/map/voxel_markers`
 
-如果 Gazebo 原始点云也已经桥接到 ROS，可以再添加 `PointCloud2` topic `/points`。当前 `voxel_mapper_node.py` 会把深度图、`mapping_lidar` 和 `/points` 融合后发布 `/powerplant/map/occupied_voxels`，所以通常看这个融合后的 topic 更直观。
+建议 `PointCloud2` 的 `Style` 设为 `Points`，`Size (m)` 设为 `0.05~0.12`。如果 Gazebo 原始点云也已经桥接到 ROS，可以再添加 `PointCloud2` topic `/points`。当前 `voxel_mapper_node.py` 会把深度图、`mapping_lidar` 和 `/points` 融合后发布 `/powerplant/map/occupied_voxels`，所以通常看这个融合后的 topic 更直观。
 
 ## Gazebo 相机/深度图桥接
 
