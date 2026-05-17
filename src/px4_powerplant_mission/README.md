@@ -139,12 +139,91 @@ ros2 topic echo /powerplant/control/mission_status std_msgs/msg/String --once --
 
 1. `START`：记录当前 ENU 位置为 home，重置目标、航点、照片计数和状态。
 2. `TAKING_OFF`：发布 PX4 Offboard 位置 setpoint，起飞到 `takeoff_height_m`。
-3. `GLOBAL_SEARCH`：沿 `mission_waypoints_enu` 全局搜索；默认航点位于 Gazebo 正向任务区 `x/y=0..24 m`、高度 `12 m`，避开电厂模型的低空碰撞区域。YOLO 在 `/camera` 上检测 `target_class_name`，飞控节点结合 `/depth_camera` 和 `/depth_camera/camera_info` 把 bbox 中心深度反投影成 ENU 三维坐标，并发布 `/powerplant/perception/target_position`。
+3. `GLOBAL_SEARCH`：沿 `mission_waypoints_enu` 全局搜索；默认航点覆盖 Gazebo 搜索矩形 `x=-15..24 m, y=0..40 m`、高度 `5 m`，并额外经过 `(0, 40, 5)` 后回到 `(0, 0, 5)`。YOLO 在 `/camera` 上检测 `target_class_name`，飞控节点结合 `/depth_camera` 和 `/depth_camera/camera_info` 把 bbox 中心深度反投影成 ENU 三维坐标，并发布 `/powerplant/perception/target_position`。
 4. `TARGETING_CYCLE`：围绕目标生成 `inspection_orbit_points` 个巡检拍照点，机头持续朝向目标；到达航点且 yaw 误差小于 `yaw_acceptance_rad` 后保存照片到 `inspection_photo_dir`，并在 `/powerplant/control/inspection_events` 发布拍照事件。
 5. `RETURN_HOME`：拍照完成或搜索超时后规划回 home。
 6. `LANDING` / `COMPLETE`：发送 PX4 land command，落地或超时后标记任务完成。
 
-避障路径规划使用 `voxel_mapper_node.py` 输出的 `/powerplant/map/occupancy_grid`。该地图由深度相机、`mapping_lidar` 雷达和点云融合成体素/占据栅格，再由 `offboard_mission_node.py` 调用 2D A* 规划全局搜索、目标靠近和返航路径；如果当前 occupancy grid 还不可用，节点会退化为直连航点。
+避障路径规划使用 `voxel_mapper_node.py` 输出的 `/powerplant/map/occupancy_grid`。该地图由深度相机、`mapping_lidar` 雷达和点云融合成体素/占据栅格，再由 `offboard_mission_node.py` 调用 2D A* 规划全局搜索、目标靠近和返航路径；如果当前 occupancy grid 还不可用，节点会退化为直连航点。当前规划后的可视化路径会发布到 `/powerplant/control/planned_path`。
+
+## 可视化窗口
+
+建议先关掉卡住的 ROS2 daemon，后续窗口命令都可以复用同一个终端环境：
+
+```bash
+cd /home/pawn/px4_ros_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 daemon stop
+export ROS2CLI_ENABLE_DAEMON=0
+```
+
+### 栅格地图和规划路径
+
+用 RViz2 看避障栅格、A* 规划路径、UWB anchor 和飞机位姿：
+
+```bash
+rviz2
+```
+
+RViz2 中把 `Fixed Frame` 设为 `map`，然后添加这些显示项：
+
+- `Map`：topic 选 `/powerplant/map/occupancy_grid`
+- `Path`：topic 选 `/powerplant/control/planned_path`
+- `Odometry`：topic 选 `/powerplant/localization/odom`
+- `MarkerArray`：topic 选 `/uwb/anchors`
+- `MarkerArray`：topic 选 `/powerplant/map/voxel_markers`
+
+如果 `/powerplant/control/planned_path` 还没有显示，先调用 `/start_powerplant_mission`，因为路径会在任务进入搜索、目标巡检或返航并生成导航目标时发布。
+
+### 相机和深度图
+
+先确认图像 topic 在发布：
+
+```bash
+ros2 topic list --no-daemon | grep -E 'camera|depth|annotated'
+```
+
+用 `rqt_image_view` 打开窗口后在下拉框选择 topic：
+
+```bash
+ros2 run rqt_image_view rqt_image_view
+```
+
+常用 topic：
+
+- `/camera`：RGB 相机原图
+- `/depth_camera`：深度图
+- `/powerplant/perception/yolo_annotated`：YOLO 标注图，只有 `use_yolo:=true` 且 `publish_annotated:=true` 时发布
+
+也可以直接用 `image_view` 打开单个窗口：
+
+```bash
+ros2 run image_view image_view --ros-args -r image:=/camera
+ros2 run image_view image_view --ros-args -r image:=/depth_camera
+ros2 run image_view image_view --ros-args -r image:=/powerplant/perception/yolo_annotated
+```
+
+如果这些命令不存在，安装对应工具包：
+
+```bash
+sudo apt install ros-jazzy-rviz2 ros-jazzy-rqt-image-view ros-jazzy-image-view
+```
+
+### 点云
+
+用 RViz2 查看建图后的点云：
+
+```bash
+rviz2
+```
+
+RViz2 中 `Fixed Frame` 设为 `map`，添加：
+
+- `PointCloud2`：topic 选 `/powerplant/map/occupied_voxels`
+- `MarkerArray`：topic 选 `/powerplant/map/voxel_markers`
+
+如果 Gazebo 原始点云也已经桥接到 ROS，可以再添加 `PointCloud2` topic `/points`。当前 `voxel_mapper_node.py` 会把深度图、`mapping_lidar` 和 `/points` 融合后发布 `/powerplant/map/occupied_voxels`，所以通常看这个融合后的 topic 更直观。
 
 ## Gazebo 相机/深度图桥接
 
@@ -177,6 +256,7 @@ ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py \
 - `/uwb/pose`、`/uwb/range/<anchor>`：仿真 UWB 结果
 - `/powerplant/map/occupied_voxels`：3D 体素点云
 - `/powerplant/map/occupancy_grid`：给路径规划使用的 2D 占据栅格
+- `/powerplant/control/planned_path`：当前任务阶段的规划路径，`nav_msgs/Path`
 - `/powerplant/perception/yolo_detections`：YOLO JSON 检测结果
 - `/powerplant/perception/target_position`：YOLO + 深度相机反投影得到的目标 ENU 三维坐标，`geometry_msgs/PointStamped`
 - `/powerplant/control/mission_status`：任务状态机 JSON，包括 `phase`、航点、照片计数、目标坐标

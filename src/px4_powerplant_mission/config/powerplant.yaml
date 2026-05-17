@@ -75,9 +75,9 @@ powerplant_uwb_simulator:
     range_max_m: 80.0
     max_solution_rms_m: 0.75
     random_seed: 42
-    # ENU meters: x=east, y=north, z=up. These anchors bound the
-    # power_plant_env include at world pose (10, 10, 0) and the 0..24 m route.
-    uwb_anchors: [-10.0, -10.0, 6.0, 34.0, -10.0, 6.0, 34.0, 34.0, 6.0, -10.0, 34.0, 6.0, 12.0, 12.0, 26.0]
+    # ENU meters: x=east, y=north, z=up. These anchors bound the expanded
+    # search rectangle x=-15..24 m, y=0..40 m with margin.
+    uwb_anchors: [-25.0, -10.0, 6.0, 34.0, -10.0, 6.0, 34.0, 50.0, 6.0, -25.0, 50.0, 6.0, 4.5, 20.0, 26.0]
     uwb_anchor_names: [anchor_0, anchor_1, anchor_2, anchor_3, anchor_4]
 
 powerplant_voxel_mapper:
@@ -126,6 +126,7 @@ powerplant_offboard_mission:
   ros__parameters:
     localized_odom_topic: /powerplant/localization/odom
     occupancy_grid_topic: /powerplant/map/occupancy_grid
+    planned_path_topic: /powerplant/control/planned_path
     yolo_detections_topic: /powerplant/perception/yolo_detections
     target_position_topic: /powerplant/perception/target_position
     inspection_event_topic: /powerplant/control/inspection_events
@@ -139,6 +140,7 @@ powerplant_offboard_mission:
     trajectory_setpoint_topic: /fmu/in/trajectory_setpoint
     vehicle_command_topic: /fmu/in/vehicle_command
     mission_status_topic: /powerplant/control/mission_status
+    map_frame: map
     auto_start: false
     arm_on_start: true
     command_retry_interval_s: 1.0
@@ -184,12 +186,14 @@ powerplant_offboard_mission:
     max_depth_age_s: 1.0
     land_complete_height_m: 0.25
     land_complete_timeout_s: 20.0
-    # ENU waypoints in Gazebo world coordinates. Keep x/y positive so the
-    # aircraft flies from the land zone toward the power plant task area.
+    # ENU waypoints in Gazebo world coordinates. This perimeter searches the
+    # expanded rectangle x=-15..24 m, y=0..40 m at inspection altitude.
     mission_waypoints_enu: [
                 0.0, 0.0, 5.0,
+                -15.0, 0.0, 5.0,
+                -15.0, 40.0, 5.0,
+                24.0, 40.0, 5.0,
                 24.0, 0.0, 5.0,
-                24.0, 24.0, 5.0,
-                0.0, 24.0, 5.0,
+                0.0, 40.0, 5.0,
                 0.0, 0.0, 5.0,
             ]

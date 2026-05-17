@@ -11,8 +11,8 @@ from typing import Any
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
-from geometry_msgs.msg import PointStamped
-from nav_msgs.msg import OccupancyGrid, Odometry
+from geometry_msgs.msg import PointStamped, PoseStamped
+from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
 from px4_msgs.msg import (
     FailsafeFlags,
     OffboardControlMode,
@@ -142,6 +142,11 @@ class OffboardMissionNode(Node):
             self.get_parameter("target_position_topic").value,
             reliable_qos_profile(),
         )
+        self.planned_path_pub = self.create_publisher(
+            NavPath,
+            self.get_parameter("planned_path_topic").value,
+            reliable_qos_profile(),
+        )
 
         self.create_subscription(
             Odometry,
@@ -206,6 +211,7 @@ class OffboardMissionNode(Node):
     def _declare_parameters(self) -> None:
         self.declare_parameter("localized_odom_topic", "/powerplant/localization/odom")
         self.declare_parameter("occupancy_grid_topic", "/powerplant/map/occupancy_grid")
+        self.declare_parameter("planned_path_topic", "/powerplant/control/planned_path")
         self.declare_parameter("yolo_detections_topic", "/powerplant/perception/yolo_detections")
         self.declare_parameter("target_position_topic", "/powerplant/perception/target_position")
         self.declare_parameter("inspection_event_topic", "/powerplant/control/inspection_events")
@@ -219,6 +225,7 @@ class OffboardMissionNode(Node):
         self.declare_parameter("trajectory_setpoint_topic", "/fmu/in/trajectory_setpoint")
         self.declare_parameter("vehicle_command_topic", "/fmu/in/vehicle_command")
         self.declare_parameter("mission_status_topic", "/powerplant/control/mission_status")
+        self.declare_parameter("map_frame", "map")
         self.declare_parameter("auto_start", False)
         self.declare_parameter("arm_on_start", True)
         self.declare_parameter("command_retry_interval_s", 1.0)
@@ -268,9 +275,11 @@ class OffboardMissionNode(Node):
             "mission_waypoints_enu",
             [
                 0.0, 0.0, 5.0,
+                -15.0, 0.0, 5.0,
+                -15.0, 40.0, 5.0,
+                24.0, 40.0, 5.0,
                 24.0, 0.0, 5.0,
-                24.0, 24.0, 5.0,
-                0.0, 24.0, 5.0,
+                0.0, 40.0, 5.0,
                 0.0, 0.0, 5.0,
             ],
         )
@@ -814,6 +823,21 @@ class OffboardMissionNode(Node):
             self.active_waypoints = [self.current_position_enu.copy()]
             self.goal_waypoint_indices = {0}
         self.waypoint_index = 0
+        self._publish_planned_path()
+
+    def _publish_planned_path(self) -> None:
+        msg = NavPath()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = str(self.get_parameter("map_frame").value)
+        for waypoint in self.active_waypoints:
+            pose = PoseStamped()
+            pose.header = msg.header
+            pose.pose.position.x = float(waypoint[0])
+            pose.pose.position.y = float(waypoint[1])
+            pose.pose.position.z = float(waypoint[2])
+            pose.pose.orientation.w = 1.0
+            msg.poses.append(pose)
+        self.planned_path_pub.publish(msg)
 
     def _plan_waypoint_sequence(self, goals: list[np.ndarray]) -> tuple[list[np.ndarray], set[int]]:
         if self.current_position_enu is None:
@@ -1120,6 +1144,7 @@ class OffboardMissionNode(Node):
             }
         if self.return_reason:
             payload["return_reason"] = self.return_reason
+        self._publish_planned_path()
         self.status_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
 
     def _publish_event(self, event: str, fields: dict[str, Any]) -> None:
