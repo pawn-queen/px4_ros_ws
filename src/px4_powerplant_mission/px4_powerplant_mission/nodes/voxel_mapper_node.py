@@ -119,7 +119,10 @@ class VoxelMapperNode(Node):
         self.declare_parameter("pointcloud_frame", "base_link")
         self.declare_parameter("max_publish_points", 60000)
         self.declare_parameter("grid_z_min_m", 0.3)
-        self.declare_parameter("grid_z_max_m", 5.5)
+        self.declare_parameter("grid_z_max_m", 6.0)
+        self.declare_parameter("use_flight_height_grid_band", True)
+        self.declare_parameter("grid_z_band_below_m", 0.8)
+        self.declare_parameter("grid_z_band_above_m", 0.8)
         self.declare_parameter("startup_gate_enabled", True)
         self.declare_parameter("startup_gate_min_height_m", 2.0)
         self.declare_parameter("startup_gate_max_tilt_rad", 0.35)
@@ -292,9 +295,10 @@ class VoxelMapperNode(Node):
         return True
 
     def _publish_occupancy_grid(self, header: Header) -> None:
+        z_min, z_max = self._occupancy_grid_z_bounds()
         result = self.grid.to_occupancy_grid_2d(
-            float(self.get_parameter("grid_z_min_m").value),
-            float(self.get_parameter("grid_z_max_m").value),
+            z_min,
+            z_max,
             bounds_xy=self._fixed_grid_bounds(),
         )
         if result is None:
@@ -310,6 +314,20 @@ class VoxelMapperNode(Node):
         msg.info.origin.orientation.w = 1.0
         msg.data = grid_array.reshape(-1).astype(np.int8).tolist()
         self.grid_pub.publish(msg)
+
+    def _occupancy_grid_z_bounds(self) -> tuple[float, float]:
+        configured_min = float(self.get_parameter("grid_z_min_m").value)
+        configured_max = float(self.get_parameter("grid_z_max_m").value)
+        if not bool(self.get_parameter("use_flight_height_grid_band").value) or not self.have_pose:
+            return configured_min, configured_max
+
+        below = max(0.0, float(self.get_parameter("grid_z_band_below_m").value))
+        above = max(0.0, float(self.get_parameter("grid_z_band_above_m").value))
+        z_min = max(configured_min, float(self.position[2]) - below)
+        z_max = min(configured_max, float(self.position[2]) + above)
+        if z_max <= z_min:
+            return configured_min, configured_max
+        return z_min, z_max
 
     def _fixed_grid_bounds(self) -> tuple[float, float, float, float] | None:
         if not bool(self.get_parameter("use_fixed_grid_bounds").value):

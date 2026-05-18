@@ -111,7 +111,10 @@ powerplant_voxel_mapper:
     pointcloud_frame: base_link
     max_publish_points: 60000
     grid_z_min_m: 0.3
-    grid_z_max_m: 5.5
+    grid_z_max_m: 6.0
+    use_flight_height_grid_band: true
+    grid_z_band_below_m: 0.8
+    grid_z_band_above_m: 0.8
     startup_gate_enabled: true
     startup_gate_min_height_m: 2.0
     startup_gate_max_tilt_rad: 0.35
@@ -177,7 +180,7 @@ powerplant_offboard_mission:
     use_occupancy_grid_planner: true
     planner_inflation_radius_m: 0.6
     planner_unknown_policy: cost
-    planner_unknown_cost: 4.0
+    planner_unknown_cost: 2.0
     path_waypoint_stride: 4
     avoidance_startup_gate_enabled: true
     avoidance_startup_min_height_m: 2.0
@@ -186,7 +189,7 @@ powerplant_offboard_mission:
     safety_stop_enabled: true
     safety_stop_distance_m: 1.2
     safety_stop_width_m: 0.5
-    safety_stop_treat_unknown_as_blocked: true
+    safety_stop_treat_unknown_as_blocked: false
     target_class_name: gas_cylinder
     min_target_confidence: 0.35
     target_memory_s: 8.0
