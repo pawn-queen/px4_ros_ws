@@ -83,9 +83,15 @@ def plan_astar(
     goal_xy: Iterable[float],
     obstacle_threshold: int = 50,
     inflation_radius_m: float = 0.4,
+    unknown_policy: str = "free",
+    unknown_cost: float = 4.0,
 ) -> list[tuple[float, float]]:
     """Plan a 2D path. Returns an empty list when no valid path exists."""
 
+    unknown_policy = unknown_policy.lower()
+    if unknown_policy not in ("free", "cost", "occupied"):
+        unknown_policy = "free"
+    unknown_cost = max(1.0, float(unknown_cost))
     radius_cells = int(math.ceil(inflation_radius_m / max(info.resolution, 1e-6)))
     costmap = inflate_obstacles(grid, radius_cells)
     start = world_to_grid(float(start_xy[0]), float(start_xy[1]), info)
@@ -97,7 +103,18 @@ def plan_astar(
 
     def traversable(cell: tuple[int, int]) -> bool:
         x, y = cell
-        return costmap[y, x] < obstacle_threshold
+        value = int(costmap[y, x])
+        if value >= obstacle_threshold:
+            return False
+        if value < 0 and unknown_policy == "occupied":
+            return False
+        return True
+
+    def traversal_cost(cell: tuple[int, int], step_cost: float) -> float:
+        x, y = cell
+        if int(costmap[y, x]) < 0 and unknown_policy == "cost":
+            return step_cost * unknown_cost
+        return step_cost
 
     if not in_bounds(start) or not in_bounds(goal):
         return []
@@ -119,7 +136,7 @@ def plan_astar(
             nxt = (current[0] + dx, current[1] + dy)
             if not in_bounds(nxt) or not traversable(nxt):
                 continue
-            new_cost = cost_so_far[current] + step_cost
+            new_cost = cost_so_far[current] + traversal_cost(nxt, step_cost)
             if nxt not in cost_so_far or new_cost < cost_so_far[nxt]:
                 cost_so_far[nxt] = new_cost
                 priority = new_cost + _heuristic(nxt, goal)
@@ -127,4 +144,3 @@ def plan_astar(
                 came_from[nxt] = current
 
     return []
-

@@ -38,7 +38,7 @@ from px4_powerplant_mission.common.qos import (
     reliable_qos_profile,
     sensor_qos_profile,
 )
-from px4_powerplant_mission.path_planning.grid_astar import GridInfo, plan_astar
+from px4_powerplant_mission.path_planning.grid_astar import GridInfo, plan_astar, world_to_grid
 
 
 PHASE_IDLE = "IDLE"
@@ -93,10 +93,17 @@ class OffboardMissionNode(Node):
         self.base_waypoints = self._parse_waypoints(self.get_parameter("mission_waypoints_enu").value)
         self.active_waypoints = list(self.base_waypoints)
         self.goal_waypoint_indices: set[int] = set()
+        self.goal_waypoint_ids: dict[int, int] = {}
+        self.navigation_goals = list(self.base_waypoints)
+        self.navigation_goal_ids = list(range(len(self.navigation_goals)))
         self.waypoint_index = 0
 
         self.grid: np.ndarray | None = None
         self.grid_info: GridInfo | None = None
+        self.grid_stamp_ns = 0
+        self.last_replan_ns = 0
+        self.safety_stop_active = False
+        self.safety_stop_reason = ""
         self.latest_depth_m: np.ndarray | None = None
         self.latest_depth_stamp_ns = 0
         self.depth_camera_info: CameraInfo | None = None
@@ -247,7 +254,14 @@ class OffboardMissionNode(Node):
         self.declare_parameter("max_yaw_rate_radps", 0.6)
         self.declare_parameter("use_occupancy_grid_planner", True)
         self.declare_parameter("planner_inflation_radius_m", 0.6)
+        self.declare_parameter("planner_unknown_policy", "cost")
+        self.declare_parameter("planner_unknown_cost", 4.0)
         self.declare_parameter("path_waypoint_stride", 4)
+        self.declare_parameter("replan_interval_s", 2.0)
+        self.declare_parameter("safety_stop_enabled", True)
+        self.declare_parameter("safety_stop_distance_m", 1.2)
+        self.declare_parameter("safety_stop_width_m", 0.5)
+        self.declare_parameter("safety_stop_treat_unknown_as_blocked", True)
         self.declare_parameter("target_class_name", "gas_cylinder")
         self.declare_parameter("min_target_confidence", 0.35)
         self.declare_parameter("target_memory_s", 8.0)
@@ -339,7 +353,6 @@ class OffboardMissionNode(Node):
 
     def _occupancy_grid_callback(self, msg: OccupancyGrid) -> None:
         data = np.asarray(msg.data, dtype=np.int16).reshape(msg.info.height, msg.info.width)
-        data[data < 0] = 0
         self.grid = data.astype(np.int8)
         self.grid_info = GridInfo(
             origin_x=msg.info.origin.position.x,
@@ -348,6 +361,7 @@ class OffboardMissionNode(Node):
             width=msg.info.width,
             height=msg.info.height,
         )
+        self.grid_stamp_ns = self.get_clock().now().nanoseconds
 
     def _depth_callback(self, msg: Image) -> None:
         try:
@@ -500,6 +514,7 @@ class OffboardMissionNode(Node):
         self.waypoint_index = 0
         self.active_waypoints = []
         self.goal_waypoint_indices.clear()
+        self.goal_waypoint_ids.clear()
         self.target_observation = None
         self.inspection_captured_indices.clear()
         self.inspection_photo_count = 0
@@ -509,6 +524,9 @@ class OffboardMissionNode(Node):
         self._reset_commanded_setpoint()
         self.last_offboard_request_ns = 0
         self.last_arm_request_ns = 0
+        self.last_replan_ns = 0
+        self.safety_stop_active = False
+        self.safety_stop_reason = ""
         self.search_loop_count = 0
         self.mission_started_ns = self.get_clock().now().nanoseconds
         response.success = True
@@ -543,7 +561,19 @@ class OffboardMissionNode(Node):
                 return
             self._initialize_mission()
 
+        self._maybe_replan_path()
         nav_target, nav_yaw = self._select_target_and_yaw()
+        safety_stop, safety_reason = self._safety_stop_required(nav_target)
+        if safety_stop:
+            self._set_safety_stop(True, safety_reason)
+            hold_target = self.current_position_enu.copy()
+            setpoint, setpoint_yaw = self._slew_setpoint(hold_target, self.current_yaw_enu)
+            self._publish_position_setpoint(setpoint, setpoint_yaw)
+            self._maybe_engage_offboard()
+            self._publish_status(nav_target, setpoint)
+            return
+        self._set_safety_stop(False, "")
+
         setpoint, setpoint_yaw = self._slew_setpoint(nav_target, nav_yaw)
         self._publish_position_setpoint(setpoint, setpoint_yaw)
         self._maybe_engage_offboard()
@@ -560,6 +590,7 @@ class OffboardMissionNode(Node):
         self.search_loop_count = 0
         self.active_waypoints = []
         self.goal_waypoint_indices.clear()
+        self.goal_waypoint_ids.clear()
         self.waypoint_index = 0
         self._publish_event("mission_initialized", {"home_enu": self._round_list(self.home_position_enu)})
 
@@ -655,6 +686,122 @@ class OffboardMissionNode(Node):
         if not reasons:
             reasons.append("PX4 preflight checks not passed")
         return "waiting for PX4 preflight checks: " + ", ".join(reasons)
+
+    def _maybe_replan_path(self) -> None:
+        if self.phase not in (PHASE_GLOBAL_SEARCH, PHASE_TARGETING_CYCLE, PHASE_RETURN_HOME):
+            return
+        if (
+            not bool(self.get_parameter("use_occupancy_grid_planner").value)
+            or self.grid is None
+            or self.grid_info is None
+        ):
+            return
+
+        interval_s = float(self.get_parameter("replan_interval_s").value)
+        if interval_s <= 0.0:
+            return
+        now_ns = self.get_clock().now().nanoseconds
+        if self.last_replan_ns and (now_ns - self.last_replan_ns) * 1e-9 < interval_s:
+            return
+
+        goals, goal_ids = self._remaining_navigation_goals()
+        if not goals:
+            return
+        previous_count = len(self.active_waypoints)
+        self._set_navigation_goals(goals, goal_ids)
+        self._publish_event(
+            "path_replanned",
+            {
+                "previous_waypoints": previous_count,
+                "new_waypoints": len(self.active_waypoints),
+                "remaining_goals": len(goals),
+            },
+        )
+
+    def _remaining_navigation_goals(self) -> tuple[list[np.ndarray], list[int]]:
+        if not self.active_waypoints:
+            return [goal.copy() for goal in self.navigation_goals], list(self.navigation_goal_ids)
+
+        goals: list[np.ndarray] = []
+        goal_ids: list[int] = []
+        for index in sorted(self.goal_waypoint_indices):
+            if index < self.waypoint_index or index >= len(self.active_waypoints):
+                continue
+            goal_id = self.goal_waypoint_ids.get(index, index)
+            if self.phase == PHASE_TARGETING_CYCLE and goal_id in self.inspection_captured_indices:
+                continue
+            goals.append(self.active_waypoints[index].copy())
+            goal_ids.append(goal_id)
+        return goals, goal_ids
+
+    def _safety_stop_required(self, target_enu: np.ndarray) -> tuple[bool, str]:
+        if not bool(self.get_parameter("safety_stop_enabled").value):
+            return False, ""
+        if self.phase not in (PHASE_GLOBAL_SEARCH, PHASE_TARGETING_CYCLE, PHASE_RETURN_HOME):
+            return False, ""
+        if self.current_position_enu is None or self.grid is None or self.grid_info is None:
+            return False, ""
+
+        delta = target_enu[:2] - self.current_position_enu[:2]
+        distance = float(np.linalg.norm(delta))
+        if distance < 1e-3:
+            return False, ""
+
+        direction = delta / distance
+        check_distance = min(distance, float(self.get_parameter("safety_stop_distance_m").value))
+        if check_distance <= 0.0:
+            return False, ""
+
+        step = max(self.grid_info.resolution * 0.5, 0.05)
+        half_width = max(0.0, float(self.get_parameter("safety_stop_width_m").value) * 0.5)
+        radius_cells = int(math.ceil(half_width / max(self.grid_info.resolution, 1e-6)))
+        treat_unknown = bool(self.get_parameter("safety_stop_treat_unknown_as_blocked").value)
+        samples = max(1, int(math.ceil(check_distance / step)))
+        for index in range(1, samples + 1):
+            sample_distance = min(check_distance, index * step)
+            sample_xy = self.current_position_enu[:2] + direction * sample_distance
+            center = world_to_grid(float(sample_xy[0]), float(sample_xy[1]), self.grid_info)
+            blocked, reason = self._grid_neighborhood_blocked(center, radius_cells, treat_unknown)
+            if blocked:
+                return True, f"{reason} at {sample_distance:.2f}m"
+        return False, ""
+
+    def _grid_neighborhood_blocked(
+        self,
+        center: tuple[int, int],
+        radius_cells: int,
+        treat_unknown: bool,
+    ) -> tuple[bool, str]:
+        if self.grid is None or self.grid_info is None:
+            return False, ""
+        cx, cy = center
+        radius_sq = radius_cells * radius_cells
+        for dy in range(-radius_cells, radius_cells + 1):
+            for dx in range(-radius_cells, radius_cells + 1):
+                if dx * dx + dy * dy > radius_sq:
+                    continue
+                x = cx + dx
+                y = cy + dy
+                if x < 0 or x >= self.grid_info.width or y < 0 or y >= self.grid_info.height:
+                    if treat_unknown:
+                        return True, "unknown grid edge"
+                    continue
+                value = int(self.grid[y, x])
+                if value >= 50:
+                    return True, "occupied obstacle"
+                if value < 0 and treat_unknown:
+                    return True, "unknown space"
+        return False, ""
+
+    def _set_safety_stop(self, active: bool, reason: str) -> None:
+        if active == self.safety_stop_active and reason == self.safety_stop_reason:
+            return
+        self.safety_stop_active = active
+        self.safety_stop_reason = reason
+        self._publish_event(
+            "safety_stop" if active else "safety_clear",
+            {"active": active, "reason": reason},
+        )
 
     def _select_target_and_yaw(self) -> tuple[np.ndarray, float]:
         if self.current_position_enu is None:
@@ -768,10 +915,11 @@ class OffboardMissionNode(Node):
         yaw_error = abs(wrap_pi(yaw - self.current_yaw_enu))
         if yaw_error > float(self.get_parameter("yaw_acceptance_rad").value):
             return
-        if self.waypoint_index not in self.inspection_captured_indices:
-            if not self._capture_inspection_photo(self.waypoint_index):
+        goal_id = self.goal_waypoint_ids.get(self.waypoint_index, self.waypoint_index)
+        if goal_id not in self.inspection_captured_indices:
+            if not self._capture_inspection_photo(self.waypoint_index, goal_id):
                 return
-            self.inspection_captured_indices.add(self.waypoint_index)
+            self.inspection_captured_indices.add(goal_id)
             self.inspection_photo_count += 1
 
         required = int(self.get_parameter("inspection_required_photos").value)
@@ -795,6 +943,8 @@ class OffboardMissionNode(Node):
         self.phase = PHASE_LANDING
         self.active = False
         self.return_reason = reason
+        self.safety_stop_active = False
+        self.safety_stop_reason = ""
         self.landing_started_ns = self.get_clock().now().nanoseconds
         if not self.landing_command_sent:
             self._publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
@@ -817,12 +967,18 @@ class OffboardMissionNode(Node):
                 },
             )
 
-    def _set_navigation_goals(self, goals: list[np.ndarray]) -> None:
-        self.active_waypoints, self.goal_waypoint_indices = self._plan_waypoint_sequence(goals)
+    def _set_navigation_goals(self, goals: list[np.ndarray], goal_ids: list[int] | None = None) -> None:
+        self.navigation_goals = [goal.copy() for goal in goals]
+        self.navigation_goal_ids = goal_ids if goal_ids is not None else list(range(len(goals)))
+        self.active_waypoints, self.goal_waypoint_indices, self.goal_waypoint_ids = (
+            self._plan_waypoint_sequence(self.navigation_goals, self.navigation_goal_ids)
+        )
         if not self.active_waypoints and self.current_position_enu is not None:
             self.active_waypoints = [self.current_position_enu.copy()]
             self.goal_waypoint_indices = {0}
+            self.goal_waypoint_ids = {0: self.navigation_goal_ids[0] if self.navigation_goal_ids else 0}
         self.waypoint_index = 0
+        self.last_replan_ns = self.get_clock().now().nanoseconds
         self._publish_planned_path()
 
     def _publish_planned_path(self) -> None:
@@ -839,35 +995,50 @@ class OffboardMissionNode(Node):
             msg.poses.append(pose)
         self.planned_path_pub.publish(msg)
 
-    def _plan_waypoint_sequence(self, goals: list[np.ndarray]) -> tuple[list[np.ndarray], set[int]]:
+    def _plan_waypoint_sequence(
+        self,
+        goals: list[np.ndarray],
+        goal_ids: list[int],
+    ) -> tuple[list[np.ndarray], set[int], dict[int, int]]:
         if self.current_position_enu is None:
-            return list(goals), set(range(len(goals)))
+            return list(goals), set(range(len(goals))), {
+                index: goal_ids[index] for index in range(min(len(goals), len(goal_ids)))
+            }
         if (
             not bool(self.get_parameter("use_occupancy_grid_planner").value)
             or self.grid is None
             or self.grid_info is None
         ):
-            return list(goals), set(range(len(goals)))
+            return list(goals), set(range(len(goals))), {
+                index: goal_ids[index] for index in range(min(len(goals), len(goal_ids)))
+            }
 
         planned: list[np.ndarray] = []
         goal_indices: set[int] = set()
+        goal_waypoint_ids: dict[int, int] = {}
         start = self.current_position_enu
         stride = max(1, int(self.get_parameter("path_waypoint_stride").value))
-        for goal in goals:
+        for goal_index, goal in enumerate(goals):
             path_xy = plan_astar(
                 self.grid,
                 self.grid_info,
                 start[:2],
                 goal[:2],
                 inflation_radius_m=float(self.get_parameter("planner_inflation_radius_m").value),
+                unknown_policy=str(self.get_parameter("planner_unknown_policy").value),
+                unknown_cost=float(self.get_parameter("planner_unknown_cost").value),
             )
             if path_xy:
                 for x, y in path_xy[::stride]:
                     self._append_waypoint(planned, np.array([x, y, goal[2]], dtype=float))
             self._append_waypoint(planned, goal)
-            goal_indices.add(len(planned) - 1)
+            waypoint_index = len(planned) - 1
+            goal_indices.add(waypoint_index)
+            goal_waypoint_ids[waypoint_index] = (
+                goal_ids[goal_index] if goal_index < len(goal_ids) else goal_index
+            )
             start = goal
-        return planned, goal_indices
+        return planned, goal_indices, goal_waypoint_ids
 
     def _append_waypoint(self, waypoints: list[np.ndarray], waypoint: np.ndarray) -> None:
         if waypoints and np.linalg.norm(waypoints[-1] - waypoint) < 0.05:
@@ -931,11 +1102,13 @@ class OffboardMissionNode(Node):
             return self.current_yaw_enu
         return math.atan2(float(delta[1]), float(delta[0]))
 
-    def _capture_inspection_photo(self, waypoint_index: int) -> bool:
+    def _capture_inspection_photo(self, waypoint_index: int, goal_id: int | None = None) -> bool:
         event: dict[str, Any] = {
             "waypoint_index": waypoint_index,
             "photo_index": self.inspection_photo_count + 1,
         }
+        if goal_id is not None:
+            event["goal_id"] = goal_id
         if self.target_observation is not None:
             event["target_enu"] = self._round_list(self.target_observation.position_enu)
             event["target_class"] = self.target_observation.class_name
@@ -1114,7 +1287,11 @@ class OffboardMissionNode(Node):
             "offboard_setpoints_sent": self.offboard_counter,
             "command_wait_reason": self.command_wait_reason,
             "photos": self.inspection_photo_count,
+            "safety_stop_active": self.safety_stop_active,
+            "safety_stop_reason": self.safety_stop_reason,
         }
+        grid_age_s = self._age_s(self.grid_stamp_ns)
+        payload["occupancy_grid_age_s"] = round(grid_age_s, 2) if math.isfinite(grid_age_s) else None
         if self.phase == PHASE_GLOBAL_SEARCH:
             payload["search_loop_count"] = self.search_loop_count
             payload["search_age_s"] = round(self._age_s(self.search_started_ns), 2)

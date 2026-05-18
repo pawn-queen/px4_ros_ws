@@ -25,7 +25,13 @@ class VoxelMapperNode(Node):
         super().__init__("powerplant_voxel_mapper")
         self._declare_parameters()
         self.bridge = CvBridge()
-        self.grid = VoxelGrid(float(self.get_parameter("voxel_resolution_m").value))
+        self.grid = VoxelGrid(
+            float(self.get_parameter("voxel_resolution_m").value),
+            hit_log_odds=float(self.get_parameter("hit_log_odds").value),
+            miss_log_odds=float(self.get_parameter("miss_log_odds").value),
+            occupied_threshold=float(self.get_parameter("occupied_log_odds_threshold").value),
+            free_threshold=float(self.get_parameter("free_log_odds_threshold").value),
+        )
         self.camera_info: CameraInfo | None = None
         self.position = np.zeros(3, dtype=float)
         self.orientation_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
@@ -94,6 +100,11 @@ class VoxelMapperNode(Node):
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("voxel_resolution_m", 0.25)
+        self.declare_parameter("hit_log_odds", 0.85)
+        self.declare_parameter("miss_log_odds", -0.4)
+        self.declare_parameter("occupied_log_odds_threshold", 0.0)
+        self.declare_parameter("free_log_odds_threshold", -0.2)
+        self.declare_parameter("ray_clear_enabled", True)
         self.declare_parameter("publish_rate_hz", 2.0)
         self.declare_parameter("depth_stride_px", 8)
         self.declare_parameter("max_depth_range_m", 18.0)
@@ -107,7 +118,12 @@ class VoxelMapperNode(Node):
         self.declare_parameter("pointcloud_frame", "base_link")
         self.declare_parameter("max_publish_points", 60000)
         self.declare_parameter("grid_z_min_m", -0.3)
-        self.declare_parameter("grid_z_max_m", 4.0)
+        self.declare_parameter("grid_z_max_m", 5.5)
+        self.declare_parameter("use_fixed_grid_bounds", False)
+        self.declare_parameter("grid_min_x_m", -25.0)
+        self.declare_parameter("grid_max_x_m", 35.0)
+        self.declare_parameter("grid_min_y_m", -10.0)
+        self.declare_parameter("grid_max_y_m", 50.0)
 
     def _odom_callback(self, msg: Odometry) -> None:
         self.position = np.array(
@@ -147,7 +163,13 @@ class VoxelMapperNode(Node):
             depth = depth * 0.001
 
         points = self._depth_to_map_points(depth)
-        self.grid.insert_points(points)
+        if bool(self.get_parameter("ray_clear_enabled").value):
+            origin = self._body_to_map(
+                np.asarray(self.get_parameter("camera_translation_flu").value, dtype=float)
+            )
+            self.grid.insert_rays(origin, points)
+        else:
+            self.grid.insert_points(points)
 
     def _depth_to_map_points(self, depth: np.ndarray) -> np.ndarray:
         height, width = depth.shape[:2]
@@ -197,9 +219,13 @@ class VoxelMapperNode(Node):
         y = ranges[mask] * np.sin(angles[mask])
         z = np.zeros_like(x)
         body = np.stack([x, y, z], axis=1)
-        body += np.asarray(self.get_parameter("lidar_translation_flu").value, dtype=float)
+        lidar_translation = np.asarray(self.get_parameter("lidar_translation_flu").value, dtype=float)
+        body += lidar_translation
         points = np.asarray([self._body_to_map(point) for point in body], dtype=float)
-        self.grid.insert_points(points)
+        if bool(self.get_parameter("ray_clear_enabled").value):
+            self.grid.insert_rays(self._body_to_map(lidar_translation), points)
+        else:
+            self.grid.insert_points(points)
 
     def _pointcloud_callback(self, msg: PointCloud2) -> None:
         if not self.have_pose:
@@ -232,6 +258,7 @@ class VoxelMapperNode(Node):
         result = self.grid.to_occupancy_grid_2d(
             float(self.get_parameter("grid_z_min_m").value),
             float(self.get_parameter("grid_z_max_m").value),
+            bounds_xy=self._fixed_grid_bounds(),
         )
         if result is None:
             return
@@ -246,6 +273,16 @@ class VoxelMapperNode(Node):
         msg.info.origin.orientation.w = 1.0
         msg.data = grid_array.reshape(-1).astype(np.int8).tolist()
         self.grid_pub.publish(msg)
+
+    def _fixed_grid_bounds(self) -> tuple[float, float, float, float] | None:
+        if not bool(self.get_parameter("use_fixed_grid_bounds").value):
+            return None
+        return (
+            float(self.get_parameter("grid_min_x_m").value),
+            float(self.get_parameter("grid_min_y_m").value),
+            float(self.get_parameter("grid_max_x_m").value),
+            float(self.get_parameter("grid_max_y_m").value),
+        )
 
     def _publish_marker(self, header: Header, occupied: np.ndarray) -> None:
         marker = Marker()

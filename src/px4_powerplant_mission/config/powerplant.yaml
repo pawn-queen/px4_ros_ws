@@ -93,6 +93,11 @@ powerplant_voxel_mapper:
     map_frame: map
     base_frame: base_link
     voxel_resolution_m: 0.25
+    hit_log_odds: 0.85
+    miss_log_odds: -0.4
+    occupied_log_odds_threshold: 0.0
+    free_log_odds_threshold: -0.2
+    ray_clear_enabled: true
     publish_rate_hz: 2.0
     depth_stride_px: 8
     max_depth_range_m: 18.0
@@ -106,7 +111,12 @@ powerplant_voxel_mapper:
     pointcloud_frame: base_link
     max_publish_points: 60000
     grid_z_min_m: -0.3
-    grid_z_max_m: 4.0
+    grid_z_max_m: 5.5
+    use_fixed_grid_bounds: true
+    grid_min_x_m: -25.0
+    grid_max_x_m: 35.0
+    grid_min_y_m: -10.0
+    grid_max_y_m: 50.0
 
 powerplant_yolo_detector:
   ros__parameters:
@@ -162,7 +172,14 @@ powerplant_offboard_mission:
     max_yaw_rate_radps: 0.6
     use_occupancy_grid_planner: true
     planner_inflation_radius_m: 0.6
+    planner_unknown_policy: cost
+    planner_unknown_cost: 4.0
     path_waypoint_stride: 4
+    replan_interval_s: 2.0
+    safety_stop_enabled: true
+    safety_stop_distance_m: 1.2
+    safety_stop_width_m: 0.5
+    safety_stop_treat_unknown_as_blocked: true
     target_class_name: gas_cylinder
     min_target_confidence: 0.35
     target_memory_s: 8.0
