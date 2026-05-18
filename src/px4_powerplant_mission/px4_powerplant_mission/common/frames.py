@@ -81,6 +81,20 @@ def quaternion_xyzw_to_yaw(q: Sequence[float]) -> float:
     return math.atan2(siny_cosp, cosy_cosp)
 
 
+def quaternion_xyzw_to_roll_pitch(q: Sequence[float]) -> tuple[float, float]:
+    x, y, z, w = normalize_quaternion_xyzw(q)
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    if abs(sinp) >= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+    return roll, pitch
+
+
 def quaternion_wxyz_to_xyzw(q: Sequence[float]) -> np.ndarray:
     w, x, y, z = q
     return np.array([x, y, z, w], dtype=float)
@@ -174,4 +188,3 @@ def geodetic_to_enu(
         dtype=float,
     )
     return transform @ delta
-

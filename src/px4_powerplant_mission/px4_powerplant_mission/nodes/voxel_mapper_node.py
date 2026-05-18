@@ -13,7 +13,7 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 from visualization_msgs.msg import Marker, MarkerArray
 
-from px4_powerplant_mission.common.frames import rotate_vector_xyzw
+from px4_powerplant_mission.common.frames import quaternion_xyzw_to_roll_pitch, rotate_vector_xyzw
 from px4_powerplant_mission.common.qos import reliable_qos_profile, sensor_qos_profile
 from px4_powerplant_mission.mapping.voxel_grid import VoxelGrid
 
@@ -36,6 +36,7 @@ class VoxelMapperNode(Node):
         self.position = np.zeros(3, dtype=float)
         self.orientation_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
         self.have_pose = False
+        self.startup_gate_open = not bool(self.get_parameter("startup_gate_enabled").value)
 
         self.voxel_pub = self.create_publisher(
             PointCloud2,
@@ -117,8 +118,12 @@ class VoxelMapperNode(Node):
         self.declare_parameter("lidar_translation_flu", [0.0, 0.0, 0.0])
         self.declare_parameter("pointcloud_frame", "base_link")
         self.declare_parameter("max_publish_points", 60000)
-        self.declare_parameter("grid_z_min_m", -0.3)
+        self.declare_parameter("grid_z_min_m", 0.3)
         self.declare_parameter("grid_z_max_m", 5.5)
+        self.declare_parameter("startup_gate_enabled", True)
+        self.declare_parameter("startup_gate_min_height_m", 2.0)
+        self.declare_parameter("startup_gate_max_tilt_rad", 0.35)
+        self.declare_parameter("startup_gate_clear_on_enable", True)
         self.declare_parameter("use_fixed_grid_bounds", False)
         self.declare_parameter("grid_min_x_m", -25.0)
         self.declare_parameter("grid_max_x_m", 35.0)
@@ -149,7 +154,7 @@ class VoxelMapperNode(Node):
         self.camera_info = msg
 
     def _depth_callback(self, msg: Image) -> None:
-        if not self.have_pose:
+        if not self._mapping_is_enabled():
             return
         try:
             image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
@@ -208,7 +213,7 @@ class VoxelMapperNode(Node):
         return np.asarray([self._body_to_map(point) for point in body], dtype=float)
 
     def _laser_scan_callback(self, msg: LaserScan) -> None:
-        if not self.have_pose:
+        if not self._mapping_is_enabled():
             return
         ranges = np.asarray(msg.ranges, dtype=float)
         angles = msg.angle_min + np.arange(len(ranges), dtype=float) * msg.angle_increment
@@ -228,7 +233,7 @@ class VoxelMapperNode(Node):
             self.grid.insert_points(points)
 
     def _pointcloud_callback(self, msg: PointCloud2) -> None:
-        if not self.have_pose:
+        if not self._mapping_is_enabled():
             return
         frame = str(self.get_parameter("pointcloud_frame").value)
         points = []
@@ -244,6 +249,8 @@ class VoxelMapperNode(Node):
         return self.position + rotate_vector_xyzw(self.orientation_xyzw, point_flu)
 
     def _publish_map(self) -> None:
+        if not self._mapping_is_enabled():
+            return
         header = Header()
         header.stamp = self.get_clock().now().to_msg()
         header.frame_id = str(self.get_parameter("map_frame").value)
@@ -253,6 +260,36 @@ class VoxelMapperNode(Node):
         self.voxel_pub.publish(cloud)
         self._publish_occupancy_grid(header)
         self._publish_marker(header, occupied)
+
+    def _mapping_is_enabled(self) -> bool:
+        if self.startup_gate_open:
+            return True
+        if not bool(self.get_parameter("startup_gate_enabled").value):
+            self.startup_gate_open = True
+            return True
+        if not self.have_pose:
+            return False
+
+        min_height = float(self.get_parameter("startup_gate_min_height_m").value)
+        max_tilt = float(self.get_parameter("startup_gate_max_tilt_rad").value)
+        roll, pitch = quaternion_xyzw_to_roll_pitch(self.orientation_xyzw)
+        tilt = max(abs(roll), abs(pitch))
+        ready = self.position[2] >= min_height and tilt <= max_tilt
+        if not ready:
+            self.get_logger().info(
+                "mapping startup gate waiting: height=%.2fm min=%.2fm tilt=%.2frad max=%.2frad"
+                % (self.position[2], min_height, tilt, max_tilt),
+                throttle_duration_sec=2.0,
+            )
+            return False
+
+        if bool(self.get_parameter("startup_gate_clear_on_enable").value):
+            self.grid.cells.clear()
+        self.startup_gate_open = True
+        self.get_logger().info(
+            "mapping startup gate opened: height=%.2fm tilt=%.2frad" % (self.position[2], tilt)
+        )
+        return True
 
     def _publish_occupancy_grid(self, header: Header) -> None:
         result = self.grid.to_occupancy_grid_2d(

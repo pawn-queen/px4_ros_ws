@@ -110,8 +110,12 @@ powerplant_voxel_mapper:
     lidar_translation_flu: [0.0, 0.0, 0.32]
     pointcloud_frame: base_link
     max_publish_points: 60000
-    grid_z_min_m: -0.3
+    grid_z_min_m: 0.3
     grid_z_max_m: 5.5
+    startup_gate_enabled: true
+    startup_gate_min_height_m: 2.0
+    startup_gate_max_tilt_rad: 0.35
+    startup_gate_clear_on_enable: true
     use_fixed_grid_bounds: true
     grid_min_x_m: -25.0
     grid_max_x_m: 35.0
@@ -175,6 +179,9 @@ powerplant_offboard_mission:
     planner_unknown_policy: cost
     planner_unknown_cost: 4.0
     path_waypoint_stride: 4
+    avoidance_startup_gate_enabled: true
+    avoidance_startup_min_height_m: 2.0
+    avoidance_startup_max_tilt_rad: 0.35
     replan_interval_s: 2.0
     safety_stop_enabled: true
     safety_stop_distance_m: 1.2

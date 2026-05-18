@@ -28,6 +28,7 @@ from std_srvs.srv import Trigger
 
 from px4_powerplant_mission.common.frames import (
     enu_to_ned,
+    quaternion_xyzw_to_roll_pitch,
     quaternion_xyzw_to_yaw,
     rotate_vector_xyzw,
     wrap_pi,
@@ -102,6 +103,9 @@ class OffboardMissionNode(Node):
         self.grid_info: GridInfo | None = None
         self.grid_stamp_ns = 0
         self.last_replan_ns = 0
+        self.avoidance_startup_gate_open = not bool(
+            self.get_parameter("avoidance_startup_gate_enabled").value
+        )
         self.safety_stop_active = False
         self.safety_stop_reason = ""
         self.latest_depth_m: np.ndarray | None = None
@@ -257,6 +261,9 @@ class OffboardMissionNode(Node):
         self.declare_parameter("planner_unknown_policy", "cost")
         self.declare_parameter("planner_unknown_cost", 4.0)
         self.declare_parameter("path_waypoint_stride", 4)
+        self.declare_parameter("avoidance_startup_gate_enabled", True)
+        self.declare_parameter("avoidance_startup_min_height_m", 2.0)
+        self.declare_parameter("avoidance_startup_max_tilt_rad", 0.35)
         self.declare_parameter("replan_interval_s", 2.0)
         self.declare_parameter("safety_stop_enabled", True)
         self.declare_parameter("safety_stop_distance_m", 1.2)
@@ -525,6 +532,9 @@ class OffboardMissionNode(Node):
         self.last_offboard_request_ns = 0
         self.last_arm_request_ns = 0
         self.last_replan_ns = 0
+        self.avoidance_startup_gate_open = not bool(
+            self.get_parameter("avoidance_startup_gate_enabled").value
+        )
         self.safety_stop_active = False
         self.safety_stop_reason = ""
         self.search_loop_count = 0
@@ -692,6 +702,7 @@ class OffboardMissionNode(Node):
             return
         if (
             not bool(self.get_parameter("use_occupancy_grid_planner").value)
+            or not self._avoidance_is_enabled()
             or self.grid is None
             or self.grid_info is None
         ):
@@ -736,6 +747,8 @@ class OffboardMissionNode(Node):
 
     def _safety_stop_required(self, target_enu: np.ndarray) -> tuple[bool, str]:
         if not bool(self.get_parameter("safety_stop_enabled").value):
+            return False, ""
+        if not self._avoidance_is_enabled():
             return False, ""
         if self.phase not in (PHASE_GLOBAL_SEARCH, PHASE_TARGETING_CYCLE, PHASE_RETURN_HOME):
             return False, ""
@@ -802,6 +815,35 @@ class OffboardMissionNode(Node):
             "safety_stop" if active else "safety_clear",
             {"active": active, "reason": reason},
         )
+
+    def _avoidance_is_enabled(self) -> bool:
+        if self.avoidance_startup_gate_open:
+            return True
+        if not bool(self.get_parameter("avoidance_startup_gate_enabled").value):
+            self.avoidance_startup_gate_open = True
+            return True
+        if self.current_position_enu is None:
+            return False
+
+        min_height = float(self.get_parameter("avoidance_startup_min_height_m").value)
+        max_tilt = float(self.get_parameter("avoidance_startup_max_tilt_rad").value)
+        roll, pitch = quaternion_xyzw_to_roll_pitch(self.current_orientation_xyzw)
+        tilt = max(abs(roll), abs(pitch))
+        ready = self.current_position_enu[2] >= min_height and tilt <= max_tilt
+        if ready:
+            self.avoidance_startup_gate_open = True
+            self.get_logger().info(
+                "avoidance startup gate opened: height=%.2fm tilt=%.2frad"
+                % (self.current_position_enu[2], tilt)
+            )
+            return True
+
+        self.get_logger().info(
+            "avoidance startup gate waiting: height=%.2fm min=%.2fm tilt=%.2frad max=%.2frad"
+            % (self.current_position_enu[2], min_height, tilt, max_tilt),
+            throttle_duration_sec=2.0,
+        )
+        return False
 
     def _select_target_and_yaw(self) -> tuple[np.ndarray, float]:
         if self.current_position_enu is None:
@@ -1006,6 +1048,7 @@ class OffboardMissionNode(Node):
             }
         if (
             not bool(self.get_parameter("use_occupancy_grid_planner").value)
+            or not self._avoidance_is_enabled()
             or self.grid is None
             or self.grid_info is None
         ):
@@ -1289,6 +1332,7 @@ class OffboardMissionNode(Node):
             "photos": self.inspection_photo_count,
             "safety_stop_active": self.safety_stop_active,
             "safety_stop_reason": self.safety_stop_reason,
+            "avoidance_startup_gate_open": self.avoidance_startup_gate_open,
         }
         grid_age_s = self._age_s(self.grid_stamp_ns)
         payload["occupancy_grid_age_s"] = round(grid_age_s, 2) if math.isfinite(grid_age_s) else None
