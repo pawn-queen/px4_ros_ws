@@ -5,6 +5,7 @@ log/
 inspection_photos/
 __pycache__/
 *.pyc
+*.engine
 .pytest_cache/
 .idea/
 .vscode/
