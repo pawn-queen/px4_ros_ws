@@ -121,7 +121,8 @@ class ExternalVisionBridgeNode(Node):
         ]
         visual.velocity_variance = velocity_variance
         visual.reset_counter = 0
-        visual.quality = 100
+        # No calibrated 0-100 EV quality metric exists; covariance carries the uncertainty.
+        visual.quality = 0
         self.visual_odom_pub.publish(visual)
 
     def _position_variance(self, msg: Odometry) -> list[float]:

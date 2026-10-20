@@ -22,6 +22,8 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("use_external_vision", default_value="true"),
             DeclareLaunchArgument("use_uwb", default_value="true"),
             DeclareLaunchArgument("use_gazebo_truth_bridge", default_value="true"),
+            DeclareLaunchArgument("use_gazebo_clock_bridge", default_value="true"),
+            DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("use_mapping", default_value="true"),
             DeclareLaunchArgument("use_yolo", default_value="false"),
             DeclareLaunchArgument("use_control", default_value="false"),
@@ -35,7 +37,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="localization_node",
                 name="powerplant_localization",
                 output="screen",
-                parameters=[config_file],
+                parameters=[config_file, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
                 condition=IfCondition(LaunchConfiguration("use_localization")),
             ),
             Node(
@@ -45,6 +47,19 @@ def generate_launch_description() -> LaunchDescription:
                 output="screen",
                 parameters=[config_file],
                 condition=IfCondition(LaunchConfiguration("use_external_vision")),
+            ),
+            Node(
+                package="ros_gz_bridge",
+                executable="parameter_bridge",
+                name="powerplant_gz_clock_bridge",
+                output="screen",
+                arguments=[
+                    "/world/powerplant/clock"
+                    "@rosgraph_msgs/msg/Clock"
+                    "[gz.msgs.Clock",
+                ],
+                remappings=[("/world/powerplant/clock", "/clock")],
+                condition=IfCondition(LaunchConfiguration("use_gazebo_clock_bridge")),
             ),
             Node(
                 package="ros_gz_bridge",
@@ -66,7 +81,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="uwb_simulator_node",
                 name="powerplant_uwb_simulator",
                 output="screen",
-                parameters=[config_file],
+                parameters=[config_file, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
                 condition=IfCondition(LaunchConfiguration("use_uwb")),
             ),
             Node(
@@ -74,7 +89,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="voxel_mapper_node",
                 name="powerplant_voxel_mapper",
                 output="screen",
-                parameters=[config_file],
+                parameters=[config_file, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
                 condition=IfCondition(LaunchConfiguration("use_mapping")),
             ),
             Node(

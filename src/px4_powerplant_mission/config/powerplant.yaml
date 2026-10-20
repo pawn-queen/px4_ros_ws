@@ -17,12 +17,16 @@ powerplant_localization:
     px4_position_alpha_when_uwb_recent: 0.02
     use_px4_position_when_uwb_recent: false
     px4_velocity_alpha: 0.15
-    uwb_position_alpha: 0.25
-    uwb_z_alpha: 0.08
     uwb_recent_timeout_s: 0.5
     uwb_outlier_threshold_m: 4.0
+    uwb_max_position_variance_m2: 2.0
+    uwb_max_height_variance_m2: 0.5
+    uwb_nis_threshold: 16.27
+    uwb_recovery_timeout_s: 1.0
+    position_process_noise_m2ps: 0.25
     use_uwb_orientation: true
     max_uwb_yaw_variance_rad2: 0.5
+    max_uwb_tilt_variance_rad2: 0.5
     external_yaw_timeout_s: 0.5
     independent_position_variance_m2: 0.20
     independent_height_variance_m2: 0.35
@@ -66,6 +70,7 @@ powerplant_uwb_simulator:
     publish_truth_orientation: true
     truth_yaw_variance_rad2: 0.02
     uwb_pose_topic: /uwb/pose
+    uwb_quality_topic: /uwb/quality
     uwb_range_topic_prefix: /uwb/range
     anchor_marker_topic: /uwb/anchors
     map_frame: map
@@ -74,10 +79,14 @@ powerplant_uwb_simulator:
     range_min_m: 0.05
     range_max_m: 80.0
     max_solution_rms_m: 0.75
+    max_geometry_condition: 1000.0
+    # Optional synthetic positive range bias for robust-solver evaluation.
+    range_positive_bias_probability: 0.0
+    range_positive_bias_m: 0.0
     random_seed: 42
     # ENU meters: x=east, y=north, z=up. These anchors bound the expanded
     # search rectangle x=-15..24 m, y=0..40 m with margin.
-    uwb_anchors: [-25.0, -10.0, 6.0, 34.0, -10.0, 6.0, 34.0, 50.0, 6.0, -25.0, 50.0, 6.0, 4.5, 20.0, 26.0]
+    uwb_anchors: [-25.0, -10.0, 6.0, 34.0, -10.0, 6.0, 34.0, 50.0, 18.0, -25.0, 50.0, 6.0, 4.5, 20.0, 26.0]
     uwb_anchor_names: [anchor_0, anchor_1, anchor_2, anchor_3, anchor_4]
 
 powerplant_voxel_mapper:
@@ -88,7 +97,9 @@ powerplant_voxel_mapper:
     laser_scan_topic: /mapping_lidar
     pointcloud_topic: /points
     occupied_voxels_topic: /powerplant/map/occupied_voxels
+    observed_voxels_topic: /powerplant/map/observed_voxels
     occupancy_grid_topic: /powerplant/map/occupancy_grid
+    fusion_status_topic: /powerplant/map/fusion_status
     voxel_marker_topic: /powerplant/map/voxel_markers
     map_frame: map
     base_frame: base_link
@@ -99,7 +110,10 @@ powerplant_voxel_mapper:
     free_log_odds_threshold: -0.2
     ray_clear_enabled: true
     publish_rate_hz: 2.0
-    depth_stride_px: 8
+    max_orientation_variance_rad2: 0.5
+    depth_fusion_rate_hz: 3.0
+    lidar_fusion_rate_hz: 3.0
+    depth_stride_px: 16
     max_depth_range_m: 18.0
     min_depth_range_m: 0.25
     camera_fx: 430.0
@@ -107,9 +121,9 @@ powerplant_voxel_mapper:
     camera_cx: 320.0
     camera_cy: 240.0
     camera_translation_flu: [0.12, -0.03, 0.24]
-    lidar_translation_flu: [0.0, 0.0, 0.32]
+    lidar_translation_flu: [0.0, 0.0, 0.18]
     pointcloud_frame: base_link
-    max_publish_points: 60000
+    max_publish_points: 200000
     grid_z_min_m: 4.0
     grid_z_max_m: 6.0
     use_flight_height_grid_band: true
@@ -143,14 +157,18 @@ powerplant_offboard_mission:
   ros__parameters:
     localized_odom_topic: /powerplant/localization/odom
     occupancy_grid_topic: /powerplant/map/occupancy_grid
+    map_fusion_status_topic: /powerplant/map/fusion_status
+    observed_voxels_topic: /powerplant/map/observed_voxels
     planned_path_topic: /powerplant/control/planned_path
     yolo_detections_topic: /powerplant/perception/yolo_detections
     target_position_topic: /powerplant/perception/target_position
     inspection_event_topic: /powerplant/control/inspection_events
     depth_image_topic: /depth_camera
+    laser_scan_topic: /mapping_lidar
     depth_camera_info_topic: /depth_camera/camera_info
     rgb_image_topic: /camera
     vehicle_status_topic: /fmu/out/vehicle_status
+    battery_status_topic: /fmu/out/battery_status
     failsafe_flags_topic: /fmu/out/failsafe_flags
     vehicle_command_ack_topic: /fmu/out/vehicle_command_ack
     offboard_control_mode_topic: /fmu/in/offboard_control_mode
@@ -169,19 +187,28 @@ powerplant_offboard_mission:
     require_preflight_checks: true
     require_accepts_offboard_setpoints: false
     takeoff_height_m: 5.0
+    initial_scan_hover_s: 2.0
+    initial_scan_yaw_steps: 12
+    initial_scan_yaw_rate_radps: 0.2
+    initial_scan_yaw_dwell_s: 0.3
+    initial_scan_yaw_tolerance_rad: 0.12
+    initial_scan_max_tilt_rad: 0.35
+    initial_scan_max_tilt_variance_rad2: 0.5
+    initial_scan_max_speed_mps: 0.35
+    initial_scan_max_hover_yaw_rate_radps: 0.12
+    initial_scan_max_position_error_m: 0.5
+    initial_scan_max_horizontal_setpoint_speed_mps: 0.3
+    initial_scan_max_sensor_age_s: 2.0
+    initial_scan_min_valid_lidar_ranges: 10
+    initial_scan_min_known_grid_cells: 10
+    initial_scan_timeout_s: 90.0
     return_home_height_m: 5.0
     target_acceptance_m: 0.45
     yaw_acceptance_rad: 0.25
     cruise_yaw_enu_rad: 0.0
-    face_waypoint_during_search: true
     max_horizontal_setpoint_speed_mps: 2.0
     max_vertical_setpoint_speed_mps: 0.8
     max_yaw_rate_radps: 0.6
-    use_occupancy_grid_planner: true
-    planner_inflation_radius_m: 0.6
-    planner_unknown_policy: cost
-    planner_unknown_cost: 2.0
-    path_waypoint_stride: 4
     avoidance_startup_gate_enabled: true
     avoidance_startup_min_height_m: 4.0
     avoidance_startup_max_tilt_rad: 0.35
@@ -190,12 +217,33 @@ powerplant_offboard_mission:
     safety_stop_distance_m: 1.2
     safety_stop_width_m: 0.5
     safety_stop_treat_unknown_as_blocked: false
-    target_class_name: gas_cylinder
+    target_class_name: gas_cylinders
     min_target_confidence: 0.35
     target_memory_s: 8.0
     lock_target_after_acquisition: true
-    loop_search_waypoints: true
-    search_timeout_s: 300.0
+    # These limits define the permitted 3D flight volume; no inspection
+    # waypoint coordinates are supplied to the autonomous explorer.
+    explore_min_x_m: -24.0
+    explore_max_x_m: 34.0
+    explore_min_y_m: -9.0
+    explore_max_y_m: 49.0
+    explore_min_z_m: 3.5
+    explore_max_z_m: 7.0
+    explore_max_duration_s: 300.0
+    explore_min_replan_interval_s: 1.0
+    explore_max_map_age_s: 3.0
+    explore_clearance_radius_m: 0.35
+    explore_max_search_radius_m: 10.0
+    explore_sensor_range_m: 8.0
+    explore_local_path_length_m: 2.0
+    explore_viewpoint_dwell_s: 0.4
+    explore_cruise_speed_mps: 1.0
+    explore_return_speed_mps: 1.0
+    explore_return_reserve_s: 30.0
+    explore_max_position_variance_m2: 1.0
+    explore_localization_variance_growth_m2_per_m: 0.01
+    explore_min_battery_fraction: 0.20
+    explore_battery_max_age_s: 3.0
     target_standoff_m: 2.2
     inspection_altitude_m: 5.0
     inspection_orbit_points: 4
@@ -213,14 +261,3 @@ powerplant_offboard_mission:
     max_depth_age_s: 1.0
     land_complete_height_m: 0.25
     land_complete_timeout_s: 20.0
-    # ENU waypoints in Gazebo world coordinates. This perimeter searches the
-    # expanded rectangle x=-15..24 m, y=0..40 m at inspection altitude.
-    mission_waypoints_enu: [
-                0.0, 0.0, 5.0,
-                -15.0, 0.0, 5.0,
-                -15.0, 40.0, 5.0,
-                24.0, 40.0, 5.0,
-                24.0, 0.0, 5.0,
-                0.0, 40.0, 6.0,
-                0.0, 0.0, 5.0,
-            ]

@@ -31,6 +31,9 @@ from px4_powerplant_mission.common.qos import px4_qos_profile, reliable_qos_prof
 from px4_powerplant_mission.localization.fusion import FusionState
 
 
+UNKNOWN_TILT_VARIANCE_RAD2 = 1_000_000.0
+
+
 class LocalizationNode(Node):
     """Fuse PX4 local estimates, IMU deltas, depth status, and simulated UWB."""
 
@@ -44,8 +47,19 @@ class LocalizationNode(Node):
         self.last_depth_median_m = math.nan
         self.last_depth_stamp_ns = 0
         self.last_uwb_stamp_ns = 0
+        self.last_uwb_sample_stamp_ns = 0
+        self.uwb_quality_valid = False
+        self.uwb_rejection_reason = "waiting for UWB"
+        self.uwb_last_innovation_nis: float | None = None
+        self.uwb_last_measurement_variance_enu_m2: np.ndarray | None = None
+        self.position_process_noise_m2ps = max(
+            0.0, float(self.get_parameter("position_process_noise_m2ps").value)
+        )
         self.last_px4_stamp_ns = 0
         self.last_external_yaw_stamp_ns = 0
+        self.last_external_tilt_stamp_ns = 0
+        self.roll_variance_rad2 = UNKNOWN_TILT_VARIANCE_RAD2
+        self.pitch_variance_rad2 = UNKNOWN_TILT_VARIANCE_RAD2
         self.depth_frame_id = "camera_link"
 
         self.odom_pub = self.create_publisher(
@@ -115,8 +129,14 @@ class LocalizationNode(Node):
         self.declare_parameter("uwb_z_alpha", 0.08)
         self.declare_parameter("uwb_recent_timeout_s", 0.5)
         self.declare_parameter("uwb_outlier_threshold_m", 4.0)
+        self.declare_parameter("uwb_max_position_variance_m2", 2.0)
+        self.declare_parameter("uwb_max_height_variance_m2", 0.5)
+        self.declare_parameter("uwb_nis_threshold", 16.27)
+        self.declare_parameter("uwb_recovery_timeout_s", 1.0)
+        self.declare_parameter("position_process_noise_m2ps", 0.25)
         self.declare_parameter("use_uwb_orientation", True)
         self.declare_parameter("max_uwb_yaw_variance_rad2", 0.5)
+        self.declare_parameter("max_uwb_tilt_variance_rad2", 0.5)
         self.declare_parameter("external_yaw_timeout_s", 0.5)
         self.declare_parameter("independent_position_variance_m2", 0.20)
         self.declare_parameter("independent_height_variance_m2", 0.35)
@@ -136,6 +156,7 @@ class LocalizationNode(Node):
         if dt_s <= 0.0:
             return
 
+        self._expire_tilt_if_stale()
         body_frd_delta = np.asarray(msg.delta_velocity, dtype=float)
         body_flu_delta = frd_to_flu(body_frd_delta)
         world_delta = rotate_vector_xyzw(self.state.orientation_xyzw, body_flu_delta)
@@ -175,6 +196,24 @@ class LocalizationNode(Node):
             self._correct_from_px4_position(position, velocity, position_alpha_scale=0.5)
 
     def _uwb_pose_callback(self, msg: PoseWithCovarianceStamped) -> None:
+        received_ns = self.get_clock().now().nanoseconds
+        stamp_sec = int(msg.header.stamp.sec)
+        stamp_nanosec = int(msg.header.stamp.nanosec)
+        sample_ns = stamp_sec * 1_000_000_000 + stamp_nanosec
+        if stamp_sec < 0 or not 0 <= stamp_nanosec < 1_000_000_000 or sample_ns <= 0:
+            self._reject_uwb("missing or invalid measurement stamp", invalidate_quality=False)
+            return
+        if sample_ns <= self.last_uwb_sample_stamp_ns:
+            self._reject_uwb("duplicate or out-of-order measurement stamp", invalidate_quality=False)
+            return
+        age_s = (received_ns - sample_ns) * 1e-9
+        if age_s > float(self.get_parameter("uwb_recent_timeout_s").value) or age_s < -0.1:
+            self._reject_uwb(f"invalid measurement age {age_s:.3f} s", invalidate_quality=False)
+            return
+        if msg.header.frame_id != str(self.get_parameter("map_frame").value):
+            self._reject_uwb("position frame does not match map frame")
+            return
+
         position = np.array(
             [
                 msg.pose.pose.position.x,
@@ -183,13 +222,74 @@ class LocalizationNode(Node):
             ],
             dtype=float,
         )
-        if self._is_uwb_outlier(position):
+        position_covariance = np.asarray(msg.pose.covariance, dtype=float).reshape(6, 6)[:3, :3]
+        variance = np.diag(position_covariance).copy()
+        max_xy = float(self.get_parameter("uwb_max_position_variance_m2").value)
+        max_z = float(self.get_parameter("uwb_max_height_variance_m2").value)
+        if not np.all(np.isfinite(position)):
+            self._reject_uwb("non-finite position")
             return
-        xy_alpha = float(self.get_parameter("uwb_position_alpha").value)
-        z_alpha = float(self.get_parameter("uwb_z_alpha").value)
-        self.state.correct_position_axes(position, [xy_alpha, xy_alpha, z_alpha])
+        # This filter uses only diagonal variances; reject malformed cross-axis
+        # covariance instead of silently treating it as a valid diagonal model.
+        if (not np.all(np.isfinite(position_covariance))
+                or not np.allclose(position_covariance, position_covariance.T, atol=1e-9)
+                or np.min(np.linalg.eigvalsh(position_covariance)) < -1e-8
+                or np.any(variance <= 0.0)
+                or np.any(variance[:2] > max_xy) or variance[2] > max_z):
+            self._reject_uwb("invalid or excessive position covariance")
+            return
+
+        dt_s = (sample_ns - self.last_uwb_sample_stamp_ns) * 1e-9
+        recovery_timeout_s = float(self.get_parameter("uwb_recovery_timeout_s").value)
+        recovering = (
+            self.last_uwb_sample_stamp_ns <= 0
+            or not self._uwb_is_recent()
+            or (recovery_timeout_s > 0.0 and dt_s >= recovery_timeout_s)
+        )
+        if recovering:
+            # A PX4 fallback estimate is not an independent prior in the map frame.
+            self.state.position_enu = position.copy()
+            self.state.position_variance_enu_m2 = variance.copy()
+            self.state.has_position = True
+            self.uwb_last_innovation_nis = None
+        else:
+            predicted = self.state.position_enu.copy()
+            if not bool(self.get_parameter("use_imu_prediction").value):
+                predicted += self.state.velocity_enu * dt_s
+            prior_variance = (
+                self.state.position_variance_enu_m2
+                + self.position_process_noise_m2ps * dt_s
+            )
+            if (not np.all(np.isfinite(predicted))
+                    or not np.all(np.isfinite(prior_variance))
+                    or np.any(prior_variance <= 0.0)):
+                self._reject_uwb("invalid position prediction")
+                return
+            innovation = position - predicted
+            nis = float(np.sum(innovation * innovation / (prior_variance + variance)))
+            self.uwb_last_innovation_nis = nis
+            nis_threshold = float(self.get_parameter("uwb_nis_threshold").value)
+            if not math.isfinite(nis) or (nis_threshold > 0.0 and nis > nis_threshold):
+                self._reject_uwb(f"normalized innovation {nis:.2f} exceeds gate")
+                return
+            self.state.correct_position_with_variance(
+                position, variance, predicted, prior_variance
+            )
+
+        # Preserve the original stamp for duplicate detection. A slightly future
+        # sample may precede the /clock update, so clamp only the freshness clock.
+        self.last_uwb_sample_stamp_ns = sample_ns
+        self.last_uwb_stamp_ns = min(sample_ns, received_ns)
+        self.uwb_last_measurement_variance_enu_m2 = variance
+        self.uwb_quality_valid = True
+        self.uwb_rejection_reason = ""
         self._maybe_use_uwb_orientation(msg)
-        self.last_uwb_stamp_ns = self.get_clock().now().nanoseconds
+
+    def _reject_uwb(self, reason: str, *, invalidate_quality: bool = True) -> None:
+        if invalidate_quality:
+            self.uwb_quality_valid = False
+        self.uwb_rejection_reason = reason
+        self.get_logger().warn(f"rejecting UWB pose: {reason}", throttle_duration_sec=2.0)
 
     def _depth_callback(self, msg: Image) -> None:
         try:
@@ -227,6 +327,7 @@ class LocalizationNode(Node):
     def _publish_state(self) -> None:
         if not self.state.has_position:
             return
+        self._expire_tilt_if_stale()
         now = self.get_clock().now().to_msg()
         odom = Odometry()
         odom.header.stamp = now
@@ -258,6 +359,7 @@ class LocalizationNode(Node):
         self.status_pub.publish(String(data=json.dumps(self._status(), ensure_ascii=False)))
 
     def _fill_pose_and_twist(self, odom: Odometry) -> None:
+        self._expire_tilt_if_stale()
         odom.pose.pose.position.x = float(self.state.position_enu[0])
         odom.pose.pose.position.y = float(self.state.position_enu[1])
         odom.pose.pose.position.z = float(self.state.position_enu[2])
@@ -269,16 +371,55 @@ class LocalizationNode(Node):
         odom.twist.twist.linear.x = float(self.state.velocity_enu[0])
         odom.twist.twist.linear.y = float(self.state.velocity_enu[1])
         odom.twist.twist.linear.z = float(self.state.velocity_enu[2])
-        if self._has_independent_position():
-            xy_variance = float(self.get_parameter("independent_position_variance_m2").value)
-            z_variance = float(self.get_parameter("independent_height_variance_m2").value)
-        else:
-            xy_variance = float(self.get_parameter("fallback_position_variance_m2").value)
-            z_variance = float(self.get_parameter("fallback_height_variance_m2").value)
-        odom.pose.covariance[0] = xy_variance
-        odom.pose.covariance[7] = xy_variance
-        odom.pose.covariance[14] = z_variance
+        position_variance = LocalizationNode._position_covariance(self)
+        odom.pose.covariance[0] = float(position_variance[0])
+        odom.pose.covariance[7] = float(position_variance[1])
+        odom.pose.covariance[14] = float(position_variance[2])
+        tilt_valid = self.state.has_tilt and self._external_tilt_is_recent()
+        odom.pose.covariance[21] = (
+            self.roll_variance_rad2 if tilt_valid else UNKNOWN_TILT_VARIANCE_RAD2
+        )
+        odom.pose.covariance[28] = (
+            self.pitch_variance_rad2 if tilt_valid else UNKNOWN_TILT_VARIANCE_RAD2
+        )
         odom.pose.covariance[35] = 0.12
+
+    def _position_covariance(self) -> np.ndarray:
+        def fallback() -> np.ndarray:
+            return np.array(
+                [
+                    float(self.get_parameter("fallback_position_variance_m2").value),
+                    float(self.get_parameter("fallback_position_variance_m2").value),
+                    float(self.get_parameter("fallback_height_variance_m2").value),
+                ],
+                dtype=float,
+            )
+
+        if not self._has_independent_position():
+            return fallback()
+        age_s = max(
+            0.0,
+            (self.get_clock().now().nanoseconds - self.last_uwb_stamp_ns) * 1e-9,
+        )
+        process_variance = max(
+            0.0, float(getattr(self, "position_process_noise_m2ps", 0.25))
+        ) * age_s
+        posterior = np.asarray(self.state.position_variance_enu_m2, dtype=float)
+        measurement = getattr(self, "uwb_last_measurement_variance_enu_m2", None)
+        if measurement is None:
+            measurement = np.zeros(3, dtype=float)
+        floor = np.array(
+            [
+                float(self.get_parameter("independent_position_variance_m2").value),
+                float(self.get_parameter("independent_position_variance_m2").value),
+                float(self.get_parameter("independent_height_variance_m2").value),
+            ],
+            dtype=float,
+        )
+        result = np.maximum(np.maximum(posterior + process_variance, measurement), floor)
+        if not np.all(np.isfinite(result)) or np.any(result <= 0.0):
+            return fallback()
+        return result
 
     def _status(self) -> dict[str, Any]:
         now_ns = self.get_clock().now().nanoseconds
@@ -296,9 +437,24 @@ class LocalizationNode(Node):
             else round(self.last_depth_median_m, 3),
             "depth_age_s": age(self.last_depth_stamp_ns),
             "uwb_age_s": age(self.last_uwb_stamp_ns),
+            "uwb_quality_valid": self.uwb_quality_valid,
+            "uwb_rejection_reason": self.uwb_rejection_reason,
+            "uwb_last_innovation_nis": (
+                None if self.uwb_last_innovation_nis is None
+                else round(self.uwb_last_innovation_nis, 3)
+            ),
+            "uwb_measurement_variance_enu_m2": (
+                None if self.uwb_last_measurement_variance_enu_m2 is None
+                else [round(float(v), 4) for v in self.uwb_last_measurement_variance_enu_m2]
+            ),
+            "position_variance_enu_m2": [
+                round(float(v), 4) for v in LocalizationNode._position_covariance(self)
+            ],
             "has_independent_position": self._has_independent_position(),
             "px4_age_s": age(self.last_px4_stamp_ns),
             "external_yaw_age_s": age(self.last_external_yaw_stamp_ns),
+            "external_tilt_age_s": age(self.last_external_tilt_stamp_ns),
+            "has_reliable_tilt": self.state.has_tilt and self._external_tilt_is_recent(),
         }
 
     def _correct_from_px4_position(
@@ -323,7 +479,7 @@ class LocalizationNode(Node):
         self.state.velocity_enu = (1.0 - alpha) * self.state.velocity_enu + alpha * velocity
 
     def _has_independent_position(self) -> bool:
-        return self._uwb_is_recent()
+        return self.uwb_quality_valid and self._uwb_is_recent()
 
     def _px4_position_alpha(self) -> float:
         if self._uwb_is_recent():
@@ -334,39 +490,38 @@ class LocalizationNode(Node):
         if self.last_uwb_stamp_ns <= 0:
             return False
         timeout = float(self.get_parameter("uwb_recent_timeout_s").value)
-        return (self.get_clock().now().nanoseconds - self.last_uwb_stamp_ns) * 1e-9 <= timeout
+        age_s = (self.get_clock().now().nanoseconds - self.last_uwb_stamp_ns) * 1e-9
+        return 0.0 <= age_s <= timeout
 
     def _external_yaw_is_recent(self) -> bool:
         if self.last_external_yaw_stamp_ns <= 0:
             return False
         timeout = float(self.get_parameter("external_yaw_timeout_s").value)
-        return (self.get_clock().now().nanoseconds - self.last_external_yaw_stamp_ns) * 1e-9 <= timeout
+        age_s = (self.get_clock().now().nanoseconds - self.last_external_yaw_stamp_ns) * 1e-9
+        return 0.0 <= age_s <= timeout
 
-    def _is_uwb_outlier(self, position: np.ndarray) -> bool:
-        threshold = float(self.get_parameter("uwb_outlier_threshold_m").value)
-        if (
-            threshold <= 0.0
-            or not self.state.has_position
-            or self.last_uwb_stamp_ns <= 0
-            or not self._uwb_is_recent()
-        ):
+    def _external_tilt_is_recent(self) -> bool:
+        if self.last_external_tilt_stamp_ns <= 0:
             return False
-        distance = float(np.linalg.norm(position - self.state.position_enu))
-        if distance <= threshold:
-            return False
-        self.get_logger().warn(
-            f"rejecting UWB outlier: jump {distance:.2f} m > {threshold:.2f} m",
-            throttle_duration_sec=2.0,
-        )
-        return True
+        age_s = (self.get_clock().now().nanoseconds - self.last_external_tilt_stamp_ns) * 1e-9
+        timeout = float(self.get_parameter("uwb_recent_timeout_s").value)
+        return 0.0 <= age_s <= timeout
+
+    def _expire_tilt_if_stale(self) -> None:
+        if self.state.has_tilt and not self._external_tilt_is_recent():
+            self.state.clear_tilt()
+
+    def _invalidate_tilt(self) -> None:
+        self.state.clear_tilt()
+        self.last_external_tilt_stamp_ns = 0
+        self.roll_variance_rad2 = UNKNOWN_TILT_VARIANCE_RAD2
+        self.pitch_variance_rad2 = UNKNOWN_TILT_VARIANCE_RAD2
 
     def _maybe_use_uwb_orientation(self, msg: PoseWithCovarianceStamped) -> None:
         if not bool(self.get_parameter("use_uwb_orientation").value):
+            self._invalidate_tilt()
             return
-        yaw_variance = float(msg.pose.covariance[35])
-        max_variance = float(self.get_parameter("max_uwb_yaw_variance_rad2").value)
-        if not math.isfinite(yaw_variance) or yaw_variance <= 0.0 or yaw_variance > max_variance:
-            return
+
         q_xyzw = np.array(
             [
                 msg.pose.pose.orientation.x,
@@ -377,9 +532,31 @@ class LocalizationNode(Node):
             dtype=float,
         )
         if not np.all(np.isfinite(q_xyzw)) or np.linalg.norm(q_xyzw) <= 1e-6:
+            self._invalidate_tilt()
             return
-        self.state.yaw_enu = quaternion_xyzw_to_yaw(normalize_quaternion_xyzw(q_xyzw))
-        self.last_external_yaw_stamp_ns = self.get_clock().now().nanoseconds
+        q_xyzw = normalize_quaternion_xyzw(q_xyzw)
+
+        # An identity quaternion without positive covariance is the UWB node's
+        # explicit marker for missing truth orientation, not a level vehicle.
+        yaw_variance = float(msg.pose.covariance[35])
+        max_yaw_variance = float(self.get_parameter("max_uwb_yaw_variance_rad2").value)
+        if math.isfinite(yaw_variance) and 0.0 < yaw_variance <= max_yaw_variance:
+            self.state.yaw_enu = quaternion_xyzw_to_yaw(q_xyzw)
+            self.last_external_yaw_stamp_ns = self.last_uwb_stamp_ns
+
+        roll_variance = float(msg.pose.covariance[21])
+        pitch_variance = float(msg.pose.covariance[28])
+        max_tilt_variance = float(self.get_parameter("max_uwb_tilt_variance_rad2").value)
+        tilt_valid = all(
+            math.isfinite(variance) and 0.0 < variance <= max_tilt_variance
+            for variance in (roll_variance, pitch_variance)
+        )
+        if tilt_valid and self.state.correct_tilt(q_xyzw):
+            self.last_external_tilt_stamp_ns = self.last_uwb_stamp_ns
+            self.roll_variance_rad2 = roll_variance
+            self.pitch_variance_rad2 = pitch_variance
+        else:
+            self._invalidate_tilt()
 
 
 def main(args: list[str] | None = None) -> None:
