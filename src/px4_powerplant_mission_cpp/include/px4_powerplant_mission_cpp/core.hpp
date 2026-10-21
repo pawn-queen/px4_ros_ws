@@ -1,0 +1,185 @@
+#pragma once
+
+#include <Eigen/Geometry>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cmath>
+#include <functional>
+#include <limits>
+#include <map>
+#include <optional>
+#include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace powerplant {
+using Vec3 = Eigen::Vector3d;
+using Quat = Eigen::Quaterniond;
+using Key = std::array<int, 3>;
+using Bounds = std::array<Key, 2>;
+using Path = std::vector<Vec3>;
+constexpr double pi = 3.14159265358979323846;
+constexpr double inf = std::numeric_limits<double>::infinity();
+struct KeyHash {
+  size_t operator()(const Key &k) const noexcept {
+    size_t h = 0;
+    for (int v : k)
+      h ^= std::hash<int>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    return h;
+  }
+};
+using Keys = std::unordered_set<Key, KeyHash>;
+template <class T> using KeyMap = std::unordered_map<Key, T, KeyHash>;
+inline double wrap_pi(double v) {
+  double r = std::fmod(v + pi, 2 * pi);
+  return (r < 0 ? r + 2 * pi : r) - pi;
+}
+inline double yaw(const Quat &q) {
+  return std::atan2(2 * (q.w() * q.z() + q.x() * q.y()),
+                    1 - 2 * (q.y() * q.y() + q.z() * q.z()));
+}
+inline double tilt(const Quat &input) {
+  Quat q = input.normalized();
+  return std::max(std::abs(std::atan2(2 * (q.w() * q.x() + q.y() * q.z()),
+                                      1 - 2 * (q.x() * q.x() + q.y() * q.y()))),
+                  std::abs(std::asin(std::clamp(
+                      2 * (q.w() * q.y() - q.z() * q.x()), -1.0, 1.0))));
+}
+inline Key key(const Vec3 &p, double r) {
+  Key k;
+  for (int i = 0; i < 3; ++i) {
+    double v = std::floor(p[i] / r);
+    if (!std::isfinite(v) || v < std::numeric_limits<int>::min() + 1024.0 ||
+        v > std::numeric_limits<int>::max() - 1024.0)
+      throw std::invalid_argument("invalid voxel coordinate");
+    k[i] = static_cast<int>(v);
+  }
+  return k;
+}
+inline Vec3 center(const Key &k, double r) {
+  return Vec3(k[0] + .5, k[1] + .5, k[2] + .5) * r;
+}
+inline Key add(const Key &a, const Key &b) {
+  return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+}
+inline bool inside(const Key &k, const Bounds &b) {
+  for (int i = 0; i < 3; ++i)
+    if (k[i] < b[0][i] || k[i] > b[1][i])
+      return false;
+  return true;
+}
+struct VoxelSnapshot {
+  std::vector<std::array<float, 4>> points;
+  size_t observed = 0, free = 0, occupied = 0, uncertain = 0;
+  std::optional<Bounds> bounds;
+  bool complete = true;
+};
+struct Grid2D {
+  double x = 0, y = 0, resolution = 0;
+  int width = 0, height = 0;
+  std::vector<int8_t> data;
+};
+class VoxelGrid {
+public:
+  double resolution = .25, hit = .85, miss = -.4, minimum = -4, maximum = 4,
+         occupied_threshold = 0, free_threshold = -.2;
+  KeyMap<double> cells;
+  // Keep insertion order: publication truncation must not depend on hash-table
+  // rehashes.
+  std::vector<Key> order;
+  int64_t revision = 0;
+  void clear();
+  size_t insert_points(const Path &points);
+  size_t insert_rays(const Path &origins, const Path &hits);
+  VoxelSnapshot snapshot(size_t limit) const;
+  Path occupied_points(size_t limit) const;
+  std::optional<Grid2D>
+  project(double zmin, double zmax,
+          std::optional<std::array<double, 4>> bounds = {},
+          double padding = 1) const;
+
+private:
+  void update(const Key &k, double delta);
+};
+struct StampedPose {
+  int64_t stamp = 0;
+  Vec3 position = Vec3::Zero();
+  Quat orientation = Quat::Identity();
+};
+class PoseHistory {
+public:
+  std::vector<StampedPose> samples;
+  bool add(const StampedPose &p);
+  std::optional<StampedPose> at(int64_t stamp) const;
+};
+struct ExplorationConfig {
+  double clearance_radius_m = .35, start_snap_radius_m = .35,
+         goal_snap_radius_m = .35;
+  double max_search_radius_m = 10, sensor_range_m = 8, max_local_path_m = 2,
+         min_goal_distance_m = .75, candidate_spacing_m = .75;
+  int max_candidates = 96, max_frontier_targets = 400;
+  double cruise_speed_mps = 1, return_speed_mps = 1, reserve_s = 30,
+         max_position_variance_m2 = 4;
+  double camera_horizontal_fov_rad = 75 * pi / 180,
+         camera_vertical_fov_rad = 60 * pi / 180;
+  int yaw_bins = 12;
+  double information_weight = 3, surface_weight = 2, travel_time_weight = .12,
+         clearance_weight = .5, localization_weight = .5, reserve_weight = .5;
+};
+struct ExplorationPlan {
+  Vec3 goal_xyz = Vec3::Zero();
+  double goal_yaw_rad = 0;
+  Path local_path_xyz;
+  Key frontier_key{};
+  double score = 0;
+  int visible_unknown_count = 0;
+  double surface_gain = 0, outbound_time_s = 0, return_time_s = 0,
+         clearance_m = 0, localization_variance_m2 = 0, reserve_margin_s = 0;
+};
+struct PlanningMap {
+  Keys free, occupied;
+  double resolution = .25;
+  mutable Bounds bounds{};
+};
+using Cancel = std::function<bool()>;
+struct PlanningCancelled : std::runtime_error {
+  PlanningCancelled() : std::runtime_error("planning cancelled") {}
+};
+void check_cancel(const Cancel &cancel);
+KeyMap<Keys> extract_frontiers(const PlanningMap &map);
+bool path_is_known_free(const PlanningMap &, const Path &,
+                        const ExplorationConfig & = {});
+Path plan_known_free_path(const PlanningMap &, const Vec3 &, const Vec3 &,
+                          const ExplorationConfig & = {}, const Cancel & = {});
+std::optional<ExplorationPlan>
+plan_frontier(const PlanningMap &, const Vec3 &, const Vec3 &, double remaining,
+              double variance, const ExplorationConfig & = {},
+              const KeyMap<double> &surfaces = {},
+              const std::function<double(const Key &)> &variance_at = {},
+              const Keys &visited = {}, const Cancel &cancel = {});
+Path local_segment(const Path &, double length);
+struct YawScan {
+  double start = 0, dwell = 0;
+  int steps = 12, index = 0;
+  int64_t reached_since = 0;
+  double target() const {
+    return wrap_pi(start + (index >= steps ? 0 : (index + 1) * 2 * pi / steps));
+  }
+  bool update(double actual, int64_t now, bool ready, double tolerance);
+};
+struct SlewState {
+  std::optional<Vec3> position;
+  double heading = 0;
+  int64_t stamp = 0;
+  void reset(const Vec3 &p, double y, int64_t now) {
+    position = p;
+    heading = y;
+    stamp = now;
+  }
+  std::pair<Vec3, double> update(const Vec3 &target, double y, int64_t now,
+                                 double horizontal, double vertical,
+                                 double yaw_rate);
+};
+} // namespace powerplant

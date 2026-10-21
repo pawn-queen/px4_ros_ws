@@ -1,8 +1,10 @@
 # px4_powerplant_mission
 
-面向 `PX4_GZ_WORLD=powerplant make px4_sitl gz_x500_depth` 的 ROS2 Jazzy Python 仿真任务包。它不包含硬件驱动，UWB 为仿真数据源，雷达/深度相机/相机话题通过 Gazebo bridge 或已有 ROS 话题接入。当前工程已在 `drone-simulation/Tools/simulation/gz/models/x500_depth/model.sdf` 中给 `x500_depth` 增加了 360 度平面 `mapping_lidar`，原启动命令不需要改。
+面向 `PX4_GZ_WORLD=powerplant make px4_sitl gz_x500_depth` 的 ROS2 Jazzy 仿真任务包。默认由独立的 `px4_powerplant_mission_cpp` 包执行体素建图、三维规划和 Offboard 控制；定位、UWB、外部视觉桥和 YOLO 继续使用 Python。它不包含硬件驱动，UWB 为仿真数据源，雷达/深度相机/相机话题通过 Gazebo bridge 或已有 ROS 话题接入。当前工程已在 `drone-simulation/Tools/simulation/gz/models/x500_depth/model.sdf` 中给 `x500_depth` 增加了 360 度平面 `mapping_lidar`，原启动命令不需要改。
 
 ## 包结构
+
+原有 Python 节点与算法文件保留；下列 `nodes/` 路径均为原实现。C++ 模块划分、接口差异与验证命令见 [原生包说明](../px4_powerplant_mission_cpp/README.md)。
 
 - `nodes/localization_node.py`：订阅 PX4 IMU、local position、odometry、深度图和 UWB 位姿，统一输出 ROS ENU/FLU 下的 `/powerplant/localization/odom`。
 - `nodes/external_vision_bridge_node.py`：把 `/powerplant/localization/odom` 转成 PX4 NED 下的 `/fmu/in/vehicle_visual_odometry`，供 PX4 EKF 室内解锁和 Offboard 位置控制使用。
@@ -31,9 +33,13 @@ PX4 uORB 使用 `NED/FRD`，本包内部和对外发布使用 ROS 常用的 `ENU
 cd /home/pawn/px4_ros_ws
 deactivate 2>/dev/null || true
 source /opt/ros/jazzy/setup.bash
-colcon build --symlink-install --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 colcon build --symlink-install \
+  --packages-up-to px4_powerplant_mission --executor sequential --parallel-workers 1 \
+  --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3 -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
+
+上述命令同时构建 C++ 包及依赖，并限制包之间和 C++ 编译器内部的并发。WSL 上请在编译结束后再运行测试或 Gazebo，避免同时占用大量内存。
 
 首次用室内定位飞行前，建议在 PX4 shell 或 QGC 参数页设置一次 PX4 室内参数。目标是：不要求 GPS/磁罗盘，把 ROS 室内定位作为 EKF external vision 输入：
 
@@ -84,6 +90,16 @@ ros2 launch px4_powerplant_mission powerplant_system.launch.py
 ```bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
 ```
+
+建图与控制默认使用 C++ 可执行程序，沿用原节点名、YAML、话题、消息类型、QoS 和服务接口。可分别切回保留的 Python 实现：
+
+```bash
+ros2 launch px4_powerplant_mission powerplant_system.launch.py \
+  mapping_package:=px4_powerplant_mission control_package:=px4_powerplant_mission \
+  use_control:=true
+```
+
+控制仍默认关闭，`auto_start=false` 保持不变。C++ 迁移的算法与接口测试不能替代 PX4/Gazebo 完整飞行验收；完整巡检、避障和返航仍需在仿真中验证。
 
 飞控节点启动后仍不会自动执行任务，默认需要服务触发：
 
@@ -176,7 +192,7 @@ export ROS2CLI_ENABLE_DAEMON=0
 
 RViz 只负责显示，不会主动创建地图或路径。先按正常流程启动 PX4/Gazebo 和任务栈。若需要看到
 `/powerplant/control/planned_path`，任务栈必须带 `use_control:=true`，因为该 topic 由
-`offboard_mission_node.py` 发布；仅运行默认 `ros2 launch px4_powerplant_mission powerplant_system.launch.py`
+`offboard_mission_node` 发布（默认 C++，可选 Python）；仅运行默认 `ros2 launch px4_powerplant_mission powerplant_system.launch.py`
 时不会启动飞控节点，也就不会有路径 topic。
 
 ```bash

@@ -25,8 +25,16 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("use_gazebo_clock_bridge", default_value="true"),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("use_mapping", default_value="true"),
+            DeclareLaunchArgument(
+                "mapping_package", default_value="px4_powerplant_mission_cpp",
+                description="Mapper implementation package; use px4_powerplant_mission for Python.",
+            ),
             DeclareLaunchArgument("use_yolo", default_value="false"),
             DeclareLaunchArgument("use_control", default_value="false"),
+            DeclareLaunchArgument(
+                "control_package", default_value="px4_powerplant_mission_cpp",
+                description="Offboard implementation package; use px4_powerplant_mission for Python.",
+            ),
             DeclareLaunchArgument(
                 "yolo_python",
                 default_value="/home/pawn/px4_ros_ws/.venv/bin/python",
@@ -85,7 +93,7 @@ def generate_launch_description() -> LaunchDescription:
                 condition=IfCondition(LaunchConfiguration("use_uwb")),
             ),
             Node(
-                package="px4_powerplant_mission",
+                package=LaunchConfiguration("mapping_package"),
                 executable="voxel_mapper_node",
                 name="powerplant_voxel_mapper",
                 output="screen",
@@ -102,7 +110,7 @@ def generate_launch_description() -> LaunchDescription:
                 condition=IfCondition(LaunchConfiguration("use_yolo")),
             ),
             Node(
-                package="px4_powerplant_mission",
+                package=LaunchConfiguration("control_package"),
                 executable="offboard_mission_node",
                 name="powerplant_offboard_mission",
                 output="screen",

@@ -8,6 +8,7 @@
   <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>px4_powerplant_mission_cpp</exec_depend>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
