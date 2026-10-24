@@ -5,6 +5,14 @@ powerplant_localization:
     vehicle_odometry_topic: /fmu/out/vehicle_odometry
     depth_image_topic: /depth_camera
     uwb_pose_topic: /uwb/pose
+    uwb_quality_topic: /uwb/quality
+    uwb_status_topic: /uwb/status
+    uwb_frame: map
+    uwb_to_map_translation_m: [0.0, 0.0, 0.0]
+    uwb_to_map_yaw_rad: 0.0
+    navigation_mode: px4
+    px4_timestamp_domain: system
+    max_navigation_age_s: 0.5
     localized_odom_topic: /powerplant/localization/odom
     localized_pose_topic: /powerplant/localization/pose
     status_topic: /powerplant/localization/status
@@ -24,7 +32,7 @@ powerplant_localization:
     uwb_nis_threshold: 16.27
     uwb_recovery_timeout_s: 1.0
     position_process_noise_m2ps: 0.25
-    use_uwb_orientation: true
+    use_uwb_orientation: false
     max_uwb_yaw_variance_rad2: 0.5
     max_uwb_tilt_variance_rad2: 0.5
     external_yaw_timeout_s: 0.5
@@ -43,18 +51,20 @@ powerplant_localization:
 
 powerplant_external_vision_bridge:
   ros__parameters:
-    localized_odom_topic: /powerplant/localization/odom
+    uwb_pose_topic: /uwb/pose
+    uwb_quality_topic: /uwb/quality
+    uwb_status_topic: /uwb/status
+    uwb_frame: map
+    map_frame: map
+    uwb_to_map_translation_m: [0.0, 0.0, 0.0]
+    uwb_to_map_yaw_rad: 0.0
     visual_odometry_topic: /fmu/in/vehicle_visual_odometry
-    # EKF2_EV_CTRL=11 is appropriate while UWB simulation publishes Gazebo truth
-    # yaw. If publish_truth_orientation=false, use EKF2_EV_CTRL=3 instead.
-    use_velocity: false
-    position_variance_m2: 0.20
-    height_variance_m2: 0.35
-    yaw_variance_rad2: 0.12
-    velocity_variance_m2ps2: 0.25
-    require_independent_position: true
-    max_publish_position_variance_m2: 4.0
-    max_publish_height_variance_m2: 4.0
+    max_measurement_age_s: 0.5
+    max_publish_position_variance_m2: 2.0
+    max_publish_height_variance_m2: 0.5
+    use_independent_orientation: false
+    max_orientation_variance_rad2: 0.5
+    px4_timestamp_domain: system
 
 powerplant_uwb_simulator:
   ros__parameters:

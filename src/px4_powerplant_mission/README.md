@@ -1,13 +1,13 @@
 # px4_powerplant_mission
 
-面向 `PX4_GZ_WORLD=powerplant make px4_sitl gz_x500_depth` 的 ROS2 Jazzy 仿真任务包。默认由独立的 `px4_powerplant_mission_cpp` 包执行体素建图、三维规划和 Offboard 控制；定位、UWB、外部视觉桥和 YOLO 继续使用 Python。它不包含硬件驱动，UWB 为仿真数据源，雷达/深度相机/相机话题通过 Gazebo bridge 或已有 ROS 话题接入。当前工程已在 `drone-simulation/Tools/simulation/gz/models/x500_depth/model.sdf` 中给 `x500_depth` 增加了 360 度平面 `mapping_lidar`，原启动命令不需要改。
+面向 PX4 的 ROS2 Jazzy 任务包，定位与外部视觉支持仿真和实机共用。仿真入口为 `PX4_GZ_WORLD=powerplant make px4_sitl gz_x500_depth`。默认由独立的 `px4_powerplant_mission_cpp` 包执行体素建图、三维规划和 Offboard 控制；定位、UWB、外部视觉桥和 YOLO 继续使用 Python。它不包含硬件驱动；`localization_profile=simulation` 使用仿真 UWB，`hardware` 接入独立的 UWB Host。雷达/深度相机/相机通过 Gazebo bridge 或真实驱动接入。定位部署、接口变更、时间与标定要求见 [定位部署说明](LOCALIZATION_DEPLOYMENT.md)。当前工程已在 `drone-simulation/Tools/simulation/gz/models/x500_depth/model.sdf` 中给 `x500_depth` 增加了 360 度平面 `mapping_lidar`，原启动命令不需要改。
 
 ## 包结构
 
 原有 Python 节点与算法文件保留；下列 `nodes/` 路径均为原实现。C++ 模块划分、接口差异与验证命令见 [原生包说明](../px4_powerplant_mission_cpp/README.md)。
 
-- `nodes/localization_node.py`：订阅 PX4 IMU、local position、odometry、深度图和 UWB 位姿，统一输出 ROS ENU/FLU 下的 `/powerplant/localization/odom`。
-- `nodes/external_vision_bridge_node.py`：把 `/powerplant/localization/odom` 转成 PX4 NED 下的 `/fmu/in/vehicle_visual_odometry`，供 PX4 EKF 室内解锁和 Offboard 位置控制使用。
+- `nodes/localization_node.py`：默认把 PX4 完整 odometry 转为 ROS ENU/FLU 的 `/powerplant/localization/odom`，同时独立检查 UWB 健康；旧自适应融合保留为导航侧可选模式。
+- `nodes/external_vision_bridge_node.py`：直接把独立 UWB 位姿转成 PX4 NED 下的 `/fmu/in/vehicle_visual_odometry`，不再订阅融合里程计，供 PX4 EKF 室内解锁和 Offboard 位置控制使用。
 - `nodes/uwb_simulator_node.py`：用 Gazebo `dynamic_pose` 真值生成带采样时间的逐锚模拟测距，经有效性、残差和锚点几何检查后发布 `/uwb/pose` 与 `/uwb/quality`。
 - `nodes/voxel_mapper_node.py`：按传感器采样时间插值定位位姿，从深度图、`LaserScan`、`PointCloud2` 生成体素占据地图、2D occupancy grid 和 RViz marker。
 - `nodes/yolo_detector_node.py`：加载包内 `models/yolo/best.pt`，发布 JSON 检测结果和标注图。
@@ -41,7 +41,7 @@ source install/setup.bash
 
 上述命令同时构建 C++ 包及依赖，并限制包之间和 C++ 编译器内部的并发。WSL 上请在编译结束后再运行测试或 Gazebo，避免同时占用大量内存。
 
-首次用室内定位飞行前，建议在 PX4 shell 或 QGC 参数页设置一次 PX4 室内参数。目标是：不要求 GPS/磁罗盘，把 ROS 室内定位作为 EKF external vision 输入：
+以下参数仅用于本项目带独立 Gazebo 真值姿态的 SITL，不可照搬到单 Tag 实机。首次运行该仿真前，在 PX4 shell 或 QGC 参数页设置：目标是：不要求 GPS/磁罗盘，把 ROS 室内定位作为 EKF external vision 输入：
 
 ```bash
 param set EKF2_EV_CTRL 11
@@ -60,7 +60,7 @@ param save
 reboot
 ```
 
-其中 `EKF2_EV_CTRL=11` 表示融合 external vision 的水平位置、高度和 yaw，不融合速度；当前仿真链路会把 Gazebo 真值姿态作为 UWB pose 的仿真 yaw 来源，避免把 PX4 自己的 yaw 再回灌给 EKF。如果把 `powerplant_uwb_simulator.publish_truth_orientation` 改成 `false`，对应把 `EKF2_EV_CTRL` 改为 `3`，只融合 external vision 的水平位置和高度。当前初始扫描还要求可靠的横滚／俯仰估计；关闭真值姿态后，任务会在 `START` 等待该估计，不会解锁起飞。
+其中 `EKF2_EV_CTRL=11` 表示融合 external vision 的水平位置、高度和 yaw，不融合速度；当前仿真链路会把 Gazebo 真值姿态作为 UWB pose 的仿真 yaw 来源，避免把 PX4 自己的 yaw 再回灌给 EKF。如果把 `powerplant_uwb_simulator.publish_truth_orientation` 改成 `false`，对应把 `EKF2_EV_CTRL` 改为 `3`，只融合 external vision 的水平位置和高度。默认导航姿态来自 PX4 完整四元数；关闭真值姿态后，仍需 PX4 自身具备可靠姿态和航向。单 Tag 不提供航向。
 
 终端 1，启动 PX4 DDS Agent：
 
@@ -85,7 +85,7 @@ source install/setup.bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py
 ```
 
-这个 launch 会默认启动 Gazebo 真值桥接及 `/world/powerplant/clock` 到 ROS `/clock` 的桥接。UWB、定位和建图节点默认使用仿真时间，使雷达、深度图和里程计的消息时间戳处于同一时钟域；Offboard 控制节点保留原有时钟，并按收到融合计数更新的时间判断观测新鲜度。UWB 默认使用 `/world/powerplant/dynamic_pose/info` 的模型位姿；`/model/x500_depth/odometry_with_covariance` 仍保留为可选 odometry 后备源。如果你已经在别处桥接同一 truth topic，可加 `use_gazebo_truth_bridge:=false`；如果已经有 `/clock` 发布者，可加 `use_gazebo_clock_bridge:=false`。默认不会启动 YOLO 和飞控。需要时显式打开：
+这个 launch 会默认启动 Gazebo 真值桥接及 `/world/powerplant/clock` 到 ROS `/clock` 的桥接。UWB、定位、外部视觉桥和建图节点默认使用仿真时间，使雷达、深度图和里程计的消息时间戳处于同一时钟域；Offboard 控制节点保留原有时钟，并按收到融合计数更新的时间判断观测新鲜度。UWB 默认使用 `/world/powerplant/dynamic_pose/info` 的模型位姿；`/model/x500_depth/odometry_with_covariance` 仍保留为可选 odometry 后备源。如果你已经在别处桥接同一 truth topic，可加 `use_gazebo_truth_bridge:=false`；如果已经有 `/clock` 发布者，可加 `use_gazebo_clock_bridge:=false`。默认不会启动 YOLO 和飞控。需要时显式打开：
 
 ```bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
@@ -141,11 +141,11 @@ ros2 topic echo /powerplant/localization/odom nav_msgs/msg/Odometry --once --tim
 
 当前链路默认要求 UWB/Gazebo 真值是“独立定位源”。仿真器对每个新的 Gazebo 采样时间只生成一组逐锚测距；非有限值和量程外值不裁剪成伪有效数据，也不发布对应 Range。解算至少需要四个几何有效锚，检查逐锚异常、整体残差与几何条件数，并把解算得到的三轴位置协方差写入 `/uwb/pose`。`/uwb/quality` 会报告已用/剔除的锚、残差、几何条件数、协方差和拒绝原因。当前锚点中有两个不同高度的高锚，删除任意一个锚后其余四锚仍非共面。`range_positive_bias_probability` 与 `range_positive_bias_m` 仅用于可关闭的仿真正偏差测试，默认都是零；它们不是学习式 NLOS 识别。
 
-`localization_node` 只融合时间戳递增、足够新鲜且位置协方差通过质量门的 UWB 位姿，用预测方差与测量方差计算逐轴增益，并检查位置创新。`/powerplant/localization/odom` 的位置协方差保留配置的保守下限，同时反映 UWB 测量质量与预测误差；最近一次合格 UWB 过期，或新鲜测量因质量问题被拒时，协方差升为后备高值；重复和倒序样本只会被忽略，不会延长其有效期。当前仿真高度质量门限为 0.5 m²。`external_vision_bridge_node` 据此停止向 PX4 发布不可信位置，避免把 PX4 自身估计回灌成独立真值。因此 `/uwb/pose` 不发布或质量不达标时，PX4 可能不会进入可控的室内 Offboard 状态，这是有意的保护。先检查 `/world/powerplant/dynamic_pose/info`、`/uwb/range/<anchor>`、`/uwb/quality` 与 `/uwb/pose`，不要用 PX4 local position 代替 UWB 真值。
+默认 `localization_node` 从 PX4 获取完整位置与姿态，并保留状态的采样时间。外部视觉桥直接检查并转发独立 UWB 测量，避免将含 PX4 信息的导航结果回灌。两个节点共用 UWB frame、时间、位置协方差与硬件健康检查；停止/故障或 UWB 超时会使导航位置方差退化。`navigation_mode=adaptive` 保留旧自适应融合供对照，结果只用于导航，不进入 EV。详细接口和硬件配置见 [定位部署说明](LOCALIZATION_DEPLOYMENT.md)。
 
 外部视觉桥继续向 PX4 发布逐轴位置方差，但没有经真实数据标定的 0–100 质量分数，因此 `VehicleOdometry.quality=0`。本工程要求 `EKF2_EV_QMIN=0`（上面的参数命令已显式设置）；若已有非零门限，PX4 会停止融合这些 external vision 观测。不要把未标定的分数填成 100 来绕过该门限。
 
-当前包只有 Gazebo 生成的模拟逐锚距离，尚无真实硬件的逐锚测距日志、统一时间戳和可验证 NLOS 标签；学习式 NLOS 识别与因子图应在这些数据及所需传感器到位后再评估。`publish_truth_orientation=true` 注入的是 Gazebo 真值姿态，UWB 测距本身不提供横滚、俯仰或偏航。
+本包提供 Gazebo 模拟逐锚距离，外部 Host 已提供真实串口观测、时间戳及日志接口，但尚未用实测数据完成本项目飞行链路标定；学习式 NLOS 识别与因子图应在这些数据及所需传感器到位后再评估。`publish_truth_orientation=true` 注入的是 Gazebo 真值姿态，UWB 测距本身不提供横滚、俯仰或偏航。
 
 飞行过程中 `/powerplant/control/mission_status` 里有两个位置：`nav_target_enu` 是当前逻辑航点，
 `setpoint_enu` 是经过限速后的实际 PX4 setpoint。正常情况下 `setpoint_enu` 会逐步靠近

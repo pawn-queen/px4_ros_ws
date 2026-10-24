@@ -3,13 +3,19 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description() -> LaunchDescription:
     config_file = LaunchConfiguration("config_file")
+    profile = LaunchConfiguration("localization_profile")
+    simulation = PythonExpression(["'", profile, "' == 'simulation'"])
+    profile_config = PathJoinSubstitution([
+        FindPackageShare("px4_powerplant_mission"), "config",
+        PythonExpression(["'localization_", profile, ".yaml'"]),
+    ])
 
     default_config = PathJoinSubstitution(
         [FindPackageShare("px4_powerplant_mission"), "config", "powerplant.yaml"]
@@ -18,12 +24,14 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             DeclareLaunchArgument("config_file", default_value=default_config),
+            DeclareLaunchArgument("localization_profile", default_value="simulation",
+                                  choices=["simulation", "hardware"]),
             DeclareLaunchArgument("use_localization", default_value="true"),
             DeclareLaunchArgument("use_external_vision", default_value="true"),
-            DeclareLaunchArgument("use_uwb", default_value="true"),
-            DeclareLaunchArgument("use_gazebo_truth_bridge", default_value="true"),
-            DeclareLaunchArgument("use_gazebo_clock_bridge", default_value="true"),
-            DeclareLaunchArgument("use_sim_time", default_value="true"),
+            DeclareLaunchArgument("use_uwb", default_value=simulation),
+            DeclareLaunchArgument("use_gazebo_truth_bridge", default_value=simulation),
+            DeclareLaunchArgument("use_gazebo_clock_bridge", default_value=simulation),
+            DeclareLaunchArgument("use_sim_time", default_value=simulation),
             DeclareLaunchArgument("use_mapping", default_value="true"),
             DeclareLaunchArgument(
                 "mapping_package", default_value="px4_powerplant_mission_cpp",
@@ -45,7 +53,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="localization_node",
                 name="powerplant_localization",
                 output="screen",
-                parameters=[config_file, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
+                parameters=[config_file, profile_config, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
                 condition=IfCondition(LaunchConfiguration("use_localization")),
             ),
             Node(
@@ -53,7 +61,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="external_vision_bridge_node",
                 name="powerplant_external_vision_bridge",
                 output="screen",
-                parameters=[config_file],
+                parameters=[config_file, profile_config, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
                 condition=IfCondition(LaunchConfiguration("use_external_vision")),
             ),
             Node(

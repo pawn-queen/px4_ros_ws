@@ -1,178 +1,120 @@
-"""Bridge the ROS indoor localization estimate into PX4 external vision."""
-
+"""Feed independent UWB measurements to PX4, never navigation estimates."""
 from __future__ import annotations
 
 import math
-from typing import Sequence
-
 import numpy as np
 import rclpy
-from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from px4_msgs.msg import VehicleOdometry
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
+from std_msgs.msg import String
 
-from px4_powerplant_mission.common.frames import (
-    enu_to_ned,
-    quaternion_xyzw_to_yaw,
-    yaw_enu_to_ned,
-    yaw_to_quaternion_xyzw,
-)
+from px4_powerplant_mission.common.frames import enu_to_ned, ros_to_px4_quaternion, rotate_vector_xyzw
 from px4_powerplant_mission.common.qos import px4_qos_profile, reliable_qos_profile
+from px4_powerplant_mission.localization.inputs import UwbInput, declare_input_parameters, stamp_ns
 
 
 class ExternalVisionBridgeNode(Node):
-    """Publish localized ROS ENU odometry as PX4 NED visual odometry."""
+    """One input sample produces at most one external position measurement."""
 
     def __init__(self) -> None:
         super().__init__("powerplant_external_vision_bridge")
         self._declare_parameters()
-
+        self.system_clock = Clock(clock_type=ClockType.SYSTEM_TIME)
+        self.input = UwbInput.from_node(
+            self, self.get_parameter("max_publish_position_variance_m2").value,
+            self.get_parameter("max_publish_height_variance_m2").value,
+            self.get_parameter("max_measurement_age_s").value,
+        )
+        if self.get_parameter("px4_timestamp_domain").value not in ("system", "ros"):
+            raise ValueError("px4_timestamp_domain must be system or ros")
         self.visual_odom_pub = self.create_publisher(
-            VehicleOdometry,
-            self.get_parameter("visual_odometry_topic").value,
-            px4_qos_profile(),
-        )
-        self.create_subscription(
-            Odometry,
-            self.get_parameter("localized_odom_topic").value,
-            self._odom_callback,
-            reliable_qos_profile(),
-        )
-        self.get_logger().info("PX4 external vision bridge started")
+            VehicleOdometry, self.get_parameter("visual_odometry_topic").value, px4_qos_profile())
+        self.create_subscription(PoseWithCovarianceStamped, self.get_parameter("uwb_pose_topic").value,
+                                 self._pose_callback, reliable_qos_profile())
+        for name in ("uwb_quality_topic", "uwb_status_topic"):
+            self.create_subscription(String, self.get_parameter(name).value,
+                                     self._health_callback, reliable_qos_profile())
+        # Observe clock rewinds even while measurements stop.
+        self.create_timer(.1, lambda: self.input.clock(self.get_clock().now().nanoseconds))
+        self.get_logger().info("external vision uses independent UWB input; navigation odometry is not subscribed")
 
-    def _declare_parameters(self) -> None:
-        self.declare_parameter("localized_odom_topic", "/powerplant/localization/odom")
-        self.declare_parameter("visual_odometry_topic", "/fmu/in/vehicle_visual_odometry")
-        self.declare_parameter("use_velocity", False)
-        self.declare_parameter("position_variance_m2", 0.08)
-        self.declare_parameter("height_variance_m2", 0.12)
-        self.declare_parameter("yaw_variance_rad2", 0.05)
-        self.declare_parameter("velocity_variance_m2ps2", 0.25)
-        self.declare_parameter("require_independent_position", True)
-        self.declare_parameter("max_publish_position_variance_m2", 4.0)
-        self.declare_parameter("max_publish_height_variance_m2", 4.0)
+    def _declare_parameters(self):
+        declare_input_parameters(self)
+        for name, value in {
+            "map_frame": "map",
+            "visual_odometry_topic": "/fmu/in/vehicle_visual_odometry",
+            "max_measurement_age_s": .5,
+            "max_publish_position_variance_m2": 2.,
+            "max_publish_height_variance_m2": .5,
+            "use_independent_orientation": False,
+            "max_orientation_variance_rad2": .5,
+            "px4_timestamp_domain": "system",
+        }.items():
+            self.declare_parameter(name, value)
 
-    def _odom_callback(self, msg: Odometry) -> None:
-        position_enu = np.array(
-            [
-                msg.pose.pose.position.x,
-                msg.pose.pose.position.y,
-                msg.pose.pose.position.z,
-            ],
-            dtype=float,
-        )
-        if not np.all(np.isfinite(position_enu)):
+    def _health_callback(self, msg):
+        self.input.health(msg.data, self.get_clock().now().nanoseconds)
+
+    def _pose_callback(self, msg):
+        now_ns = self.get_clock().now().nanoseconds
+        sample = self.input.accept(msg, now_ns)
+        if sample is None:
             return
-        if (
-            bool(self.get_parameter("require_independent_position").value)
-            and not self._has_publishable_position(msg)
-        ):
-            self.get_logger().warn(
-                "skipping external vision publish: localization has no recent independent UWB/Gazebo position",
-                throttle_duration_sec=5.0,
-            )
+        # XRCE performs system↔PX4 boot time synchronization. Do not subtract
+        # boot offsets here. In SITL, carry the ROS sample's age into system time.
+        transport_now = (self.system_clock.now().nanoseconds
+                         if self.get_parameter("px4_timestamp_domain").value == "system"
+                         and self.get_parameter("use_sim_time").value else now_ns)
+        sample_ns = transport_now - (now_ns - stamp_ns(sample.header.stamp))
+        if sample_ns <= 0:
             return
-
-        q_enu_xyzw = [
-            msg.pose.pose.orientation.x,
-            msg.pose.pose.orientation.y,
-            msg.pose.pose.orientation.z,
-            msg.pose.pose.orientation.w,
-        ]
-        yaw_ned = yaw_enu_to_ned(quaternion_xyzw_to_yaw(q_enu_xyzw))
-        q_ned_xyzw = yaw_to_quaternion_xyzw(yaw_ned)
-
+        p = sample.pose.pose.position
         visual = VehicleOdometry()
-        now_us = self._timestamp_us()
-        visual.timestamp = now_us
-        visual.timestamp_sample = now_us
+        visual.timestamp = transport_now // 1000
+        visual.timestamp_sample = sample_ns // 1000
         visual.pose_frame = VehicleOdometry.POSE_FRAME_NED
-        visual.position = self._float32_list(enu_to_ned(position_enu))
-        visual.q = [
-            float(q_ned_xyzw[3]),
-            float(q_ned_xyzw[0]),
-            float(q_ned_xyzw[1]),
-            float(q_ned_xyzw[2]),
-        ]
-
-        if bool(self.get_parameter("use_velocity").value):
-            velocity_enu = np.array(
-                [
-                    msg.twist.twist.linear.x,
-                    msg.twist.twist.linear.y,
-                    msg.twist.twist.linear.z,
-                ],
-                dtype=float,
-            )
-            visual.velocity_frame = VehicleOdometry.VELOCITY_FRAME_NED
-            visual.velocity = self._float32_list(enu_to_ned(velocity_enu))
-            velocity_variance = self._velocity_variance(msg)
-        else:
-            visual.velocity_frame = VehicleOdometry.VELOCITY_FRAME_UNKNOWN
-            visual.velocity = [math.nan, math.nan, math.nan]
-            velocity_variance = [math.nan, math.nan, math.nan]
-
-        visual.angular_velocity = [math.nan, math.nan, math.nan]
-        visual.position_variance = self._position_variance(msg)
-        visual.orientation_variance = [
-            float(self.get_parameter("yaw_variance_rad2").value),
-            float(self.get_parameter("yaw_variance_rad2").value),
-            float(self._positive_or_default(msg.pose.covariance[35], "yaw_variance_rad2")),
-        ]
-        visual.velocity_variance = velocity_variance
-        visual.reset_counter = 0
-        # No calibrated 0-100 EV quality metric exists; covariance carries the uncertainty.
-        visual.quality = 0
+        visual.position = [float(v) for v in enu_to_ned([p.x, p.y, p.z])]
+        cov = sample.pose.covariance
+        visual.position_variance = [float(cov[i]) for i in (7, 0, 14)]
+        # A single tag has neither attitude nor velocity. NaN is PX4's unknown
+        # marker. Never manufacture yaw from a PX4 estimate or identity pose.
+        visual.q = [math.nan] * 4
+        visual.orientation_variance = [math.nan] * 3
+        q = sample.pose.pose.orientation
+        attitude = np.array([q.x, q.y, q.z, q.w])
+        variances = np.array([cov[i] for i in (21, 28, 35)])
+        world_covariance = np.asarray(cov).reshape(6, 6)[3:, 3:]
+        maximum = self.get_parameter("max_orientation_variance_rad2").value
+        if (self.get_parameter("use_independent_orientation").value
+                and np.all(np.isfinite(attitude)) and np.linalg.norm(attitude) > 1e-6
+                and np.all(np.isfinite(variances)) and np.all(variances > 0)
+                and np.all(variances <= maximum)
+                and np.all(np.isfinite(world_covariance))
+                and np.allclose(world_covariance, world_covariance.T, atol=1e-9)
+                and np.min(np.linalg.eigvalsh(world_covariance)) >= 0):
+            visual.q = ros_to_px4_quaternion(attitude).tolist()
+            rotation = np.column_stack([rotate_vector_xyzw(attitude, axis) for axis in np.eye(3)])
+            visual.orientation_variance = np.diag(rotation.T @ world_covariance @ rotation).tolist()
+        visual.velocity_frame = VehicleOdometry.VELOCITY_FRAME_UNKNOWN
+        visual.velocity = [math.nan] * 3
+        visual.velocity_variance = [math.nan] * 3
+        visual.angular_velocity = [math.nan] * 3
+        visual.reset_counter = self.input.reset_counter
+        visual.quality = 0  # no calibrated 0–100 quality model
         self.visual_odom_pub.publish(visual)
 
-    def _position_variance(self, msg: Odometry) -> list[float]:
-        horizontal_default = float(self.get_parameter("position_variance_m2").value)
-        height_default = float(self.get_parameter("height_variance_m2").value)
-        east_var = self._positive_or_value(msg.pose.covariance[0], horizontal_default)
-        north_var = self._positive_or_value(msg.pose.covariance[7], horizontal_default)
-        up_var = self._positive_or_value(msg.pose.covariance[14], height_default)
-        return [float(north_var), float(east_var), float(up_var)]
 
-    def _velocity_variance(self, msg: Odometry) -> list[float]:
-        default = float(self.get_parameter("velocity_variance_m2ps2").value)
-        east_var = self._positive_or_value(msg.twist.covariance[0], default)
-        north_var = self._positive_or_value(msg.twist.covariance[7], default)
-        up_var = self._positive_or_value(msg.twist.covariance[14], default)
-        return [float(north_var), float(east_var), float(up_var)]
-
-    def _has_publishable_position(self, msg: Odometry) -> bool:
-        max_xy = float(self.get_parameter("max_publish_position_variance_m2").value)
-        max_z = float(self.get_parameter("max_publish_height_variance_m2").value)
-        east_var = self._positive_or_value(msg.pose.covariance[0], math.inf)
-        north_var = self._positive_or_value(msg.pose.covariance[7], math.inf)
-        up_var = self._positive_or_value(msg.pose.covariance[14], math.inf)
-        return max(east_var, north_var) <= max_xy and up_var <= max_z
-
-    def _positive_or_default(self, value: float, parameter_name: str) -> float:
-        return self._positive_or_value(value, float(self.get_parameter(parameter_name).value))
-
-    @staticmethod
-    def _positive_or_value(value: float, default: float) -> float:
-        if math.isfinite(value) and value > 0.0:
-            return float(value)
-        return float(default)
-
-    @staticmethod
-    def _float32_list(values: Sequence[float]) -> list[float]:
-        return [float(value) for value in values]
-
-    def _timestamp_us(self) -> int:
-        return self.get_clock().now().nanoseconds // 1000
-
-
-def main(args: list[str] | None = None) -> None:
+def main(args=None):
     rclpy.init(args=args)
     node = ExternalVisionBridgeNode()
     try:
         rclpy.spin(node)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

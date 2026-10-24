@@ -119,6 +119,25 @@ def quaternion_conjugate_xyzw(q: Sequence[float]) -> np.ndarray:
     return np.array([-x, -y, -z, w], dtype=float)
 
 
+def px4_to_ros_quaternion(q_wxyz: Sequence[float]) -> np.ndarray:
+    """Rotate an FRD→NED attitude into FLU→ENU (not just its yaw)."""
+    world = np.array([math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0])
+    body = np.array([1.0, 0.0, 0.0, 0.0])
+    return normalize_quaternion_xyzw(quaternion_multiply_xyzw(
+        quaternion_multiply_xyzw(world, quaternion_wxyz_to_xyzw(q_wxyz)), body
+    ))
+
+
+def ros_to_px4_quaternion(q_xyzw: Sequence[float]) -> np.ndarray:
+    """Inverse of px4_to_ros_quaternion; return PX4 wxyz ordering."""
+    world = np.array([math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0])
+    body = np.array([1.0, 0.0, 0.0, 0.0])
+    q = normalize_quaternion_xyzw(quaternion_multiply_xyzw(
+        quaternion_multiply_xyzw(world, q_xyzw), body
+    ))
+    return q[[3, 0, 1, 2]]
+
+
 def normalize_quaternion_xyzw(q: Sequence[float]) -> np.ndarray:
     arr = np.asarray(q, dtype=float)
     norm = float(np.linalg.norm(arr))

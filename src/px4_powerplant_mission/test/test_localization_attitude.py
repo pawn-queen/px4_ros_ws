@@ -39,6 +39,7 @@ class _FakeLocalization:
     _invalidate_tilt = LocalizationNode._invalidate_tilt
 
     def __init__(self):
+        self.px4_attitude = None
         self.state = FusionState()
         self.state.has_position = True
         self.now_ns = 2_000_000_000

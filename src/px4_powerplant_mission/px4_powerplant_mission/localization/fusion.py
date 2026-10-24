@@ -1,4 +1,9 @@
-"""Small complementary pose fusion helper used by the localization node."""
+"""Navigation-side fusion math, reusable with explicitly chosen input sources.
+
+FusionState does not certify independence. If a caller supplies a PX4 prior or
+velocity, its result is correlated with PX4 and MUST NOT be fed back as EV.
+The external vision bridge bypasses this helper and forwards qualified UWB.
+"""
 
 from __future__ import annotations
 

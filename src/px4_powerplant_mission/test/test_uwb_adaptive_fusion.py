@@ -7,6 +7,7 @@ import pytest
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
 from px4_powerplant_mission.localization.fusion import FusionState
+from px4_powerplant_mission.localization.inputs import UwbInput
 from px4_powerplant_mission.nodes.localization_node import LocalizationNode
 
 
@@ -16,6 +17,7 @@ class _FakeLogger:
 
 
 class _FakeLocalization:
+    _check_clock = LocalizationNode._check_clock
     _uwb_pose_callback = LocalizationNode._uwb_pose_callback
     _reject_uwb = LocalizationNode._reject_uwb
     _uwb_is_recent = LocalizationNode._uwb_is_recent
@@ -27,6 +29,9 @@ class _FakeLocalization:
 
     def __init__(self):
         self.now_ns = 10_000_000_000
+        self.last_clock_ns = 0
+        self.navigation_mode = "adaptive"
+        self.input = UwbInput(max_z=2.)
         self.state = FusionState()
         self.last_uwb_stamp_ns = 0
         self.last_uwb_sample_stamp_ns = 0
