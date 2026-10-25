@@ -1,6 +1,7 @@
 #pragma once
 #include "px4_powerplant_mission_cpp/map_snapshot.hpp"
 #include "px4_powerplant_mission_cpp/worker.hpp"
+#include "px4_powerplant_mission_cpp/scan_coverage.hpp"
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -12,6 +13,7 @@
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_command_ack.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
+#include <px4_msgs/msg/vehicle_land_detected.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <set>
@@ -27,7 +29,8 @@ enum class Phase {
   Target,
   Return,
   Landing,
-  Complete
+  Complete,
+  Fault
 };
 const char *phase_name(Phase p);
 struct TargetObservation {
@@ -43,6 +46,15 @@ struct PlanResult {
   Path path;
   std::map<size_t, int> goal_ids;
   std::string error;
+  PlanningFailure failure = PlanningFailure::None;
+  int64_t map_epoch = 0, camera_revision = 0;
+  double variance = 0;
+  double variance_growth = 0;
+  ExplorationConfig configuration;
+  Bounds bounds{};
+  Vec3 source_start = Vec3::Zero(), home = Vec3::Zero();
+  size_t frontier_count = 0, candidate_count = 0;
+  std::string detail;
 };
 struct PhotoResult {
   JsonValue event;
@@ -56,6 +68,7 @@ public:
 
 private:
   friend struct MissionTestAccess;
+  friend struct P1MissionTestAccess;
   void subscribe_vehicle();
   void subscribe_map();
   void subscribe_camera();
@@ -70,8 +83,22 @@ private:
   Quat orientation_ = Quat::Identity();
   double yaw_ = 0, speed_ = inf, yaw_rate_ = inf;
   int64_t odom_stamp_ = 0;
-  double xy_variance_ = inf, z_variance_ = inf, tilt_variance_ = inf;
+  int64_t odom_sample_ = 0, odom_seen_ = 0, odom_steady_ = 0, last_clock_ = 0;
+  double xy_variance_ = inf, z_variance_ = inf, tilt_variance_ = inf,
+         yaw_variance_ = inf;
+  std::string input_reject_reason_, fault_reason_;
+  uint64_t rejected_odom_ = 0;
+  int64_t localization_epoch_ = 0, localization_sequence_ = 0,
+          localization_stamp_ = 0, localization_steady_ = 0,
+          localization_boundary_sample_ = 0;
+  bool independent_healthy_ = false;
+  std::set<int64_t> retired_localization_epochs_;
   Status vehicle_;
+  px4_msgs::msg::VehicleLandDetected land_;
+  int64_t vehicle_stamp_ = 0, vehicle_steady_ = 0,
+          land_stamp_ = 0, land_steady_ = 0, landed_since_ = 0;
+  bool flight_armed_ = false, flight_offboard_ = false,
+       landing_timeout_reported_ = false;
   px4_msgs::msg::FailsafeFlags failsafe_;
   std::optional<Ack> ack_;
   SlewState slew_;
@@ -86,7 +113,12 @@ private:
   size_t grid_known_ = 0;
   cv::Mat depth_;
   int64_t depth_stamp_ = 0, lidar_stamp_ = 0;
+  int64_t depth_sample_ = 0, lidar_sample_ = 0, grid_sample_ = 0,
+          rgb_sample_ = 0, depth_steady_ = 0, lidar_steady_ = 0,
+          grid_steady_ = 0, rgb_steady_ = 0;
   sensor_msgs::msg::CameraInfo::ConstSharedPtr camera_info_;
+  std::optional<CameraViewGeometry> fused_camera_;
+  int64_t camera_revision_ = 0;
   sensor_msgs::msg::Image::ConstSharedPtr rgb_;
   std::optional<TargetObservation> target_;
   Path waypoints_, navigation_goals_;
@@ -95,20 +127,37 @@ private:
   std::map<size_t, int> goal_ids_;
   std::set<int> captured_;
   int photos_ = 0;
-  int64_t mission_started_ = 0, search_started_ = 0, landing_started_ = 0;
+  int64_t mission_started_ = 0, mission_steady_ = 0, search_started_ = 0,
+          landing_started_ = 0, landing_started_steady_ = 0;
   bool landing_sent_ = false;
   std::optional<YawScan> scan_;
   int64_t scan_entered_ = 0, hover_since_ = 0;
   bool rotating_ = false;
+  HeadingCoverage scan_coverage_;
+  int64_t scan_observation_id_ = 0, scan_observation_epoch_ = 0;
+  size_t scan_accepted_observations_ = 0;
+  double scan_heading_ = 0;
+  int64_t scan_last_accepted_sample_ = 0, scan_heading_started_ = 0;
+  double scan_last_accepted_yaw_ = 0;
   std::optional<int64_t> scan_depth_base_, scan_lidar_base_, step_depth_base_,
       step_lidar_base_;
   Keys visited_;
+  KeyMap<uint64_t> visited_views_;
+  int64_t visited_views_revision_ = 0;
   double explore_yaw_ = 0, explore_score_ = 0;
   int64_t viewpoint_entered_ = 0, viewpoint_depth_base_ = 0;
+  int64_t viewpoint_aligned_since_ = 0;
+  int64_t viewpoint_revision_ = 0, viewpoint_observation_id_ = 0;
+  int64_t latest_depth_observation_id_ = 0, latest_depth_observation_sample_ = 0;
+  Vec3 latest_depth_observation_position_ = Vec3::Zero();
+  double latest_depth_observation_yaw_ = 0;
   int64_t explore_revision_ = -1, return_revision_ = -1, target_revision_ = -1;
   int64_t explore_plan_stamp_ = 0, return_plan_stamp_ = 0,
           target_plan_stamp_ = 0;
   bool planning_ = false;
+  bool explore_global_search_ = false;
+  PlanningFailure explore_failure_ = PlanningFailure::WaitingForMap;
+  uint64_t reused_plan_results_ = 0, rejected_plan_results_ = 0;
   Phase planning_phase_ = Phase::Idle;
   bool photo_pending_ = false;
   int photo_goal_ = 0;
@@ -131,8 +180,24 @@ private:
   LatestWorker<PlanResult> planner_;
   LatestWorker<PhotoResult> recorder_;
   void on_odom(const nav_msgs::msg::Odometry &);
+  void on_localization_status(const std::string &);
+  void on_vehicle(const Status &);
+  void on_land_detected(const px4_msgs::msg::VehicleLandDetected &);
+  bool observe_clock();
+  bool receipt_fresh(int64_t stamp, int64_t steady, double max_age) const;
+  bool vehicle_fresh() const;
+  std::string motion_health_reason() const;
+  std::string takeoff_space_reason() const;
+  void fault(const std::string &);
   void on_grid(const nav_msgs::msg::OccupancyGrid &);
   void on_fusion(const std::string &);
+  void observe_fused_camera(const JsonValue &);
+  void observe_scan_depth(const JsonValue &);
+  void observe_viewpoint_depth(const JsonValue &);
+  bool scan_first_segment_ready() const;
+  bool camera_ready() const;
+  bool plan_changes_relevant(const PlanResult &) const;
+  void refresh_view_memory();
   void on_detection(const std::string &);
   std::optional<Vec3> project_bbox(const JsonValue &, int width,
                                    int height) const;

@@ -1,16 +1,99 @@
 #include "px4_powerplant_mission_cpp/offboard.hpp"
+#include "px4_powerplant_mission_cpp/input_validation.hpp"
 namespace powerplant {
+bool OffboardMissionNode::receipt_fresh(int64_t stamp, int64_t steady,
+                                        double max_age) const {
+  const int64_t current = ns(), monotonic = steady_ns();
+  return stamp > 0 && steady > 0 && current >= stamp &&
+         monotonic >= steady && (current - stamp) * 1e-9 <= max_age &&
+         (monotonic - steady) * 1e-9 <= max_age;
+}
+bool OffboardMissionNode::vehicle_fresh() const {
+  return receipt_fresh(vehicle_stamp_, vehicle_steady_,
+                       d("max_vehicle_status_age_s"));
+}
 bool OffboardMissionNode::localization_ready() const {
-  if (!position_)
+  if (!position_ || !independent_healthy_ || localization_epoch_ <= 0 ||
+      odom_sample_ < localization_boundary_sample_ ||
+      !receipt_fresh(localization_stamp_, localization_steady_,
+                     d("max_localization_age_s")))
     return false;
-  if (!b("require_localization_for_start"))
-    return true;
-  return age(odom_stamp_) <= d("max_localization_age_s") &&
+  return receipt_fresh(odom_stamp_, odom_steady_, d("max_localization_age_s")) &&
+         stamp_reason(odom_sample_, ns(), d("max_localization_age_s"),
+                      d("max_future_stamp_skew_s")).empty() &&
          xy_variance_ <= d("max_start_position_variance_m2") &&
-         z_variance_ <= d("max_start_height_variance_m2");
+         z_variance_ <= d("max_start_height_variance_m2") && tilt_ready() &&
+         yaw_variance_ <= d("max_start_yaw_variance_rad2");
 }
 bool OffboardMissionNode::tilt_ready() const {
   return tilt_variance_ <= d("initial_scan_max_tilt_variance_rad2");
+}
+std::string OffboardMissionNode::motion_health_reason() const {
+  if (!localization_ready())
+    return "navigation pose stale or position/attitude quality invalid";
+  if (!vehicle_fresh())
+    return "PX4 vehicle status stale";
+  if (vehicle_.failsafe)
+    return "PX4 failsafe active";
+  if (maps_.status_received && !maps_.localization_healthy)
+    return "mapper rejected localization quality";
+  if (flight_armed_ && vehicle_.arming_state != Status::ARMING_STATE_ARMED)
+    return "PX4 disarmed during active mission; automatic rearm prohibited";
+  if (flight_offboard_ &&
+      vehicle_.nav_state != Status::NAVIGATION_STATE_OFFBOARD)
+    return "PX4 left Offboard; automatic mode takeover prohibited";
+  return {};
+}
+void OffboardMissionNode::fault(const std::string &reason) {
+  if (phase_ == Phase::Fault)
+    return;
+  cancel_jobs();
+  phase_ = Phase::Fault;
+  active_ = false;
+  fault_reason_ = reason;
+  waypoints_.clear();
+  goal_ids_.clear();
+  slew_ = SlewState{};
+  warmup_ = 0;
+  safety(true, reason);
+  auto p = object();
+  p["reason"] = reason;
+  p["recovery"] = "explicit restart after fresh localization and disarmed PX4";
+  event("mission_fault", p);
+}
+std::string OffboardMissionNode::takeoff_space_reason() const {
+  if (!position_)
+    return "takeoff position unavailable";
+  if (!b("takeoff_region_confirmed"))
+    return "safe takeoff column has not been explicitly confirmed";
+  const double radius = d("takeoff_region_radius_m"),
+               height = d("takeoff_region_height_m"),
+               takeoff = d("takeoff_height_m"),
+               clearance = d("explore_clearance_radius_m");
+  if (!std::isfinite(radius) || !std::isfinite(height) ||
+      !std::isfinite(takeoff) || !std::isfinite(clearance) || clearance <= 0 ||
+      radius < clearance || takeoff <= 0 ||
+      height < takeoff + clearance)
+    return "confirmed takeoff region does not contain the configured ascent";
+  const Vec3 origin = home_.value_or(*position_);
+  if ((position_->head<2>() - origin.head<2>()).norm() + clearance > radius ||
+      position_->z() < origin.z() - clearance ||
+      position_->z() + clearance > origin.z() + height)
+    return "vehicle left the confirmed takeoff column";
+  // Unknown space is covered only by the explicit, physically verified column.
+  // Actual occupied evidence always overrides that external confirmation.
+  const double resolution = maps_.map.resolution;
+  if (resolution > 0 && std::isfinite(resolution)) {
+    const double inflated = clearance + std::sqrt(3.0) * resolution * .5;
+    Vec3 top = origin + Vec3(0, 0, takeoff);
+    for (const auto &k : maps_.map.occupied) {
+      Vec3 p = center(k, resolution);
+      double z = std::clamp(p.z(), origin.z(), top.z());
+      if ((p - Vec3(origin.x(), origin.y(), z)).norm() <= inflated)
+        return "observed obstacle intersects confirmed takeoff column";
+    }
+  }
+  return {};
 }
 void OffboardMissionNode::reset_setpoint() {
   if (position_)
@@ -71,6 +154,9 @@ std::string OffboardMissionNode::preflight_reason() const {
   return result;
 }
 void OffboardMissionNode::engage() {
+  if (!active_ || phase_ == Phase::Fault || phase_ == Phase::Landing ||
+      !motion_health_reason().empty())
+    return;
   warmup_ = std::min(warmup_ + 1, 1000);
   if (warmup_ < i("offboard_warmup_setpoints")) {
     command_wait_ = "warming up Offboard setpoints " + std::to_string(warmup_) +
@@ -101,7 +187,7 @@ void OffboardMissionNode::engage() {
     command_wait_ = "waiting for PX4 to accept Offboard setpoints";
     return;
   }
-  if (b("arm_on_start") &&
+  if (b("arm_on_start") && !flight_armed_ &&
       vehicle_.arming_state != Status::ARMING_STATE_ARMED &&
       ns() - arm_request_ >= retry) {
     arm_request_ = ns();
@@ -156,6 +242,12 @@ void OffboardMissionNode::safety(bool active, const std::string &reason) {
 }
 std::pair<bool, std::string>
 OffboardMissionNode::safety_required(const Vec3 &target) {
+  if (!motion_health_reason().empty())
+    return {true, motion_health_reason()};
+  if (phase_ == Phase::Takeoff || phase_ == Phase::Scan) {
+    auto reason = takeoff_space_reason();
+    return {!reason.empty(), reason};
+  }
   if (phase_ != Phase::Explore && phase_ != Phase::Target &&
       phase_ != Phase::Return)
     return {false, ""};

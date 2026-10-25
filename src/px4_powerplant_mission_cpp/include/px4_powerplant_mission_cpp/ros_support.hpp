@@ -66,6 +66,44 @@ inline rclcpp::QoS reliable_qos() {
 inline int64_t stamp_ns(const builtin_interfaces::msg::Time &stamp) {
   return int64_t(stamp.sec) * 1000000000 + stamp.nanosec;
 }
+// Detect mismatched payloads when a clock reset reuses an old cloud stamp.
+// This is an integrity checksum, not an authentication mechanism. Include the
+// wire layout as well as bytes so differently interpreted clouds cannot pair.
+inline std::string cloud_fingerprint(const sensor_msgs::msg::PointCloud2 &cloud) {
+  uint64_t hash = 14695981039346656037ULL;
+  auto byte = [&](uint8_t value) {
+    hash ^= value;
+    hash *= 1099511628211ULL;
+  };
+  auto integer_bytes = [&](uint64_t value) {
+    for (int shift = 0; shift < 64; shift += 8)
+      byte(static_cast<uint8_t>(value >> shift));
+  };
+  auto string_bytes = [&](const std::string &value) {
+    integer_bytes(value.size());
+    for (unsigned char character : value)
+      byte(character);
+  };
+  string_bytes(cloud.header.frame_id);
+  integer_bytes(cloud.width);
+  integer_bytes(cloud.height);
+  integer_bytes(cloud.point_step);
+  integer_bytes(cloud.row_step);
+  integer_bytes(cloud.is_bigendian);
+  integer_bytes(cloud.fields.size());
+  for (const auto &field : cloud.fields) {
+    string_bytes(field.name);
+    integer_bytes(field.offset);
+    integer_bytes(field.datatype);
+    integer_bytes(field.count);
+  }
+  integer_bytes(cloud.data.size());
+  for (uint8_t value : cloud.data)
+    byte(value);
+  std::ostringstream result;
+  result << std::hex << hash;
+  return result.str();
+}
 class ParameterNode : public rclcpp::Node {
 public:
   explicit ParameterNode(const std::string &name) : Node(name) {}

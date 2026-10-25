@@ -1,4 +1,5 @@
 #include "px4_powerplant_mission_cpp/core.hpp"
+#include "px4_powerplant_mission_cpp/raycast.hpp"
 
 namespace powerplant {
 void VoxelGrid::update(const Key &k, double delta) {
@@ -26,18 +27,18 @@ size_t VoxelGrid::insert_points(const Path &points) {
 size_t VoxelGrid::insert_rays(const Path &origins, const Path &points) {
   if (origins.size() != points.size())
     throw std::invalid_argument("ray origin count mismatch");
+  if (!std::isfinite(resolution) || resolution <= 0)
+    throw std::invalid_argument("voxel resolution must be finite and positive");
   Keys hits, free;
   for (size_t i = 0; i < points.size(); ++i) {
     if (!origins[i].allFinite() || !points[i].allFinite())
       continue;
     const Key hk = key(points[i], resolution);
     hits.insert(hk);
-    const Vec3 delta = points[i] - origins[i];
-    int steps =
-        std::max(1, static_cast<int>(std::ceil(
-                        delta.norm() / std::max(resolution * .5, .001))));
-    for (int j = 0; j < steps; ++j)
-      free.insert(key(origins[i] + delta * (double(j) / steps), resolution));
+    walk_ray_positive(origins[i], points[i], resolution,
+                      [&](const Key &cell, long double, long double) {
+                        free.insert(cell);
+                      });
   }
   for (const auto &k : free)
     if (!hits.count(k))

@@ -11,6 +11,7 @@ void OffboardMissionNode::subscribe_map() {
   SUB(sensor_msgs::msg::PointCloud2, "observed_voxels_topic", reliable_qos(), {
     maps_.cloud = m;
     try {
+      maps_.index_clearance_radius_m=d("explore_clearance_radius_m");
       maps_.commit(s("map_frame"), ns());
     } catch (const std::exception &e) {
       RCLCPP_WARN(get_logger(), "invalid voxel snapshot: %s", e.what());

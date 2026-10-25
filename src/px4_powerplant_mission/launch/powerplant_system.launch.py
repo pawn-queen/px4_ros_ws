@@ -114,7 +114,7 @@ def generate_launch_description() -> LaunchDescription:
                 name="powerplant_yolo_detector",
                 output="screen",
                 prefix=LaunchConfiguration("yolo_python"),
-                parameters=[config_file],
+                parameters=[config_file, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
                 condition=IfCondition(LaunchConfiguration("use_yolo")),
             ),
             Node(
@@ -122,7 +122,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="offboard_mission_node",
                 name="powerplant_offboard_mission",
                 output="screen",
-                parameters=[config_file],
+                parameters=[config_file, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
                 condition=IfCondition(LaunchConfiguration("use_control")),
             ),
         ]

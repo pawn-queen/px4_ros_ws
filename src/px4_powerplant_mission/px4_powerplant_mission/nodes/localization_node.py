@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 import math
+import time
 from typing import Any
 
 import numpy as np
@@ -61,6 +62,9 @@ class LocalizationNode(Node):
         self.navigation_odom = None
         self.last_navigation_sample_ns = 0
         self.last_px4_reset_counter = None
+        # Opaque identity, never subtracted from ROS/device timestamps.
+        self.localization_epoch = time.monotonic_ns()
+        self.status_sequence = 0
         self.px4_attitude = None
         self.tilt_source = "unknown"
         self.state_stamp_ns = 0
@@ -259,6 +263,8 @@ class LocalizationNode(Node):
             self.input.invalid_before_ns = self.get_clock().now().nanoseconds
             self.input.reason = "PX4 estimator reset; awaiting new independent measurement"
             self.navigation_odom = None
+            self.localization_epoch += 1
+            self.status_sequence = 0
         self.last_px4_reset_counter = msg.reset_counter
         self.last_navigation_sample_ns = sample
         velocity = (ned_to_enu(msg.velocity)
@@ -316,6 +322,8 @@ class LocalizationNode(Node):
     def _check_clock(self):
         now_ns = self.get_clock().now().nanoseconds
         if now_ns < self.last_clock_ns:
+            self.localization_epoch += 1
+            self.status_sequence = 0
             self.navigation_odom = self.px4_attitude = None
             self.last_navigation_sample_ns = self.last_uwb_stamp_ns = 0
             self.last_uwb_sample_stamp_ns = self.state_stamp_ns = 0
@@ -582,6 +590,7 @@ class LocalizationNode(Node):
 
     def _status(self) -> dict[str, Any]:
         now_ns = self.get_clock().now().nanoseconds
+        self.status_sequence = getattr(self, "status_sequence", 0) + 1
 
         def age(stamp_ns: int) -> float | None:
             return None if stamp_ns == 0 else round((now_ns - stamp_ns) * 1e-9, 3)
@@ -601,6 +610,9 @@ class LocalizationNode(Node):
             if self._has_independent_position():
                 variance = np.asarray(self.navigation_odom.pose.covariance)[[0, 7, 14]]
         return {
+            "status_stamp_ns": now_ns,
+            "status_sequence": self.status_sequence,
+            "localization_epoch": getattr(self, "localization_epoch", 0),
             "frame": "ENU/FLU",
             "navigation_mode": self.navigation_mode,
             "navigation_source": "PX4 EKF" if self.navigation_mode == "px4" else "adaptive (may contain PX4 information)",

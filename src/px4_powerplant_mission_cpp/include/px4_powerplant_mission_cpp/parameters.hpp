@@ -1,5 +1,5 @@
-// Defaults copied from the retained Python nodes. YAML overrides remain
-// authoritative.
+// Shared defaults plus native P0 safety and P1 mapping/observation parameters.
+// YAML overrides remain authoritative.
 #pragma once
 #include <rclcpp/rclcpp.hpp>
 namespace powerplant {
@@ -23,6 +23,12 @@ inline void declare_voxel_mapper_parameters(rclcpp::Node &n) {
                                    "/powerplant/map/fusion_status");
   n.declare_parameter<std::string>("map_frame", "map");
   n.declare_parameter<std::string>("base_frame", "base_link");
+  n.declare_parameter<std::string>("localization_status_topic",
+                                   "/powerplant/localization/status");
+  n.declare_parameter<double>("max_position_variance_m2", 4.0);
+  n.declare_parameter<double>("max_localization_age_s", 0.5);
+  n.declare_parameter<double>("max_sensor_age_s", 2.0);
+  n.declare_parameter<double>("max_future_stamp_skew_s", 0.1);
   n.declare_parameter<double>("voxel_resolution_m", 0.25);
   n.declare_parameter<double>("hit_log_odds", 0.85);
   n.declare_parameter<double>("miss_log_odds", -0.4);
@@ -31,6 +37,12 @@ inline void declare_voxel_mapper_parameters(rclcpp::Node &n) {
   n.declare_parameter<bool>("ray_clear_enabled", true);
   n.declare_parameter<double>("publish_rate_hz", 2.0);
   n.declare_parameter<int64_t>("depth_stride_px", 8);
+  n.declare_parameter<bool>("depth_adaptive_sampling_enabled", true);
+  n.declare_parameter<int64_t>("depth_min_stride_px", 1);
+  n.declare_parameter<double>("depth_max_ray_spacing_m", 0.20);
+  n.declare_parameter<double>("depth_edge_threshold_m", 0.25);
+  n.declare_parameter<int64_t>("depth_max_rays_per_frame", 12000);
+  n.declare_parameter<double>("depth_min_valid_fraction", 0.05);
   n.declare_parameter<double>("depth_fusion_rate_hz", 3.0);
   n.declare_parameter<double>("lidar_fusion_rate_hz", 3.0);
   n.declare_parameter<double>("max_depth_range_m", 18.0);
@@ -85,6 +97,10 @@ inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<std::string>("rgb_image_topic", "/camera");
   n.declare_parameter<std::string>("vehicle_status_topic",
                                    "/fmu/out/vehicle_status");
+  n.declare_parameter<std::string>("vehicle_land_detected_topic",
+                                   "/fmu/out/vehicle_land_detected");
+  n.declare_parameter<std::string>("localization_status_topic",
+                                   "/powerplant/localization/status");
   n.declare_parameter<std::string>("battery_status_topic",
                                    "/fmu/out/battery_status");
   n.declare_parameter<std::string>("failsafe_flags_topic",
@@ -100,19 +116,32 @@ inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<std::string>("mission_status_topic",
                                    "/powerplant/control/mission_status");
   n.declare_parameter<std::string>("map_frame", "map");
+  n.declare_parameter<std::string>("base_frame", "base_link");
   n.declare_parameter<bool>("auto_start", false);
   n.declare_parameter<bool>("arm_on_start", true);
   n.declare_parameter<double>("command_retry_interval_s", 1.0);
   n.declare_parameter<int64_t>("offboard_warmup_setpoints", 20);
   n.declare_parameter<bool>("require_localization_for_start", true);
   n.declare_parameter<double>("max_localization_age_s", 0.5);
+  n.declare_parameter<double>("max_future_stamp_skew_s", 0.1);
+  n.declare_parameter<double>("max_vehicle_status_age_s", 1.0);
+  n.declare_parameter<double>("max_land_detection_age_s", 1.0);
+  n.declare_parameter<double>("max_start_yaw_variance_rad2", 0.5);
   n.declare_parameter<double>("max_start_position_variance_m2", 4.0);
   n.declare_parameter<double>("max_start_height_variance_m2", 4.0);
   n.declare_parameter<bool>("require_preflight_checks", true);
   n.declare_parameter<bool>("require_accepts_offboard_setpoints", false);
   n.declare_parameter<double>("takeoff_height_m", 5.0);
+  n.declare_parameter<bool>("takeoff_region_confirmed", false);
+  n.declare_parameter<double>("takeoff_region_radius_m", 1.0);
+  n.declare_parameter<double>("takeoff_region_height_m", 0.0);
   n.declare_parameter<double>("initial_scan_hover_s", 2.0);
   n.declare_parameter<int64_t>("initial_scan_yaw_steps", 12);
+  n.declare_parameter<int64_t>("initial_scan_coverage_bins", 72);
+  n.declare_parameter<double>("initial_scan_required_coverage_fraction", 0.9);
+  n.declare_parameter<double>("initial_scan_min_valid_depth_fraction", 0.2);
+  n.declare_parameter<double>("initial_scan_min_free_path_m", 0.75);
+  n.declare_parameter<double>("initial_scan_heading_timeout_s", 3.0);
   n.declare_parameter<double>("initial_scan_yaw_rate_radps", 0.2);
   n.declare_parameter<double>("initial_scan_yaw_dwell_s", 0.3);
   n.declare_parameter<double>("initial_scan_yaw_tolerance_rad", 0.12);
@@ -160,6 +189,19 @@ inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<double>("explore_sensor_range_m", 8.0);
   n.declare_parameter<double>("explore_local_path_length_m", 2.0);
   n.declare_parameter<double>("explore_viewpoint_dwell_s", 0.4);
+  n.declare_parameter<double>("explore_view_yaw_rate_radps", 0.6);
+  n.declare_parameter<bool>("explore_require_camera_info", true);
+  n.declare_parameter<int64_t>("explore_max_candidates", 96);
+  n.declare_parameter<int64_t>("explore_max_frontier_targets", 400);
+  n.declare_parameter<int64_t>("explore_yaw_bins", 12);
+  n.declare_parameter<double>("explore_candidate_spacing_m", 0.75);
+  n.declare_parameter<double>("explore_min_goal_distance_m", 0.75);
+  n.declare_parameter<double>("explore_information_weight", 3.0);
+  n.declare_parameter<double>("explore_surface_weight", 2.0);
+  n.declare_parameter<double>("explore_travel_time_weight", 0.12);
+  n.declare_parameter<double>("explore_clearance_weight", 0.5);
+  n.declare_parameter<double>("explore_localization_weight", 0.5);
+  n.declare_parameter<double>("explore_reserve_weight", 0.5);
   n.declare_parameter<double>("explore_cruise_speed_mps", 1.0);
   n.declare_parameter<double>("explore_return_speed_mps", 1.0);
   n.declare_parameter<double>("explore_return_reserve_s", 30.0);
@@ -174,7 +216,8 @@ inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<int64_t>("inspection_required_photos", 4);
   n.declare_parameter<std::string>("inspection_photo_dir",
                                    "/home/pawn/px4_ros_ws/inspection_photos");
-  n.declare_parameter<bool>("require_image_for_photo", false);
+  n.declare_parameter<bool>("require_image_for_photo", true);
+  n.declare_parameter<double>("max_photo_age_s", 1.0);
   n.declare_parameter<double>("camera_fx", 430.0);
   n.declare_parameter<double>("camera_fy", 430.0);
   n.declare_parameter<double>("camera_cx", 320.0);
@@ -187,5 +230,6 @@ inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<double>("max_depth_age_s", 1.0);
   n.declare_parameter<double>("land_complete_height_m", 0.25);
   n.declare_parameter<double>("land_complete_timeout_s", 20.0);
+  n.declare_parameter<double>("landing_confirm_dwell_s", 1.0);
 }
 } // namespace powerplant

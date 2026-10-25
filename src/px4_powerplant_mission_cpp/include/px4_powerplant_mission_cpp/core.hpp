@@ -8,8 +8,10 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -125,6 +127,14 @@ struct ExplorationConfig {
   double camera_horizontal_fov_rad = 75 * pi / 180,
          camera_vertical_fov_rad = 60 * pi / 180;
   int yaw_bins = 12;
+  double current_yaw_rad = 0, yaw_rate_radps = .6, viewpoint_dwell_s = .4;
+  bool camera_calibrated = false;
+  double camera_yaw_min_rad = -37.5 * pi / 180,
+         camera_yaw_max_rad = 37.5 * pi / 180,
+         camera_pitch_min_rad = -30 * pi / 180,
+         camera_pitch_max_rad = 30 * pi / 180;
+  Vec3 camera_translation_flu = Vec3::Zero();
+  KeyMap<uint64_t> visited_yaw_masks;
   double information_weight = 3, surface_weight = 2, travel_time_weight = .12,
          clearance_weight = .5, localization_weight = .5, reserve_weight = .5;
 };
@@ -137,15 +147,38 @@ struct ExplorationPlan {
   int visible_unknown_count = 0;
   double surface_gain = 0, outbound_time_s = 0, return_time_s = 0,
          clearance_m = 0, localization_variance_m2 = 0, reserve_margin_s = 0;
+  double rotation_time_s = 0, observation_time_s = 0;
+  Path full_path_xyz, return_path_xyz;
 };
+class PlanningIndex;
 struct PlanningMap {
   Keys free, occupied;
   double resolution = .25;
   mutable Bounds bounds{};
+  std::shared_ptr<const PlanningIndex> index;
 };
 using Cancel = std::function<bool()>;
 struct PlanningCancelled : std::runtime_error {
   PlanningCancelled() : std::runtime_error("planning cancelled") {}
+};
+enum class PlanningFailure {
+  None,
+  WaitingForMap,
+  NoLocalCandidate,
+  FrontierExhausted,
+  Blocked,
+  LocalizationPoor,
+  ReturnReserveLow,
+  Cancelled,
+  InvalidInput,
+  CalibrationUnavailable
+};
+const char *planning_failure_name(PlanningFailure failure);
+struct FrontierDecision {
+  std::optional<ExplorationPlan> plan;
+  PlanningFailure failure = PlanningFailure::None;
+  size_t frontier_count = 0, candidate_count = 0;
+  std::string detail;
 };
 void check_cancel(const Cancel &cancel);
 KeyMap<Keys> extract_frontiers(const PlanningMap &map);
@@ -159,6 +192,12 @@ plan_frontier(const PlanningMap &, const Vec3 &, const Vec3 &, double remaining,
               const KeyMap<double> &surfaces = {},
               const std::function<double(const Key &)> &variance_at = {},
               const Keys &visited = {}, const Cancel &cancel = {});
+FrontierDecision plan_frontier_detailed(
+    const PlanningMap &, const Vec3 &, const Vec3 &, double remaining,
+    double variance, const ExplorationConfig & = {},
+    const KeyMap<double> &surfaces = {},
+    const std::function<double(const Key &)> &variance_at = {},
+    const Keys &visited = {}, const Cancel &cancel = {});
 Path local_segment(const Path &, double length);
 struct YawScan {
   double start = 0, dwell = 0;

@@ -85,13 +85,13 @@ source install/setup.bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py
 ```
 
-这个 launch 会默认启动 Gazebo 真值桥接及 `/world/powerplant/clock` 到 ROS `/clock` 的桥接。UWB、定位、外部视觉桥和建图节点默认使用仿真时间，使雷达、深度图和里程计的消息时间戳处于同一时钟域；Offboard 控制节点保留原有时钟，并按收到融合计数更新的时间判断观测新鲜度。UWB 默认使用 `/world/powerplant/dynamic_pose/info` 的模型位姿；`/model/x500_depth/odometry_with_covariance` 仍保留为可选 odometry 后备源。如果你已经在别处桥接同一 truth topic，可加 `use_gazebo_truth_bridge:=false`；如果已经有 `/clock` 发布者，可加 `use_gazebo_clock_bridge:=false`。默认不会启动 YOLO 和飞控。需要时显式打开：
+这个 launch 会默认启动 Gazebo 真值桥接及 `/world/powerplant/clock` 到 ROS `/clock` 的桥接。UWB、定位、外部视觉桥、建图、YOLO 和 Offboard 节点统一使用 `use_sim_time`，使传感器和状态采样处于同一时钟域；原生节点另用单调接收时限检测数据停止和仿真时钟冻结，旧融合计数不能刷新健康。UWB 默认使用 `/world/powerplant/dynamic_pose/info` 的模型位姿；`/model/x500_depth/odometry_with_covariance` 仍保留为可选 odometry 后备源。如果你已经在别处桥接同一 truth topic，可加 `use_gazebo_truth_bridge:=false`；如果已经有 `/clock` 发布者，可加 `use_gazebo_clock_bridge:=false`。默认不会启动 YOLO 和飞控。需要时显式打开：
 
 ```bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
 ```
 
-建图与控制默认使用 C++ 可执行程序，沿用原节点名、YAML、话题、消息类型、QoS 和服务接口。可分别切回保留的 Python 实现：
+建图与控制默认使用 C++ 可执行程序，沿用原节点名、YAML、话题、消息类型、QoS 和服务接口。C++ 已增加 P0 健康协议和 [P1 建图/观测改进](../px4_powerplant_mission_cpp/P1_IMPLEMENTATION.md)；保留的 Python mapper/controller 用于旧算法对照，应成对回退，不能把旧 mapper 的健康消息接入新 C++ 控制器授权探索。回退参数为：
 
 ```bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py \
@@ -151,8 +151,7 @@ ros2 topic echo /powerplant/localization/odom nav_msgs/msg/Odometry --once --tim
 `setpoint_enu` 是经过限速后的实际 PX4 setpoint。正常情况下 `setpoint_enu` 会逐步靠近
 `nav_target_enu`，不是瞬间跳到远端航点。
 
-调用 `/start_powerplant_mission` 后，飞控节点会先等待起飞条件，不会立刻强行解锁。可用下面
-的话题确认等待原因：
+调用 `/start_powerplant_mission` 前，应确认定位健康、飞控新鲜且已上锁，并配置已实测确认的起飞柱体。当前原生控制器默认 `takeoff_region_confirmed=false`、`takeoff_region_height_m=0`，条件不足时服务返回拒绝原因。通过后仍保留预热与预检。可用下面的话题确认状态：
 
 ```bash
 ros2 topic echo /powerplant/control/mission_status std_msgs/msg/String --once --timeout 5 --spin-time 10 --full-length --no-daemon
@@ -165,16 +164,18 @@ ros2 topic echo /powerplant/control/mission_status std_msgs/msg/String --once --
 `/start_powerplant_mission` 会进入完整巡检流程：
 
 1. `START`：等待独立定位和可靠姿态估计，记录当前位置为 home。起飞区及垂直上升通道须预先确认安全；现有前向深度相机与水平雷达无法直接证明头顶无障碍。
-2. `SAFE_TAKEOFF`：保持 home 水平位置，发布限速的 Offboard 位置 setpoint，上升到绝对 ENU 高度 `takeoff_height_m`。
-3. `HOVER_SCAN`：在起飞点上方稳定悬停至少 `initial_scan_hover_s`，先用水平雷达取轮廓，再缓慢绕偏航轴转动，让前向深度相机观察各方向。默认 12 个航向、每步 30°、偏航 setpoint 最大 `0.2 rad/s`，不主动做大幅横滚或俯仰。每步要求新雷达和深度数据实际融合；初扫锚点及栅格必须有真实空闲观测。若 90 秒仍无法完成，会请求降落。`mission_status` 的 `initial_scan_wait_reason` 和 `initial_scan_step` 可用于诊断。
-4. `EXPLORE`：从三维体素中的**已知空闲与未知的边界**提取前沿，候选观察点位于边界的已知空闲侧，并要求从当前位置和回 home 的路径都在已知空闲体素内，沿途满足三维净空。对候选估计相机可见的新增未知体素、目标表面补拍收益、往返时间、净空、定位方差和返航余量；只下发最多 `explore_local_path_length_m` 的局部路径；到达最终观察点后，对准所选航向并等待新的深度融合，再选择下一视点。已知空闲/占据分类发生变化、局部路径被挡、到达局部路径末端或 YOLO 发现目标时重新决策；YOLO 事件优先转入巡检。探索边界由 `explore_min/max_*_m` 指定，是允许飞行的空间约束，不是预置航点。
+2. `SAFE_TAKEOFF`：保持 home 水平位置，发布限速的 Offboard 位置 setpoint，上升到 `home.z + takeoff_height_m`，相对起飞高度定义见 [P0 配置](../px4_powerplant_mission_cpp/P0_VALIDATION.md)。
+3. `HOVER_SCAN`：在起飞点上方稳定悬停至少 `initial_scan_hover_s`，先用水平雷达取轮廓，再缓慢绕偏航轴转动，让前向深度相机观察各方向。默认 30° 搜索步幅、偏航 setpoint 最大 `0.2 rad/s`，不主动做大幅横滚或俯仰。完成条件改为合格实际深度射线方向覆盖（默认 72 个扇区、至少 90%）、稳定悬停、真实标定、雷达/深度实际融合，以及有净空的已知空闲首段（默认 0.75 m）；名义 12 步不能单独结束初扫。缺失深度时可在已确认起飞柱体内继续慢偏航寻找有效方向，雷达失鲜时暂停转动。若 90 秒仍无法完成，会请求降落。`mission_status` 的 `initial_scan_wait_reason`、`initial_scan_coverage_fraction` 和 `initial_scan_step` 可用于诊断。
+4. `EXPLORE`：从三维体素中的**已知空闲与未知的边界**提取前沿，候选观察点位于边界的已知空闲侧，并要求从当前位置和回 home 的路径都在已知空闲体素内，沿途满足三维净空。按成功融合的实际 CameraInfo 视锥对每个候选 yaw 估计新增可见未知体素、目标表面补拍收益、平移/转向/观察停留时间、净空、定位方差和返航余量；只下发最多 `explore_local_path_length_m` 的局部路径。最终观察点必须对准、停留并取得新合格深度才完成，记忆按位置与 yaw 保存。新几何观测、路径受阻、局部段结束或 YOLO 目标会触发决策；远处无关变化允许复用仍安全的异步结果，附近变化重新评估。局部无候选扩大一次搜索，分类报告原因，不把候选截断当作全图探索完成。YOLO 事件优先转入巡检。探索边界由 `explore_min/max_*_m` 指定，是允许飞行的空间约束，不是预置航点。
 5. `TARGETING_CYCLE`：沿用目标周围的环绕拍照状态机。YOLO 在 `/camera` 上检测 `target_class_name`，控制节点结合深度图和相机内参将检测框反投影为 ENU 目标位置。环绕点只在存在已知空闲三维路线时才执行；到点且航向对准后保存照片并发布事件。
-6. `RETURN_HOME`：照片完成、没有可达前沿或返航时间余量到阈值时，沿已知空闲的三维局部路段返回 home。若地图过期、不完整或无安全返航路线则悬停并在 `mission_status.explore_wait_reason` 报告，不会向未知空间直飞。
-7. `LANDING` / `COMPLETE`：到达 home 上方后发送 PX4 land command，落地或超时后标记任务完成。
+6. `RETURN_HOME`：照片完成、允许边界内前沿耗尽、扩大搜索后策略仍无候选，或返航余量不足时，沿已知空闲的三维局部路段返回 home；分别报告原因。若地图过期、不完整或无安全返航路线则悬停并在 `mission_status.explore_wait_reason` 报告，不会向未知空间直飞。
+7. `LANDING` / `COMPLETE`：到达 home 上方后发送 PX4 land command，收到降落后的新鲜 landed 状态且飞控已上锁，持续确认后才标记任务完成。超时保留 LANDING 并报告未确认。原生控制器发生定位/时钟/坐标重置等故障时进入锁定的 FAULT，停止 Offboard 输出，数据恢复不会自动重新解锁。
 
-建图器缓存带时间戳的定位位姿，在雷达、深度图和点云采样时刻插值位置与姿态；有逐束 `time_increment` 的雷达扫描会按每束时间补偿偏航运动。没有有效时间戳或附近定位样本的数据不会投进地图。UWB 滤波延迟、相机曝光时间和定位误差仍可能形成投影残差。当前深度像素步长为 16，深度图与雷达各最多融合 3 帧/秒，地图以 2 Hz 发布。`/powerplant/map/observed_voxels` 是带 `x,y,z,state` 字段的完整已观测体素云，`state=0` 为已知空闲、`1` 为占据、`-1` 为证据不足；未出现的体素保持未知。控制节点用其时间戳与 `/powerplant/map/fusion_status.map_stamp_ns` 精确配对，只接受 `observed_voxels_complete=true` 的快照。`max_publish_points` 是快照上限，超过时控制节点停止新探索；当前上限为 200000。2D `/powerplant/map/occupancy_grid` 仍供初扫判据、辅助避障与可视化使用，巡检及返航路线都由三维已知空闲体素规划。`/powerplant/control/planned_path` 显示探索与返航的当前局部路段，或巡检阶段的已验证路线。
+建图器缓存带时间戳的定位位姿，在雷达、深度图和点云采样时刻插值位置与姿态；有逐束 `time_increment` 的雷达扫描会按每束时间补偿偏航运动。没有有效时间戳或附近定位样本的数据不会投进地图。UWB 滤波延迟、相机曝光时间和定位误差仍可能形成投影残差。C++ 深度采样以 16 像素为最大 tile 尺度，按投影足迹和边缘细分，最细 1 像素、每帧最多 12000 条射线；空闲更新使用精确体素遍历。深度图与雷达各最多融合 3 帧/秒，地图以 2 Hz 发布。`/powerplant/map/observed_voxels` 是带 `x,y,z,state` 字段的完整已观测体素云，`state=0` 为已知空闲、`1` 为占据、`-1` 为证据不足；未出现的体素保持未知。控制节点用其时间戳与 `/powerplant/map/fusion_status.map_stamp_ns` 精确配对，只接受完整、健康且 epoch/序号有效、点云指纹一致的快照；分类差分驱动增量前沿/净空索引。新地图健康协议和跨进程 Cyclone DDS 基线入口见 [P0 验证说明](../px4_powerplant_mission_cpp/P0_VALIDATION.md)。`max_publish_points` 是快照上限，超过时控制节点停止新探索；当前上限为 200000。2D `/powerplant/map/occupancy_grid` 仍供初扫判据、辅助避障与可视化使用，巡检及返航路线都由三维已知空闲体素规划。`/powerplant/control/planned_path` 显示探索与返航的当前局部路段，或巡检阶段的已验证路线。
 
-返航余量优先使用有效的 PX4 `/fmu/out/battery_status.time_remaining_s`，同时受 `explore_max_duration_s` 限制；电池时间不可用时使用任务时间上限估计。规划器支持目标表面补拍收益，但在首次 YOLO 发现之前没有目标表面语义，当前该收益为零；目标发现后直接进入拍照状态机。定位质量评分以当前定位协方差为基准，并按离当前位置的路径距离做保守方差增长估计（`explore_localization_variance_growth_m2_per_m`）；这不是实测的空间定位质量图。净空半径、定位方差门限和探索边界须按机体尺寸及定位精度调整。
+P1 的视场默认要求与成功融合深度匹配的真实 CameraInfo（`explore_require_camera_info=true`），输入须是对应 K 的已校正 pinhole 深度；没有标定时等待，不用示例 FOV 冒充。新增参数、时间预算公式、失败原因及算法原理见 [P1 实现说明](../px4_powerplant_mission_cpp/P1_IMPLEMENTATION.md)。当前路径仍为离散几何路径，完整飞行和大地图实时性能仍待验收。
+
+返航余量优先使用有效的 PX4 `/fmu/out/battery_status.time_remaining_s`，同时受 `explore_max_duration_s` 限制；电池时间不可用时使用任务时间上限估计。规划器支持目标表面补拍收益，但在首次 YOLO 发现之前没有目标表面语义，当前该收益为零；目标发现后直接进入拍照状态机。定位质量评分以当前定位协方差为基准，并按离当前位置的欧氏距离做保守方差增长估计（`explore_localization_variance_growth_m2_per_m`）；这不是实测的空间定位质量图。净空半径、定位方差门限和探索边界须按机体尺寸及定位精度调整。
 
 ## 可视化窗口
 
@@ -363,7 +364,7 @@ ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py \
 - `/uwb/pose`、`/uwb/range/<anchor>`、`/uwb/quality`：仿真 UWB 位姿、有效逐锚距离和解算质量
 - `/powerplant/map/occupied_voxels`：已占据体素点云
 - `/powerplant/map/observed_voxels`：带空闲、占据和不确定状态的完整三维已观测体素云
-- `/powerplant/map/fusion_status`：建图融合计数、版本、分辨率和快照完整性 JSON
+- `/powerplant/map/fusion_status`：建图健康、融合计数、版本、分辨率、快照完整性及成功深度的相机/观测元数据 JSON
 - `/powerplant/map/occupancy_grid`：初扫判据、辅助避障和可视化使用的 2D 占据栅格
 - `/powerplant/control/planned_path`：当前任务阶段的规划路径，`nav_msgs/Path`
 - `/powerplant/perception/yolo_detections`：YOLO JSON 检测结果

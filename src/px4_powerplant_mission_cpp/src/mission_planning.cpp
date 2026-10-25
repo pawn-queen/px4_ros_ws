@@ -1,3 +1,4 @@
+#include "px4_powerplant_mission_cpp/input_validation.hpp"
 #include "px4_powerplant_mission_cpp/offboard.hpp"
 namespace powerplant {
 ExplorationConfig OffboardMissionNode::config() const {
@@ -10,6 +11,32 @@ ExplorationConfig OffboardMissionNode::config() const {
   c.return_speed_mps = d("explore_return_speed_mps");
   c.reserve_s = d("explore_return_reserve_s");
   c.max_position_variance_m2 = d("explore_max_position_variance_m2");
+  c.current_yaw_rad = yaw_;
+  c.yaw_rate_radps =
+      std::min(d("explore_view_yaw_rate_radps"), d("max_yaw_rate_radps"));
+  c.viewpoint_dwell_s = d("explore_viewpoint_dwell_s");
+  c.max_candidates = i("explore_max_candidates");
+  c.max_frontier_targets = i("explore_max_frontier_targets");
+  c.yaw_bins = i("explore_yaw_bins");
+  c.candidate_spacing_m = d("explore_candidate_spacing_m");
+  c.min_goal_distance_m = d("explore_min_goal_distance_m");
+  c.information_weight = d("explore_information_weight");
+  c.surface_weight = d("explore_surface_weight");
+  c.travel_time_weight = d("explore_travel_time_weight");
+  c.clearance_weight = d("explore_clearance_weight");
+  c.localization_weight = d("explore_localization_weight");
+  c.reserve_weight = d("explore_reserve_weight");
+  c.camera_translation_flu = v("camera_translation_flu");
+  c.visited_yaw_masks = visited_views_;
+  if (fused_camera_ && fused_camera_->valid()) {
+    c.camera_calibrated = fused_camera_->from_camera_info;
+    c.camera_yaw_min_rad = fused_camera_->yaw_min();
+    c.camera_yaw_max_rad = fused_camera_->yaw_max();
+    c.camera_pitch_min_rad = fused_camera_->pitch_min();
+    c.camera_pitch_max_rad = fused_camera_->pitch_max();
+    c.camera_horizontal_fov_rad = c.camera_yaw_max_rad - c.camera_yaw_min_rad;
+    c.camera_vertical_fov_rad = c.camera_pitch_max_rad - c.camera_pitch_min_rad;
+  }
   return c;
 }
 const PlanningMap &OffboardMissionNode::planning_map() const {
@@ -29,6 +56,10 @@ bool OffboardMissionNode::map_fresh() const {
 double OffboardMissionNode::remaining_flight() const {
   double remaining =
       std::max(0.0, d("explore_max_duration_s") - age(mission_started_));
+  if (mission_steady_ > 0)
+    remaining = std::min(
+        remaining, std::max(0.0, d("explore_max_duration_s") -
+                                     (steady_ns() - mission_steady_) * 1e-9));
   if (battery_connected_ && age(battery_stamp_) >= 0 &&
       age(battery_stamp_) <= d("explore_battery_max_age_s") &&
       std::isfinite(battery_time_) && battery_time_ > 0)
@@ -63,6 +94,7 @@ void OffboardMissionNode::set_local_route(const Path &path, double limit) {
   reset_setpoint();
   waypoint_ = 0;
   viewpoint_entered_ = 0;
+  viewpoint_aligned_since_ = 0;
   goal_ids_.clear();
   publish_path();
 }
@@ -72,12 +104,15 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
     return;
   auto map = planning_map();
   auto c = config();
+  if (phase == Phase::Explore && explore_global_search_)
+    c.max_search_radius_m = std::max(
+        c.max_search_radius_m, (double(map.free.size()) + 1) * map.resolution);
   Vec3 start = *position_, home = home_air().value_or(start);
   int64_t revision = maps_.observation_revision;
   double remaining = remaining_flight(), variance = xy_variance_;
   double growth =
       std::max(0.0, d("explore_localization_variance_growth_m2_per_m"));
-  auto visited = visited_;
+  const int64_t epoch = maps_.map_epoch, camera_revision = camera_revision_;
   KeyMap<double> surfaces;
   if (target_ && i("inspection_required_photos") > int(captured_.size()))
     surfaces[key(target_->position, map.resolution)] =
@@ -85,20 +120,34 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
   planning_ = true;
   planning_phase_ = phase;
   planner_.submit([map = std::move(map), c, start, home, phase, revision,
-                   remaining, variance, growth, visited = std::move(visited),
+                   remaining, variance, growth, epoch, camera_revision,
                    surfaces = std::move(surfaces), goals,
                    ids](const auto &token) {
     PlanResult out;
     out.phase = phase;
     out.revision = revision;
+    out.map_epoch = epoch;
+    out.camera_revision = camera_revision;
+    out.variance = variance;
+    out.variance_growth = growth;
+    out.configuration = c;
+    out.bounds = map.bounds;
+    out.source_start = start;
+    out.home = home;
     Cancel cancelled = [token] { return token->load(); };
     try {
       if (phase == Phase::Explore) {
         auto variance_at = [&](const Key &k) {
           return variance + growth * (center(k, map.resolution) - start).norm();
         };
-        out.frontier = plan_frontier(map, start, home, remaining, variance, c,
-                                     surfaces, variance_at, visited, cancelled);
+        auto decision =
+            plan_frontier_detailed(map, start, home, remaining, variance, c,
+                                   surfaces, variance_at, {}, cancelled);
+        out.frontier = std::move(decision.plan);
+        out.failure = decision.failure;
+        out.detail = decision.detail;
+        out.frontier_count = decision.frontier_count;
+        out.candidate_count = decision.candidate_count;
       } else if (phase == Phase::Return)
         out.path = plan_known_free_path(map, start, home, c, cancelled);
       else {
@@ -124,9 +173,111 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
       throw;
     } catch (const std::exception &e) {
       out.error = e.what();
+      out.failure = PlanningFailure::InvalidInput;
+      out.detail = e.what();
     }
     return out;
   });
+}
+bool OffboardMissionNode::plan_changes_relevant(
+    const PlanResult &result) const {
+  if (result.map_epoch != maps_.map_epoch ||
+      result.camera_revision != camera_revision_ ||
+      result.bounds != planning_map().bounds || !home_air() ||
+      (result.home - *home_air()).norm() > 1e-6 ||
+      xy_variance_ > result.variance + 1e-9 ||
+      result.variance_growth !=
+          std::max(0.0, d("explore_localization_variance_growth_m2_per_m")))
+    return true;
+  auto c = config();
+  const auto &old = result.configuration;
+  if (old.clearance_radius_m != c.clearance_radius_m ||
+      old.cruise_speed_mps != c.cruise_speed_mps ||
+      old.return_speed_mps != c.return_speed_mps ||
+      old.yaw_rate_radps != c.yaw_rate_radps ||
+      old.viewpoint_dwell_s != c.viewpoint_dwell_s ||
+      old.reserve_s != c.reserve_s || old.sensor_range_m != c.sensor_range_m ||
+      (old.camera_translation_flu - c.camera_translation_flu).norm() > 1e-9 ||
+      old.max_local_path_m != c.max_local_path_m ||
+      old.yaw_bins != c.yaw_bins ||
+
+      old.max_position_variance_m2 != c.max_position_variance_m2 ||
+      old.information_weight != c.information_weight ||
+      old.surface_weight != c.surface_weight ||
+      old.travel_time_weight != c.travel_time_weight ||
+      old.clearance_weight != c.clearance_weight ||
+      old.localization_weight != c.localization_weight ||
+      old.reserve_weight != c.reserve_weight)
+    return true;
+  if (result.frontier) {
+    const Key goal = key(result.frontier->goal_xyz, maps_.map.resolution);
+    const int bin =
+        int(std::llround((wrap_pi(result.frontier->goal_yaw_rad) + pi) /
+                         (2 * pi) * c.yaw_bins)) %
+        c.yaw_bins;
+    auto seen = c.visited_yaw_masks.find(goal);
+    if (seen != c.visited_yaw_masks.end() &&
+        (seen->second & (uint64_t(1) << bin)))
+      return true;
+  }
+  if (result.revision == maps_.observation_revision)
+    return false;
+  if (!result.frontier)
+    return true; // A global failure has no finite dependency region to reuse.
+  Keys changed;
+  if (!maps_.changes_since(result.revision, changed))
+    return true;
+  const auto &plan = *result.frontier;
+  const double pad =
+      c.clearance_radius_m + std::sqrt(3.0) * maps_.map.resolution;
+  auto near_path = [&](const Vec3 &point, const Path &path) {
+    for (size_t i = 1; i < path.size(); ++i) {
+      const Vec3 delta = path[i] - path[i - 1];
+      const double t = delta.squaredNorm() > 1e-12
+                           ? std::clamp((point - path[i - 1]).dot(delta) /
+                                            delta.squaredNorm(),
+                                        0.0, 1.0)
+                           : 0;
+      if ((point - path[i - 1] - t * delta).norm() <= pad)
+        return true;
+    }
+    return false;
+  };
+  for (const auto &k : changed) {
+    const Vec3 point = center(k, maps_.map.resolution);
+    if ((point - plan.goal_xyz).norm() <=
+            c.sensor_range_m + c.camera_translation_flu.norm() + pad ||
+        near_path(point, plan.full_path_xyz) ||
+        near_path(point, plan.return_path_xyz))
+      return true;
+  }
+  return false;
+}
+void OffboardMissionNode::refresh_view_memory() {
+  if (visited_views_revision_ == maps_.observation_revision)
+    return;
+  Keys changed;
+  if (!maps_.changes_since(visited_views_revision_, changed))
+    visited_views_.clear();
+  else {
+    const double range = d("explore_sensor_range_m") +
+                         v("camera_translation_flu").norm() +
+                         std::sqrt(3.0) * maps_.map.resolution;
+    for (auto it = visited_views_.begin(); it != visited_views_.end();) {
+      bool invalid = false;
+      const Vec3 view = center(it->first, maps_.map.resolution);
+      for (const auto &k : changed)
+        if ((center(k, maps_.map.resolution) - view).norm() <= range) {
+          invalid = true;
+          break;
+        }
+      if (invalid)
+        it = visited_views_.erase(it);
+      else
+        ++it;
+    }
+  }
+  visited_views_revision_ = maps_.observation_revision;
 }
 void OffboardMissionNode::prepare_explore() {
   if (!position_)
@@ -137,33 +288,44 @@ void OffboardMissionNode::prepare_explore() {
   }
   if (!map_fresh()) {
     waypoints_.clear();
+    explore_failure_ = PlanningFailure::WaitingForMap;
     explore_wait_ = "waiting for complete, fresh 3D voxel snapshot";
     return;
   }
   if (!localization_ready() ||
       xy_variance_ > d("explore_max_position_variance_m2")) {
     waypoints_.clear();
+    explore_failure_ = PlanningFailure::LocalizationPoor;
     explore_wait_ = "waiting for reliable exploration localization";
+    return;
+  }
+  if (!camera_ready()) {
+    waypoints_.clear();
+    explore_failure_ = PlanningFailure::CalibrationUnavailable;
+    explore_wait_ =
+        "waiting for matched CameraInfo from a successfully fused depth image";
     return;
   }
   if (!home_air()) {
     waypoints_.clear();
+    explore_failure_ = PlanningFailure::Blocked;
     explore_wait_ = "home position unavailable";
     return;
   }
+  refresh_view_memory();
   auto c = config();
-  double remaining = remaining_flight();
+  const double remaining = remaining_flight();
   if (battery_low() || remaining <= c.reserve_s) {
+    explore_failure_ = PlanningFailure::ReturnReserveLow;
     enter_return("return reserve reached");
     return;
   }
   bool blocked = !waypoints_.empty() && !remaining_path_safe();
   if (blocked) {
     waypoints_.clear();
+    explore_failure_ = PlanningFailure::Blocked;
     explore_wait_ = "local route blocked; replanning";
-    auto p = object();
-    p["map_revision"] = integer(maps_.revision);
-    event("explore_path_blocked", p);
+    event("explore_path_blocked");
   }
   if (!waypoints_.empty() && viewpoint_entered_ && !blocked)
     return;
@@ -177,60 +339,126 @@ void OffboardMissionNode::prepare_explore() {
     planning_ = false;
     if (result->phase != phase_)
       return;
-    if (result->revision != maps_.observation_revision) {
-      explore_wait_ = "new voxel observations arrived during planning";
+    if (plan_changes_relevant(*result)) {
+      ++rejected_plan_results_;
       explore_plan_stamp_ = 0;
+      explore_wait_ = "planning dependencies changed; recomputing viewpoint";
       return;
     }
     explore_revision_ = maps_.observation_revision;
     if (!result->frontier) {
       waypoints_.clear();
-      explore_wait_ = "no reachable frontier viewpoint with return reserve";
-      enter_return("exploration finished or no safe frontier");
+      explore_failure_ = result->failure;
+      explore_wait_ = result->detail;
+      auto fields = object();
+      fields["reason"] = planning_failure_name(result->failure);
+      fields["detail"] = result->detail;
+      fields["frontier_count"] = integer(result->frontier_count);
+      fields["candidate_count"] = integer(result->candidate_count);
+      event("explore_plan_unavailable", fields);
+      if (result->failure == PlanningFailure::NoLocalCandidate &&
+          !explore_global_search_) {
+        explore_global_search_ = true;
+        explore_plan_stamp_ = 0;
+        explore_wait_ =
+            "no local view; retrying the full permitted known-free component";
+        return;
+      }
+      if (result->failure == PlanningFailure::FrontierExhausted)
+        enter_return("permitted map has no remaining frontier");
+      else if (result->failure == PlanningFailure::ReturnReserveLow)
+        enter_return("no feasible observation with return reserve");
+      else if (result->failure == PlanningFailure::NoLocalCandidate &&
+               explore_global_search_)
+        enter_return("NO_LOCAL_CANDIDATE: bounded view policy found no "
+                     "executable observation; map is not declared complete");
       return;
     }
     const auto &plan = *result->frontier;
-    Path check{*position_};
-    check.insert(check.end(), plan.local_path_xyz.begin() + 1,
-                 plan.local_path_xyz.end());
-    if (remaining <= plan.return_time_s + c.reserve_s ||
-        !path_is_known_free(planning_map(), check, c)) {
-      waypoints_.clear();
-      explore_wait_ = "frontier route or return reserve changed; replanning";
+    auto from_current = [&](const Path &route) {
+      Path path{*position_};
+      if (route.size() > 1)
+        path.insert(path.end(), route.begin() + 1, route.end());
+      return path;
+    };
+    auto full = from_current(plan.full_path_xyz);
+    const double old_turn =
+        std::abs(wrap_pi(plan.goal_yaw_rad -
+                         result->configuration.current_yaw_rad)) /
+        c.yaw_rate_radps;
+    const double new_turn =
+        std::abs(wrap_pi(plan.goal_yaw_rad - yaw_)) / c.yaw_rate_radps;
+    const double out =
+        plan.outbound_time_s + new_turn - old_turn +
+        (*position_ - result->source_start).norm() / c.cruise_speed_mps;
+    const double needed = out + plan.return_time_s + c.reserve_s;
+    double predicted_variance = xy_variance_;
+    const double growth =
+        std::max(0.0, d("explore_localization_variance_growth_m2_per_m"));
+    for (const auto &point : full)
+      predicted_variance =
+          std::max(predicted_variance,
+                   xy_variance_ + growth * (point - *position_).norm());
+    for (const auto &point : plan.return_path_xyz)
+      predicted_variance =
+          std::max(predicted_variance,
+                   xy_variance_ + growth * (point - *position_).norm());
+    if (predicted_variance > c.max_position_variance_m2) {
+      ++rejected_plan_results_;
+      explore_failure_ = PlanningFailure::LocalizationPoor;
       explore_plan_stamp_ = 0;
+      waypoints_.clear();
+      explore_wait_ = "latest go/return localization quality exceeds limit";
       return;
     }
+    if (plan.full_path_xyz.size() < 2 || plan.return_path_xyz.empty() ||
+        remaining < needed || !path_is_known_free(planning_map(), full, c) ||
+        !path_is_known_free(planning_map(), plan.return_path_xyz, c)) {
+      ++rejected_plan_results_;
+      waypoints_.clear();
+      explore_plan_stamp_ = 0;
+      explore_failure_ = remaining < needed ? PlanningFailure::ReturnReserveLow
+                                            : PlanningFailure::Blocked;
+      explore_wait_ =
+          "latest go/return corridor or observation time budget changed";
+      return;
+    }
+    if (result->revision != maps_.observation_revision)
+      ++reused_plan_results_;
     explore_goal_ = plan.goal_xyz;
     explore_yaw_ = plan.goal_yaw_rad;
     explore_score_ = plan.score;
-    set_local_route(plan.local_path_xyz, c.max_local_path_m);
+    set_local_route(full, c.max_local_path_m);
+    explore_failure_ = PlanningFailure::None;
+    explore_global_search_ = false;
     explore_wait_.clear();
-    auto p = object();
-    p["goal_enu"] = vector_json(plan.goal_xyz);
-    p["frontier_key"] = key_json(plan.frontier_key);
-    p["visible_unknown_voxels"] = plan.visible_unknown_count;
-    p["surface_gain"] = number(plan.surface_gain, 2);
-    p["outbound_time_s"] = number(plan.outbound_time_s, 2);
-    p["return_time_s"] = number(plan.return_time_s, 2);
-    p["clearance_m"] = number(plan.clearance_m, 2);
-    p["localization_variance_m2"] = number(plan.localization_variance_m2);
-    p["return_margin_s"] = number(plan.reserve_margin_s, 2);
-    p["score"] = number(plan.score);
-    p["local_path_points"] = integer(waypoints_.size());
-    event("explore_viewpoint_selected", p);
+    auto fields = object();
+    fields["goal_enu"] = vector_json(plan.goal_xyz);
+    fields["frontier_key"] = key_json(plan.frontier_key);
+    fields["visible_unknown_voxels"] = plan.visible_unknown_count;
+    fields["surface_gain"] = plan.surface_gain;
+    fields["outbound_time_s"] = out;
+    fields["return_time_s"] = plan.return_time_s;
+    fields["rotation_time_s"] = plan.rotation_time_s;
+    fields["observation_time_s"] = plan.observation_time_s;
+    fields["return_margin_s"] = remaining - needed;
+    fields["clearance_m"] = plan.clearance_m;
+    fields["score"] = plan.score;
+    fields["localization_variance_m2"] = plan.localization_variance_m2;
+    fields["reused_after_distant_change"] =
+        result->revision != maps_.observation_revision;
+    event("explore_viewpoint_selected", fields);
     return;
   }
-  bool changed = maps_.observation_revision != explore_revision_,
-       elapsed = age(explore_plan_stamp_) >= d("explore_min_replan_interval_s");
+  const bool changed = maps_.observation_revision != explore_revision_,
+             elapsed =
+                 age(explore_plan_stamp_) >= d("explore_min_replan_interval_s");
   if (!waypoints_.empty() && (!changed || !elapsed))
     return;
   if (!elapsed && explore_plan_stamp_ && !blocked)
     return;
   explore_plan_stamp_ = ns();
-  if (waypoints_.empty())
-    explore_wait_ = "planning next safe frontier viewpoint";
-  else
-    explore_wait_.clear();
+  explore_wait_ = "planning next safe frontier viewpoint";
   submit_plan(Phase::Explore);
 }
 void OffboardMissionNode::prepare_return() {

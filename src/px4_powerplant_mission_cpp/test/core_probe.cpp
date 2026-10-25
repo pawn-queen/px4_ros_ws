@@ -53,6 +53,15 @@ ExplorationConfig configuration(const JsonValue &p) {
   D(max_position_variance_m2);
   D(camera_horizontal_fov_rad);
   D(camera_vertical_fov_rad);
+  D(current_yaw_rad);
+  D(yaw_rate_radps);
+  D(viewpoint_dwell_s);
+  D(camera_yaw_min_rad);
+  D(camera_yaw_max_rad);
+  D(camera_pitch_min_rad);
+  D(camera_pitch_max_rad);
+  if (p.isMember("camera_calibrated")) c.camera_calibrated=p["camera_calibrated"].asBool();
+  if (p.isMember("camera_translation_flu")) c.camera_translation_flu=point(p["camera_translation_flu"]);
   I(yaw_bins);
   D(information_weight);
   D(surface_weight);
@@ -175,6 +184,10 @@ JsonValue execute(const JsonValue &p) {
   FIELD(clearance_m);
   FIELD(localization_variance_m2);
   FIELD(reserve_margin_s);
+  FIELD(rotation_time_s);
+  FIELD(observation_time_s);
+  out["full_path_xyz"] = points(plan->full_path_xyz);
+  out["return_path_xyz"] = points(plan->return_path_xyz);
 #undef FIELD
   return out;
 }

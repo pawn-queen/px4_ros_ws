@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import time
 
 import numpy as np
@@ -13,12 +14,13 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.parameter_client import AsyncParameterClient
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry, OccupancyGrid
 from sensor_msgs.msg import LaserScan, PointCloud2, PointField, Image, CameraInfo
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
-from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleStatus
+from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleStatus, VehicleLandDetected, VehicleOdometry
 from px4_powerplant_mission.mapping.voxel_grid import VoxelGrid
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,9 +36,11 @@ def transport():
     processes = []
 
     def launch(name, *parameters):
-        command = [str(BUILD / name), "--ros-args"]
+        command = ([sys.executable, "-m", name[7:], "--ros-args"] if name.startswith("python:")
+                   else [str(BUILD / name), "--ros-args"])
         for name_value in parameters:
-            command += ["-p", name_value]
+            command += (["--params-file", name_value[1:]] if name_value.startswith("@")
+                        else ["-p", name_value])
         process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         processes.append(process)
         return process
@@ -53,6 +57,7 @@ def transport():
         pytest.fail("timed out waiting for ROS contract")
 
     yield node, launch, wait
+    errors = []
     for process in processes:
         process.send_signal(signal.SIGINT)
         try:
@@ -60,13 +65,18 @@ def transport():
         except subprocess.TimeoutExpired:
             process.kill()
             _, error = process.communicate()
-            pytest.fail("native shutdown hung")
-        assert process.returncode == 0, error
+            errors.append("native shutdown hung")
+        python_interrupt = len(process.args) > 1 and process.args[1] == "-m" and process.returncode == -signal.SIGINT
+        if process.returncode != 0 and not python_interrupt:
+            errors.append(error)
     node.destroy_node()
     rclpy.shutdown()
+    assert not errors, "\n".join(errors)
 
 
-def odometry(stamp=1.0, z=5.0):
+def odometry(stamp=None, z=5.0):
+    if stamp is None:
+        stamp = time.time()
     m = Odometry()
     m.header.stamp.sec = int(stamp)
     m.header.stamp.nanosec = round((stamp - int(stamp)) * 1e9)
@@ -74,9 +84,52 @@ def odometry(stamp=1.0, z=5.0):
     m.child_frame_id = "base_link"
     m.pose.pose.position.z = z
     m.pose.pose.orientation.w = 1.0
-    for k in (0, 7, 14, 21, 28):
+    for k in (0, 7, 14, 21, 28, 35):
         m.pose.covariance[k] = .1
     return m
+
+
+def health(node, publisher, sample_ns, sequence, epoch=1, healthy=True):
+    publisher.publish(String(data=json.dumps({
+        "status_stamp_ns": node.get_clock().now().nanoseconds,
+        "status_sequence": sequence, "localization_epoch": epoch,
+        "navigation_sample_ns": sample_ns, "px4_reset_counter": 0,
+        "uwb_input_healthy": healthy, "has_independent_position": healthy,
+    })))
+
+
+def insert_exact_rays(grid, origin, endpoints):
+    """Small independent segment/AABB oracle for ROS wire geometry checks."""
+    origin = np.asarray(origin, dtype=float)
+    hits = {tuple(np.floor(np.asarray(hit)/grid.resolution).astype(int)) for hit in endpoints}
+    free = set()
+    for endpoint in endpoints:
+        endpoint = np.asarray(endpoint, dtype=float)
+        delta = endpoint-origin
+        if np.all(delta == 0):
+            continue
+        lo = np.floor(np.minimum(origin, endpoint)/grid.resolution).astype(int)
+        hi = np.floor(np.maximum(origin, endpoint)/grid.resolution).astype(int)
+        for x in range(lo[0], hi[0]+1):
+            for y in range(lo[1], hi[1]+1):
+                for z in range(lo[2], hi[2]+1):
+                    key = (x,y,z)
+                    enter, leave, possible = 0., 1., True
+                    for axis in range(3):
+                        lower, upper = key[axis]*grid.resolution, (key[axis]+1)*grid.resolution
+                        if delta[axis] == 0:
+                            possible = possible and lower <= origin[axis] < upper
+                        else:
+                            a, b = sorted(((lower-origin[axis])/delta[axis], (upper-origin[axis])/delta[axis]))
+                            enter, leave = max(enter,a), min(leave,b)
+                    if possible and leave > enter:
+                        free.add(key)
+    for key in free-hits:
+        grid.cells[key] = float(np.clip(grid.cells.get(key,0.)+grid.miss_log_odds,grid.min_log_odds,grid.max_log_odds))
+    for key in hits:
+        grid.cells[key] = float(np.clip(grid.cells.get(key,0.)+grid.hit_log_odds,grid.min_log_odds,grid.max_log_odds))
+    if hits:
+        grid.revision += 1
 
 
 @pytest.mark.parametrize("executable,node_name", [
@@ -92,6 +145,8 @@ def test_all_parameter_defaults_match_retained_python(transport, executable, nod
     tree = ast.parse(source.read_text())
     declaration = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_declare_parameters")
     defaults = {ast.literal_eval(stmt.value.args[0]): ast.literal_eval(stmt.value.args[1]) for stmt in declaration.body}
+    if executable == "offboard_mission_node":
+        defaults["require_image_for_photo"] = True  # P0 intentional safety change.
     future = client.get_parameters(list(defaults))
     wait(future.done)
     for (name, expected), actual in zip(defaults.items(), future.result().values):
@@ -115,19 +170,24 @@ def test_mapper_stamp_fields_counts_and_cells(transport):
     node.create_subscription(String, "/powerplant/map/fusion_status", lambda m: statuses.__setitem__(json.loads(m.data)["map_stamp_ns"], json.loads(m.data)), 10)
     node.create_subscription(OccupancyGrid, "/powerplant/map/occupancy_grid", grids.append, 10)
     op = node.create_publisher(Odometry, "/powerplant/localization/odom", 10)
+    hp = node.create_publisher(String, "/powerplant/localization/status", 10)
     sp = node.create_publisher(LaserScan, "/scan", SENSOR)
     dp = node.create_publisher(Image, "/depth_camera", SENSOR)
     cp = node.create_publisher(CameraInfo, "/depth_camera/camera_info", SENSOR)
     launch("voxel_mapper_node", "startup_gate_enabled:=false", "publish_rate_hz:=5.0", "use_fixed_grid_bounds:=true")
-    wait(lambda: op.get_subscription_count() and sp.get_subscription_count() and dp.get_subscription_count() and cp.get_subscription_count())
-    op.publish(odometry(1.0))
-    op.publish(odometry(1.2))
+    wait(lambda: op.get_subscription_count() and hp.get_subscription_count() and sp.get_subscription_count() and dp.get_subscription_count() and cp.get_subscription_count())
+    base = time.time() - .25
+    first_pose = odometry(base)
+    first_sample = first_pose.header.stamp.sec * 10**9 + first_pose.header.stamp.nanosec
+    health(node, hp, first_sample, 1)
+    op.publish(first_pose)
+    op.publish(odometry(base + .2))
     # Give the two bracketing odometry samples time to arrive in order.
     end = time.monotonic() + .15
     while time.monotonic() < end:
         rclpy.spin_once(node, timeout_sec=.02)
     scan = LaserScan()
-    scan.header.stamp = odometry(1.1).header.stamp
+    scan.header.stamp = odometry(base + .1).header.stamp
     scan.header.frame_id = "base_link"
     scan.range_min, scan.range_max, scan.angle_increment = .1, 10.0, .5
     scan.ranges = [2.0, 3.0]
@@ -153,24 +213,41 @@ def test_mapper_stamp_fields_counts_and_cells(transport):
                 return cloud, status
         return None
 
-    wait(lambda: paired() is not None and grids)
+    sequence = 1
+    def refresh_pose():
+        nonlocal sequence
+        sequence += 1
+        m = odometry()
+        health(node, hp, m.header.stamp.sec * 10**9 + m.header.stamp.nanosec, sequence)
+        op.publish(m)
+    wait(lambda: paired() is not None and grids, pump=refresh_pose)
     cloud, status = paired()
     assert cloud.header.frame_id == "map"
     assert [(f.name, f.offset, f.datatype, f.count) for f in cloud.fields] == [
         (name, j*4, PointField.FLOAT32, 1) for j, name in enumerate(("x", "y", "z", "state"))]
     expected = VoxelGrid(.25)
     origin = np.array([0., 0., 5.])
-    expected.insert_rays(origin, [origin + [2., 0., 0.], origin + [3*np.cos(.5), 3*np.sin(.5), 0.]])
+    insert_exact_rays(expected, origin, [origin + [2., 0., 0.], origin + [3*np.cos(.5), 3*np.sin(.5), 0.]])
     camera = origin + [.12, -.03, .24]
-    expected.insert_rays(camera, [camera + [2., 0., 0.]])
+    insert_exact_rays(expected, camera, [camera + [2., 0., 0.]])
     actual = point_cloud2.read_points_numpy(cloud, field_names=("x", "y", "z", "state"))
     exp = expected.observed_snapshot().points
     assert sorted(map(tuple, actual.tolist())) == sorted(map(tuple, exp.tolist()))
     assert status["observed_voxels_complete"]
     assert status["observed_voxel_count"] == len(expected.cells)
-    assert status["depth_last_sample_stamp_ns"] == 1100000000
-    assert status["lidar_last_sample_stamp_ns"] == 1100000000
+    sample = scan.header.stamp.sec * 10**9 + scan.header.stamp.nanosec
+    assert status["depth_last_sample_stamp_ns"] == sample
+    assert status["lidar_last_sample_stamp_ns"] == sample
+    assert status["localization_healthy"] and status["map_epoch"] > 0
+    assert status["observed_cloud_fingerprint"]
     assert status["map_revision"] == expected.revision
+    assert status["camera_intrinsics"]["camera_info_valid"]
+    assert status["camera_intrinsics"]["fx"] == 100.
+    observation = status["depth_observations"][-1]
+    assert observation["sample_id"] == 1 and observation["sample_stamp_ns"] == sample
+    assert observation["sampled_pixel_count"] == 1
+    assert observation["valid_yaw_sectors"] == [36]
+    assert observation["coverage_qualified"]
 
 
 def test_offboard_services_qos_warmup_commands_and_ned_setpoint(transport):
@@ -181,39 +258,174 @@ def test_offboard_services_qos_warmup_commands_and_ned_setpoint(transport):
     node.create_subscription(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", setpoints.append, PX4)
     node.create_subscription(VehicleCommand, "/fmu/in/vehicle_command", commands.append, PX4)
     op = node.create_publisher(Odometry, "/powerplant/localization/odom", 10)
+    hp = node.create_publisher(String, "/powerplant/localization/status", 10)
     vp = node.create_publisher(VehicleStatus, "/fmu/out/vehicle_status", PX4)
-    launch("offboard_mission_node", "offboard_warmup_setpoints:=3", "command_retry_interval_s:=0.1")
+    lp = node.create_publisher(VehicleLandDetected, "/fmu/out/vehicle_land_detected", PX4)
+    launch("offboard_mission_node", "offboard_warmup_setpoints:=3", "command_retry_interval_s:=0.1",
+           "takeoff_region_confirmed:=true", "takeoff_region_height_m:=6.0", "landing_confirm_dwell_s:=0.1")
     start = node.create_client(Trigger, "/start_powerplant_mission")
-    land = node.create_client(Trigger, "/land_powerplant_mission")
-    wait(lambda: start.service_is_ready() and land.service_is_ready() and heartbeats and statuses)
-    assert statuses[-1]["phase"] == "IDLE"
-    assert not commands
+    land_service = node.create_client(Trigger, "/land_powerplant_mission")
+    wait(lambda: start.service_is_ready() and land_service.service_is_ready() and statuses)
+    assert statuses[-1]["phase"] == "IDLE" and not commands and not heartbeats
     reply = start.call_async(Trigger.Request())
     wait(reply.done)
-    assert reply.result().success and reply.result().message == "mission requested: START"
-    wait(lambda: statuses[-1]["phase"] == "START")
-    assert not commands
+    assert not reply.result().success
     vehicle = VehicleStatus()
+    vehicle.arming_state = VehicleStatus.ARMING_STATE_DISARMED
     vehicle.pre_flight_checks_pass = True
-    odom = odometry(z=0.)
-    odom.pose.pose.position.x, odom.pose.pose.position.y = 1., 2.
+    sequence = 0
+    landed = False
 
     def pump():
-        op.publish(odom)
+        nonlocal sequence
+        sequence += 1
+        m = odometry(z=10.)  # A raised platform verifies relative takeoff.
+        m.pose.pose.position.x, m.pose.pose.position.y = 1., 2.
+        sample = m.header.stamp.sec * 10**9 + m.header.stamp.nanosec
+        health(node, hp, sample, sequence)
+        op.publish(m)
+        vehicle.timestamp = sample // 1000
         vp.publish(vehicle)
+        detector = VehicleLandDetected()
+        detector.timestamp = vehicle.timestamp
+        detector.landed = landed
+        lp.publish(detector)
 
+    wait(lambda: statuses[-1]["localization_ready"] and statuses[-1]["vehicle_status_fresh"], pump=pump)
+    reply = start.call_async(Trigger.Request())
+    wait(reply.done, pump=pump)
+    assert reply.result().success
     wait(lambda: any(c.command == VehicleCommand.VEHICLE_CMD_DO_SET_MODE for c in commands), pump=pump)
     assert all(c.command != VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM for c in commands)
     assert len(setpoints) >= 3
     assert setpoints[-1].position[0] == pytest.approx(2.)
     assert setpoints[-1].position[1] == pytest.approx(1.)
-    assert setpoints[-1].position[2] <= 0.
+    assert setpoints[-1].position[2] <= -10.
     assert all(np.isnan(v) for v in setpoints[-1].velocity)
     vehicle.nav_state = VehicleStatus.NAVIGATION_STATE_OFFBOARD
     wait(lambda: any(c.command == VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM for c in commands), pump=pump)
-    assert statuses[-1]["localization_ready"]
-    response = land.call_async(Trigger.Request())
-    wait(response.done)
+    response = land_service.call_async(Trigger.Request())
+    wait(response.done, pump=pump)
     assert response.result().message == "land command sent"
     wait(lambda: any(c.command == VehicleCommand.VEHICLE_CMD_NAV_LAND for c in commands))
+    assert statuses[-1]["phase"] != "COMPLETE"
+    landed = True
+    wait(lambda: statuses[-1]["phase"] == "COMPLETE", pump=pump)
     assert all(c.target_system == 1 and c.from_external for c in commands)
+
+
+def test_replayed_navigation_cannot_keep_active_mission_alive(transport):
+    node, launch, wait = transport
+    statuses, setpoints = [], []
+    node.create_subscription(String, "/powerplant/control/mission_status", lambda m: statuses.append(json.loads(m.data)), 10)
+    node.create_subscription(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", setpoints.append, PX4)
+    op = node.create_publisher(Odometry, "/powerplant/localization/odom", 10)
+    hp = node.create_publisher(String, "/powerplant/localization/status", 10)
+    vp = node.create_publisher(VehicleStatus, "/fmu/out/vehicle_status", PX4)
+    launch("offboard_mission_node", "takeoff_region_confirmed:=true", "takeoff_region_height_m:=6.0")
+    start = node.create_client(Trigger, "/start_powerplant_mission")
+    sequence = 0
+    last = None
+    replay = False
+
+    def pump():
+        nonlocal sequence, last
+        sequence += 1
+        if not replay:
+            last = odometry(z=0.)
+        sample = last.header.stamp.sec * 10**9 + last.header.stamp.nanosec
+        health(node, hp, sample, sequence)
+        op.publish(last)
+        vehicle = VehicleStatus()
+        vehicle.timestamp = node.get_clock().now().nanoseconds // 1000
+        vehicle.arming_state = VehicleStatus.ARMING_STATE_DISARMED
+        vehicle.pre_flight_checks_pass = True
+        vp.publish(vehicle)
+
+    wait(lambda: start.service_is_ready() and statuses, pump=pump)
+    wait(lambda: statuses[-1]["localization_ready"], pump=pump)
+    reply = start.call_async(Trigger.Request())
+    wait(reply.done, pump=pump)
+    assert reply.result().success
+    wait(lambda: statuses[-1]["phase"] == "SAFE_TAKEOFF" and setpoints, pump=pump)
+    replay = True
+    wait(lambda: statuses[-1]["phase"] == "FAULT", pump=pump)
+    # Allow in-flight DDS packets to drain, then verify new commands stop.
+    end = time.monotonic() + .2
+    while time.monotonic() < end:
+        rclpy.spin_once(node, timeout_sec=.02)
+    count = len(setpoints)
+    end = time.monotonic() + .25
+    while time.monotonic() < end:
+        pump()
+        rclpy.spin_once(node, timeout_sec=.02)
+    assert len(setpoints) == count
+    replay = False
+    end = time.monotonic() + .2
+    while time.monotonic() < end:
+        pump()
+        rclpy.spin_once(node, timeout_sec=.02)
+    assert statuses[-1]["phase"] == "FAULT"
+
+
+@pytest.mark.parametrize("profile", ["simulation", "hardware"])
+def test_localization_and_ev_use_independent_sources_across_processes(transport, profile):
+    node, launch, wait = transport
+    navigation, external, health_status = [], [], []
+    node.create_subscription(Odometry, "/powerplant/localization/odom", navigation.append, 10)
+    node.create_subscription(VehicleOdometry, "/fmu/in/vehicle_visual_odometry", external.append, PX4)
+    node.create_subscription(String, "/powerplant/localization/status", lambda m: health_status.append(json.loads(m.data)), 10)
+    topic = "/uwb/hardware/pose" if profile == "hardware" else "/uwb/pose"
+    uwb_pub = node.create_publisher(PoseWithCovarianceStamped, topic, 10)
+    px4_pub = node.create_publisher(VehicleOdometry, "/fmu/out/vehicle_odometry", PX4)
+    config = "@" + str(ROOT / "px4_powerplant_mission/config" / ("localization_" + profile + ".yaml"))
+    launch("python:px4_powerplant_mission.nodes.localization_node", config, "publish_tf:=false")
+    launch("python:px4_powerplant_mission.nodes.external_vision_bridge_node", config)
+    publish_uwb = True
+
+    def pump():
+        ns = node.get_clock().now().nanoseconds - 20_000_000
+        if publish_uwb:
+            measurement = PoseWithCovarianceStamped()
+            measurement.header.stamp.sec, measurement.header.stamp.nanosec = divmod(ns, 10**9)
+            measurement.header.frame_id = "map"
+            measurement.pose.pose.position.x = .9
+            measurement.pose.pose.position.y = 1.9
+            measurement.pose.pose.position.z = 2.9
+            measurement.pose.pose.orientation.w = 1.
+            for index in (0, 7, 14):
+                measurement.pose.covariance[index] = .1
+            for index in (21, 28, 35):
+                measurement.pose.covariance[index] = 1e6 if profile == "hardware" else .1
+            uwb_pub.publish(measurement)
+        state = VehicleOdometry()
+        state.timestamp_sample = ns // 1000
+        state.timestamp = state.timestamp_sample
+        state.pose_frame = VehicleOdometry.POSE_FRAME_NED
+        state.position = [2., 1., -3.]
+        state.position_variance = [.1, .1, .1]
+        state.q = [1., 0., 0., 0.]
+        state.orientation_variance = [.01, .02, .03]
+        state.velocity_frame = VehicleOdometry.VELOCITY_FRAME_NED
+        state.velocity = [0., 0., 0.]
+        state.velocity_variance = [.1, .1, .1]
+        px4_pub.publish(state)
+
+    wait(lambda: navigation and external and health_status and health_status[-1]["has_independent_position"],
+         timeout=8., pump=pump)
+    p = navigation[-1].pose.pose.position
+    assert [p.x, p.y, p.z] == pytest.approx([1., 2., 3.])
+    assert external[-1].position == pytest.approx([1.9, .9, -2.9])
+    assert health_status[-1]["localization_epoch"] > 0
+    assert all(np.isnan(v) for v in external[-1].q) if profile == "hardware" else all(np.isfinite(v) for v in external[-1].q)
+    publish_uwb = False
+    wait(lambda: not health_status[-1]["has_independent_position"] and
+         navigation[-1].pose.covariance[0] >= 25., timeout=3., pump=pump)
+    # After UWB is stale and all its packets drained, fresh PX4 navigation must
+    # not create new EV measurements (the feedback loop prohibited by design).
+    count = len(external)
+    deadline = time.monotonic() + .2
+    while time.monotonic() < deadline:
+        pump()
+        rclpy.spin_once(node, timeout_sec=.02)
+    assert len(external) == count

@@ -114,6 +114,11 @@ powerplant_voxel_mapper:
     map_frame: map
     base_frame: base_link
     voxel_resolution_m: 0.25
+    localization_status_topic: /powerplant/localization/status
+    max_position_variance_m2: 4.0
+    max_localization_age_s: 0.5
+    max_sensor_age_s: 2.0
+    max_future_stamp_skew_s: 0.1
     hit_log_odds: 0.85
     miss_log_odds: -0.4
     occupied_log_odds_threshold: 0.0
@@ -123,7 +128,14 @@ powerplant_voxel_mapper:
     max_orientation_variance_rad2: 0.5
     depth_fusion_rate_hz: 3.0
     lidar_fusion_rate_hz: 3.0
+    # Native mapper: maximum adaptive tile size; Python reference: fixed stride.
     depth_stride_px: 16
+    depth_adaptive_sampling_enabled: true
+    depth_min_stride_px: 1
+    depth_max_ray_spacing_m: 0.20
+    depth_edge_threshold_m: 0.25
+    depth_max_rays_per_frame: 12000
+    depth_min_valid_fraction: 0.05
     max_depth_range_m: 18.0
     min_depth_range_m: 0.25
     camera_fx: 430.0
@@ -178,6 +190,8 @@ powerplant_offboard_mission:
     depth_camera_info_topic: /depth_camera/camera_info
     rgb_image_topic: /camera
     vehicle_status_topic: /fmu/out/vehicle_status
+    vehicle_land_detected_topic: /fmu/out/vehicle_land_detected
+    localization_status_topic: /powerplant/localization/status
     battery_status_topic: /fmu/out/battery_status
     failsafe_flags_topic: /fmu/out/failsafe_flags
     vehicle_command_ack_topic: /fmu/out/vehicle_command_ack
@@ -186,19 +200,36 @@ powerplant_offboard_mission:
     vehicle_command_topic: /fmu/in/vehicle_command
     mission_status_topic: /powerplant/control/mission_status
     map_frame: map
+    base_frame: base_link
     auto_start: false
     arm_on_start: true
     command_retry_interval_s: 1.0
     offboard_warmup_setpoints: 20
     require_localization_for_start: true
     max_localization_age_s: 0.5
+    max_future_stamp_skew_s: 0.1
+    max_vehicle_status_age_s: 1.0
+    max_land_detection_age_s: 1.0
+    max_start_yaw_variance_rad2: 0.5
     max_start_position_variance_m2: 4.0
     max_start_height_variance_m2: 4.0
     require_preflight_checks: true
     require_accepts_offboard_setpoints: false
     takeoff_height_m: 5.0
+    # Confirm a surveyed clear cylinder about the actual starting position.
+    # Forward RGB-D + horizontal lidar do not establish overhead clearance.
+    takeoff_region_confirmed: false
+    takeoff_region_radius_m: 1.0
+    takeoff_region_height_m: 0.0
     initial_scan_hover_s: 2.0
+    # Search step size only; completion requires actual fused-depth coverage.
     initial_scan_yaw_steps: 12
+    # Mapper emits 72 heading sectors; finer receiver bins cannot infer coverage.
+    initial_scan_coverage_bins: 72
+    initial_scan_required_coverage_fraction: 0.9
+    initial_scan_min_valid_depth_fraction: 0.2
+    initial_scan_min_free_path_m: 0.75
+    initial_scan_heading_timeout_s: 3.0
     initial_scan_yaw_rate_radps: 0.2
     initial_scan_yaw_dwell_s: 0.3
     initial_scan_yaw_tolerance_rad: 0.12
@@ -247,6 +278,20 @@ powerplant_offboard_mission:
     explore_sensor_range_m: 8.0
     explore_local_path_length_m: 2.0
     explore_viewpoint_dwell_s: 0.4
+    explore_view_yaw_rate_radps: 0.6
+    # Require calibration matched to a successfully fused depth image.
+    explore_require_camera_info: true
+    explore_max_candidates: 96
+    explore_max_frontier_targets: 400
+    explore_yaw_bins: 12
+    explore_candidate_spacing_m: 0.75
+    explore_min_goal_distance_m: 0.75
+    explore_information_weight: 3.0
+    explore_surface_weight: 2.0
+    explore_travel_time_weight: 0.12
+    explore_clearance_weight: 0.5
+    explore_localization_weight: 0.5
+    explore_reserve_weight: 0.5
     explore_cruise_speed_mps: 1.0
     explore_return_speed_mps: 1.0
     explore_return_reserve_s: 30.0
@@ -259,7 +304,8 @@ powerplant_offboard_mission:
     inspection_orbit_points: 4
     inspection_required_photos: 4
     inspection_photo_dir: /home/pawn/px4_ros_ws/inspection_photos
-    require_image_for_photo: false
+    require_image_for_photo: true
+    max_photo_age_s: 1.0
     camera_fx: 430.0
     camera_fy: 430.0
     camera_cx: 320.0
@@ -271,3 +317,4 @@ powerplant_offboard_mission:
     max_depth_age_s: 1.0
     land_complete_height_m: 0.25
     land_complete_timeout_s: 20.0
+    landing_confirm_dwell_s: 1.0

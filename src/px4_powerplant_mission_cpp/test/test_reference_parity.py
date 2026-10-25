@@ -1,4 +1,9 @@
-"""Run native algorithms against the unchanged Python implementation, without Gazebo."""
+"""Retained geometry contracts plus an independent exact-ray oracle for P1.
+
+P1 deliberately changes ray cells and flight-time scoring. Legacy planner
+scenarios run with explicit zero observation/negligible yaw cost; production
+budgets and calibrated views have separate native P1 tests.
+"""
 import dataclasses
 import importlib.util
 import json
@@ -48,8 +53,11 @@ def native():
 
 def adapters(native):
     def common(op, free, occupied, resolution, bounds, config=None, **kw):
+        cfg = dataclasses.asdict(config or reference.ExplorationConfig())
+        if op == "plan":
+            cfg.update(yaw_rate_radps=1e300, viewpoint_dwell_s=0.)
         return native(op=op, free=free, occupied=occupied, resolution=resolution,
-                      bounds=bounds, config=dataclasses.asdict(config or reference.ExplorationConfig()), **kw)
+                      bounds=bounds, config=cfg, **kw)
 
     def plan_path(free, occupied, resolution, bounds, start, goal, config=None):
         return [np.array(p) for p in common("path", free, occupied, resolution, bounds, config, start=start, goal=goal)]
@@ -95,7 +103,7 @@ def test_original_planner_scenarios_on_cpp(native, monkeypatch, name):
 
 
 @pytest.mark.parametrize("seed", range(8))
-def test_voxel_rays_and_projection_match_python(native, seed):
+def test_exact_voxel_rays_match_independent_plane_intersection_oracle(native, seed):
     rng = np.random.default_rng(seed)
     grid = VoxelGrid(.25)
     frames = []
@@ -104,7 +112,34 @@ def test_voxel_rays_and_projection_match_python(native, seed):
         hits = rng.uniform(-3, 3, (24, 3))
         hits = np.concatenate([hits, hits[:4]])  # duplicate rays must update once per frame
         frames.append(dict(origin=origin, points=hits))
-        grid.insert_rays(origin, hits)
+        # Independent reference: collect every segment/grid-plane intersection,
+        # sort globally, then classify interval midpoints. No DDA step recurrence
+        # or legacy fixed-distance sampler is used here.
+        hit_keys = {tuple(np.floor(hit/.25).astype(int)) for hit in hits}
+        free_keys = set()
+        for hit in hits:
+            delta = hit-origin
+            if np.all(delta == 0):
+                continue
+            crossings = {0., 1.}
+            for axis in range(3):
+                if delta[axis] == 0:
+                    continue
+                lo, hi = sorted((origin[axis]/.25, hit[axis]/.25))
+                for plane in range(int(np.floor(lo))+1, int(np.ceil(hi))):
+                    t = (plane*.25-origin[axis])/delta[axis]
+                    if 0 < t < 1:
+                        crossings.add(float(t))
+            times = sorted(crossings)
+            for begin, end in zip(times, times[1:]):
+                if end > begin:
+                    point = origin+delta*((begin+end)*.5)
+                    free_keys.add(tuple(np.floor(point/.25).astype(int)))
+        for key in free_keys-hit_keys:
+            grid.cells[key] = float(np.clip(grid.cells.get(key,0.)+grid.miss_log_odds,grid.min_log_odds,grid.max_log_odds))
+        for key in hit_keys:
+            grid.cells[key] = float(np.clip(grid.cells.get(key,0.)+grid.hit_log_odds,grid.min_log_odds,grid.max_log_odds))
+        grid.revision += 1
     result = native(op="voxel", resolution=.25, frames=frames, limit=5,
                     grid_bounds=[-4, -4, 4, 4], zmin=-2.0, zmax=2.0)
     actual = {tuple(row[:3]): row[3] for row in result["cells"]}

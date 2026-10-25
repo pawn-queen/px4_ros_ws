@@ -1,4 +1,5 @@
 #include "px4_powerplant_mission_cpp/offboard.hpp"
+#include "px4_powerplant_mission_cpp/input_validation.hpp"
 #include <filesystem>
 #include <iomanip>
 #include <opencv2/imgcodecs.hpp>
@@ -16,12 +17,14 @@ bool OffboardMissionNode::capture_photo(size_t waypoint, int goal) {
   }
   if (position_)
     fields["vehicle_enu"] = vector_json(*position_);
-  bool require = b("require_image_for_photo");
-  if (!rgb_) {
+  if (!rgb_ ||
+      !stamp_reason(rgb_sample_, ns(), d("max_photo_age_s"), d("max_future_stamp_skew_s")).empty() ||
+      (steady_ns() - rgb_steady_) * 1e-9 > d("max_photo_age_s")) {
     fields["saved"] = false;
-    fields["reason"] = "no_rgb_image";
+    fields["reason"] = "no_fresh_rgb_image";
+    fields["image_required"] = b("require_image_for_photo");
     event("inspection_photo", fields);
-    return !require;
+    return false;
   }
   auto image = rgb_;
   std::string directory = s("inspection_photo_dir");
@@ -30,8 +33,7 @@ bool OffboardMissionNode::capture_photo(size_t waypoint, int goal) {
   photo_pending_ = true;
   photo_goal_ = goal;
   photo_final_ = waypoint + 1 >= waypoints_.size();
-  recorder_.submit([image, directory, count, timestamp, fields,
-                    require](const auto &cancelled) mutable {
+  recorder_.submit([image, directory, count, timestamp, fields](const auto &cancelled) mutable {
     PhotoResult result;
     result.event = fields;
     try {
@@ -57,7 +59,7 @@ bool OffboardMissionNode::capture_photo(size_t waypoint, int goal) {
     } catch (const std::exception &e) {
       result.event["saved"] = false;
       result.event["reason"] = e.what();
-      result.success = !require;
+      result.success = false;
     }
     return result;
   });

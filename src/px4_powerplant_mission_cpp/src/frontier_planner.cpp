@@ -1,4 +1,5 @@
 #include "px4_powerplant_mission_cpp/core.hpp"
+#include "px4_powerplant_mission_cpp/planning_index.hpp"
 #include <queue>
 #include <set>
 
@@ -17,14 +18,37 @@ void validate(const PlanningMap &m, const ExplorationConfig &c) {
        {c.clearance_radius_m, c.start_snap_radius_m, c.goal_snap_radius_m,
         c.max_search_radius_m, c.sensor_range_m, c.max_local_path_m,
         c.min_goal_distance_m, c.candidate_spacing_m, c.cruise_speed_mps,
-        c.return_speed_mps, c.reserve_s, c.max_position_variance_m2}) {
+        c.return_speed_mps, c.reserve_s, c.max_position_variance_m2,
+        c.viewpoint_dwell_s, c.information_weight, c.surface_weight,
+        c.travel_time_weight, c.clearance_weight, c.localization_weight,
+        c.reserve_weight}) {
     if (!std::isfinite(v) || v < 0)
       throw std::invalid_argument(
           "planner limits must be finite and nonnegative");
   }
   if (c.cruise_speed_mps <= 0 || c.return_speed_mps <= 0 ||
-      c.max_candidates < 1 || c.max_frontier_targets < 1 || c.yaw_bins < 1)
+      c.max_candidates < 1 || c.max_frontier_targets < 1 || c.yaw_bins < 1 ||
+      c.yaw_bins > 64 || !std::isfinite(c.current_yaw_rad) ||
+      !std::isfinite(c.yaw_rate_radps) || c.yaw_rate_radps <= 0 ||
+      !c.camera_translation_flu.allFinite())
     throw std::invalid_argument("invalid planner limits");
+  if (std::ceil(c.clearance_radius_m / m.resolution) > 64)
+    throw std::invalid_argument(
+        "planning clearance footprint exceeds 64 voxels");
+  const double left = c.camera_calibrated ? c.camera_yaw_min_rad
+                                          : -.5 * c.camera_horizontal_fov_rad;
+  const double right = c.camera_calibrated ? c.camera_yaw_max_rad
+                                           : .5 * c.camera_horizontal_fov_rad;
+  const double bottom = c.camera_calibrated ? c.camera_pitch_min_rad
+                                            : -.5 * c.camera_vertical_fov_rad;
+  const double top = c.camera_calibrated ? c.camera_pitch_max_rad
+                                         : .5 * c.camera_vertical_fov_rad;
+  for (double angle : {left, right, bottom, top})
+    if (!std::isfinite(angle) || angle <= -pi / 2 || angle >= pi / 2)
+      throw std::invalid_argument(
+          "camera frustum must face forward with finite angles");
+  if (left >= right || bottom >= top)
+    throw std::invalid_argument("camera frustum has no angular extent");
 }
 std::vector<Key> offsets(double radius, double r) {
   int n = int(std::ceil(radius / r));
@@ -183,65 +207,100 @@ struct View {
   double surface = 0, yaw = 0;
   std::optional<Key> frontier;
 };
-View view_gain(const Vec3 &p, const std::vector<Key> &targets,
-               const KeyMap<double> &surfaces, const Keys &unknown,
-               const Keys &free, double r, const ExplorationConfig &c) {
-  std::set<Key> visible_unknown;
-  std::vector<std::pair<Key, double>> visible_surface;
-  auto geometric = [&](const Key &k) {
-    Vec3 d = center(k, r) - p;
-    return d.norm() > 1e-9 && d.norm() <= c.sensor_range_m &&
-           std::abs(std::atan2(d.z(), d.head<2>().norm())) <=
-               c.camera_vertical_fov_rad * .5;
-  };
-  for (const auto &k : targets)
-    if (geometric(k)) {
-      auto first = first_non_free(p, k, free, r);
-      if (first && unknown.count(*first))
-        visible_unknown.insert(*first);
-    }
-  // Sorted iteration makes ties reproducible between platforms.
+// The planned observation is level, with yaw about map Z. Rectangular pinhole
+// vertical limits use z/x in camera coordinates, not elevation over XY range.
+std::vector<View> views(const Vec3 &p, const std::vector<Key> &targets,
+                        const KeyMap<double> &surfaces, const Keys &unknown,
+                        const Keys &free, double r, const ExplorationConfig &c,
+                        const Key &goal, const Cancel &cancel) {
+  std::vector<View> result;
+  const double ymin = c.camera_calibrated ? c.camera_yaw_min_rad
+                                          : -.5 * c.camera_horizontal_fov_rad;
+  const double ymax = c.camera_calibrated ? c.camera_yaw_max_rad
+                                          : .5 * c.camera_horizontal_fov_rad;
+  const double pmin = c.camera_calibrated ? c.camera_pitch_min_rad
+                                          : -.5 * c.camera_vertical_fov_rad;
+  const double pmax = c.camera_calibrated ? c.camera_pitch_max_rad
+                                          : .5 * c.camera_vertical_fov_rad;
+  auto memory = c.visited_yaw_masks.find(goal);
   std::map<Key, double> sorted_surfaces(surfaces.begin(), surfaces.end());
-  for (const auto &[k, gain] : sorted_surfaces)
-    if (std::isfinite(gain) && gain > 0 && geometric(k)) {
-      auto first = first_non_free(p, k, free, r);
-      if (first && *first == k)
-        visible_surface.emplace_back(k, gain);
-    }
-  View best;
-  double best_score = -inf;
   for (int bin = 0; bin < c.yaw_bins; ++bin) {
+    check_cancel(cancel);
+    if (memory != c.visited_yaw_masks.end() &&
+        (memory->second & (uint64_t(1) << bin)))
+      continue;
     View v;
     v.yaw = -pi + bin * 2 * pi / c.yaw_bins;
-    double closest = inf;
+    const Quat rotation(Eigen::AngleAxisd(v.yaw, Vec3::UnitZ()));
+    const Vec3 origin = p + rotation * c.camera_translation_flu;
+    if (!free.count(key(origin, r)))
+      continue;
     auto in_view = [&](const Key &k) {
-      Vec3 d = center(k, r) - p;
-      return d.norm() <= c.sensor_range_m &&
-             std::abs(std::atan2(d.z(), d.head<2>().norm())) <=
-                 c.camera_vertical_fov_rad * .5 &&
-             std::abs(wrap_pi(std::atan2(d.y(), d.x()) - v.yaw)) <=
-                 c.camera_horizontal_fov_rad * .5;
+      const Vec3 d = rotation.conjugate() * (center(k, r) - origin);
+      if (d.x() <= 1e-9 || d.norm() > c.sensor_range_m)
+        return false;
+      const double h = std::atan2(d.y(), d.x()),
+                   vertical = std::atan2(d.z(), d.x());
+      return h >= ymin - 1e-12 && h <= ymax + 1e-12 &&
+             vertical >= pmin - 1e-12 && vertical <= pmax + 1e-12;
     };
-    for (const auto &k : visible_unknown)
-      if (in_view(k)) {
-        ++v.count;
-        double d = (center(k, r) - p).norm();
-        if (d < closest) {
-          closest = d;
-          v.frontier = k;
-        }
-      }
-    for (const auto &[k, gain] : visible_surface)
-      if (in_view(k))
-        v.surface += gain;
-    double score = c.information_weight * std::log1p(v.count) +
-                   c.surface_weight * std::log1p(v.surface);
-    if (score > best_score) {
-      best_score = score;
-      best = v;
+    std::set<Key> visible;
+    for (const auto &k : targets) {
+      if (!in_view(k))
+        continue;
+      auto first = first_non_free(origin, k, free, r);
+      if (first && unknown.count(*first) && in_view(*first))
+        visible.insert(*first);
     }
+    double closest = inf;
+    for (const auto &k : visible) {
+      ++v.count;
+      const double distance = (center(k, r) - origin).norm();
+      if (distance < closest) {
+        closest = distance;
+        v.frontier = k;
+      }
+    }
+    for (const auto &[k, gain] : sorted_surfaces) {
+      if (!std::isfinite(gain) || gain <= 0 || !in_view(k))
+        continue;
+      auto first = first_non_free(origin, k, free, r);
+      if (first && *first == k)
+        v.surface += gain;
+    }
+    if (v.count > 0)
+      result.push_back(v);
   }
-  return best;
+  return result;
+}
+double path_length(const Path &path) {
+  double length = 0;
+  for (size_t i = 1; i < path.size(); ++i)
+    length += (path[i] - path[i - 1]).norm();
+  return length;
+}
+// Return control faces each local waypoint. Sum yaw at its horizontal bends;
+// outgoing exploration keeps the selected view yaw along its local segment.
+// Translation and rotation are charged sequentially: conservative budgeting,
+// not a minimum-time or acceleration-constrained flight prediction.
+double return_turn_time(const Path &path, double heading, double yaw_rate) {
+  double angle = 0;
+  for (size_t i = 1; i < path.size(); ++i) {
+    Vec3 delta = path[i] - path[i - 1];
+    if (delta.head<2>().norm() < 1e-9)
+      continue;
+    const double next = std::atan2(delta.y(), delta.x());
+    angle += std::abs(wrap_pi(next - heading));
+    heading = next;
+  }
+  return angle / yaw_rate;
+}
+Keys cached_safe(const PlanningMap &m, const Keys &free,
+                 const ExplorationConfig &c, const Cancel &cancel) {
+  check_cancel(cancel);
+  if (m.index && m.index->matches(m.resolution, c.clearance_radius_m))
+    return m.index->safe_in(m.bounds);
+  return safe_keys(free, m, c.clearance_radius_m, cancel);
 }
 double clearance(const Key &k, const Keys &free, const PlanningMap &m,
                  double cap) {
@@ -266,6 +325,8 @@ void check_cancel(const Cancel &c) {
     throw PlanningCancelled();
 }
 KeyMap<Keys> extract_frontiers(const PlanningMap &m) {
+  if (m.index && m.index->matches_resolution(m.resolution))
+    return m.index->frontiers_in(m.bounds);
   KeyMap<Keys> result;
   for (const auto &k : m.free) {
     if (m.occupied.count(k) || !inside(k, m.bounds))
@@ -294,6 +355,11 @@ bool path_is_known_free(const PlanningMap &m, const Path &path,
     if (found != checked.end())
       return found->second;
     bool ok = true;
+    if (m.index && m.index->matches(m.resolution, c.clearance_radius_m)) {
+      ok = m.index->is_safe(k, m.bounds);
+      checked[k] = ok;
+      return ok;
+    }
     for (const auto &o : off) {
       auto n = add(k, o);
       if (!m.free.count(n) || m.occupied.count(n) || !inside(n, m.bounds)) {
@@ -321,8 +387,7 @@ Path plan_known_free_path(const PlanningMap &m, const Vec3 &start,
                           const Vec3 &goal, const ExplorationConfig &c,
                           const Cancel &cancel) {
   validate(m, c);
-  auto free = filtered_free(m),
-       safe = safe_keys(free, m, c.clearance_radius_m, cancel);
+  auto free = filtered_free(m), safe = cached_safe(m, free, c, cancel);
   auto sk = snap(start, safe, m.resolution, c.start_snap_radius_m),
        gk = snap(goal, safe, m.resolution, c.goal_snap_radius_m);
   if (!sk || !gk)
@@ -354,154 +419,266 @@ Path local_segment(const Path &path, double limit) {
   }
   return result;
 }
+const char *planning_failure_name(PlanningFailure failure) {
+  switch (failure) {
+#define REASON(name, text)                                                     \
+  case PlanningFailure::name:                                                  \
+    return text
+    REASON(None, "NONE");
+    REASON(WaitingForMap, "WAITING_FOR_MAP");
+    REASON(NoLocalCandidate, "NO_LOCAL_CANDIDATE");
+    REASON(FrontierExhausted, "FRONTIER_EXHAUSTED");
+    REASON(Blocked, "BLOCKED");
+    REASON(LocalizationPoor, "LOCALIZATION_POOR");
+    REASON(ReturnReserveLow, "RETURN_RESERVE_LOW");
+    REASON(Cancelled, "CANCELLED");
+    REASON(InvalidInput, "INVALID_INPUT");
+    REASON(CalibrationUnavailable, "CALIBRATION_UNAVAILABLE");
+#undef REASON
+  }
+  return "INVALID_INPUT";
+}
+FrontierDecision
+plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
+                       const Vec3 &home, double remaining, double variance,
+                       const ExplorationConfig &c,
+                       const KeyMap<double> &surfaces,
+                       const std::function<double(const Key &)> &variance_at,
+                       const Keys &visited, const Cancel &cancel) {
+  FrontierDecision decision;
+  auto fail = [&](PlanningFailure reason, const std::string &detail) {
+    decision.failure = reason;
+    decision.detail = detail;
+    return decision;
+  };
+  try {
+    check_cancel(cancel);
+    validate(m, c);
+    if (!current.allFinite() || !home.allFinite() || !std::isfinite(remaining))
+      return fail(PlanningFailure::InvalidInput,
+                  "non-finite pose or flight budget");
+    if (!std::isfinite(variance) || variance < 0 ||
+        variance > c.max_position_variance_m2)
+      return fail(PlanningFailure::LocalizationPoor,
+                  "current position variance exceeds limit");
+    if (remaining <= c.reserve_s)
+      return fail(PlanningFailure::ReturnReserveLow,
+                  "remaining time does not contain return reserve");
+    auto free = filtered_free(m);
+    if (free.empty())
+      return fail(PlanningFailure::WaitingForMap,
+                  "no known-free voxels in permitted bounds");
+    auto frontiers = extract_frontiers(m);
+    decision.frontier_count = frontiers.size();
+    if (frontiers.empty())
+      return fail(PlanningFailure::FrontierExhausted,
+                  "no free/unknown boundary in the permitted map");
+    auto safe = cached_safe(m, free, c, cancel);
+    auto sk = snap(current, safe, m.resolution, c.start_snap_radius_m),
+         hk = snap(home, safe, m.resolution, c.goal_snap_radius_m);
+    if (!sk || !hk)
+      return fail(PlanningFailure::Blocked,
+                  "start/home lacks known-free clearance");
+    auto outward =
+        dijkstra(safe, *sk, m.resolution, c.max_search_radius_m, cancel);
+    auto homeward = dijkstra(safe, *hk, m.resolution, inf, cancel);
+    if (!homeward.distance.count(*sk))
+      return fail(PlanningFailure::Blocked,
+                  "home is disconnected from the current free component");
+    Keys unknown;
+    for (const auto &[k, neighbors] : frontiers)
+      unknown.insert(neighbors.begin(), neighbors.end());
+    std::vector<std::pair<double, Key>> by_distance;
+    for (const auto &k : unknown)
+      by_distance.emplace_back((center(k, m.resolution) - current).norm(), k);
+    std::sort(by_distance.begin(), by_distance.end());
+    std::vector<Key> targets;
+    for (size_t i = 0;
+         i < std::min(by_distance.size(), size_t(c.max_frontier_targets)); ++i)
+      targets.push_back(by_distance[i].second);
+    const double start_offset = (current - center(*sk, m.resolution)).norm(),
+                 home_offset = (home - center(*hk, m.resolution)).norm();
+    const int spacing =
+        std::max(1, int(std::nearbyint(c.candidate_spacing_m / m.resolution)));
+    auto var = [&](const Key &k) {
+      return variance_at ? variance_at(k) : variance;
+    };
+    size_t low_budget = 0, poor_quality = 0, spatial_eligible = 0,
+           observable_views = 0;
+    std::map<Key, std::pair<double, Key>> buckets;
+    std::vector<Key> reachable;
+    for (const auto &[k, d] : outward.distance)
+      if (homeward.distance.count(k))
+        reachable.push_back(k);
+    std::sort(reachable.begin(), reachable.end());
+    for (const auto &k : reachable) {
+      check_cancel(cancel);
+      if (visited.count(k))
+        continue;
+      const Vec3 p = center(k, m.resolution);
+      if ((p - current).norm() < c.min_goal_distance_m)
+        continue;
+      ++spatial_eligible;
+      const double out =
+          (outward.distance.at(k) + start_offset) / c.cruise_speed_mps;
+      const double back =
+          (homeward.distance.at(k) + home_offset) / c.return_speed_mps;
+      const double quality = var(k);
+      if (!std::isfinite(quality) || quality < 0 ||
+          quality > c.max_position_variance_m2) {
+        ++poor_quality;
+        continue;
+      }
+      if (out + back + c.viewpoint_dwell_s + c.reserve_s > remaining) {
+        ++low_budget;
+        continue;
+      }
+      int potential = 0;
+      double surface = 0;
+      // Include the camera lever arm in the coarse range upper bound so this
+      // cheap shortlist never excludes a view merely due to mounting offset.
+      const double range = c.sensor_range_m + c.camera_translation_flu.norm();
+      for (const auto &t : targets)
+        if ((center(t, m.resolution) - p).norm() <= range)
+          ++potential;
+      if (!potential)
+        continue;
+      for (const auto &[t, gain] : surfaces)
+        if (std::isfinite(gain) && gain > 0 &&
+            (center(t, m.resolution) - p).norm() <= range)
+          surface += gain;
+      Key bucket;
+      for (int axis = 0; axis < 3; ++axis)
+        bucket[axis] = int(std::floor(double(k[axis]) / spacing));
+      double priority = -c.information_weight * std::log1p(potential) -
+                        c.surface_weight * std::log1p(surface) +
+                        c.travel_time_weight * (out + back) +
+                        c.localization_weight * std::max(variance, quality);
+      auto found = buckets.find(bucket);
+      if (found == buckets.end() || priority < found->second.first)
+        buckets[bucket] = {priority, k};
+    }
+    std::vector<std::pair<double, Key>> candidates;
+    for (const auto &[bucket, entry] : buckets)
+      candidates.push_back(entry);
+    std::sort(candidates.begin(), candidates.end());
+    decision.candidate_count =
+        std::min(candidates.size(), size_t(c.max_candidates));
+    KeyMap<double> clearance_cache;
+    for (size_t i = 0; i < decision.candidate_count; ++i) {
+      check_cancel(cancel);
+      const Key k = candidates[i].second;
+      auto outward_route = route(outward, *sk, k),
+           home_route = route(homeward, *hk, k);
+      if (outward_route.empty() || home_route.empty())
+        continue;
+      const Vec3 p = center(k, m.resolution);
+      auto full = route_points(outward_route, current, p, safe, m.resolution);
+      auto returning = route_points(home_route, home, p, safe, m.resolution);
+      std::reverse(returning.begin(), returning.end());
+      if (full.size() < 2 || returning.empty())
+        continue;
+      Keys route_keys(outward_route.begin(), outward_route.end());
+      route_keys.insert(home_route.begin(), home_route.end());
+      double quality = variance, clear = inf;
+      for (const auto &t : route_keys) {
+        const double v = var(t);
+        if (!std::isfinite(v) || v < 0) {
+          quality = inf;
+          break;
+        }
+        quality = std::max(quality, v);
+        if (!clearance_cache.count(t))
+          clearance_cache[t] = clearance(
+              t, free, m, std::max(c.clearance_radius_m + m.resolution, 1.0));
+        clear = std::min(clear, clearance_cache.at(t));
+      }
+      if (quality > c.max_position_variance_m2) {
+        ++poor_quality;
+        continue;
+      }
+      for (const auto &view : views(p, targets, surfaces, unknown, free,
+                                    m.resolution, c, k, cancel)) {
+        ++observable_views;
+        const double turn_out =
+            std::abs(wrap_pi(view.yaw - c.current_yaw_rad)) / c.yaw_rate_radps;
+        const double turn_home =
+            return_turn_time(returning, view.yaw, c.yaw_rate_radps);
+        const double out = path_length(full) / c.cruise_speed_mps + turn_out +
+                           c.viewpoint_dwell_s;
+        const double back =
+            path_length(returning) / c.return_speed_mps + turn_home;
+        const double margin = remaining - out - back - c.reserve_s;
+        if (margin < 0) {
+          ++low_budget;
+          continue;
+        }
+        const double score =
+            c.information_weight * std::log1p(view.count) +
+            c.surface_weight * std::log1p(view.surface) -
+            c.travel_time_weight * (out + back) + c.clearance_weight * clear -
+            c.localization_weight * quality * (1 + out + back) +
+            c.reserve_weight * margin / std::max(remaining, 1.0);
+        if (decision.plan && score <= decision.plan->score)
+          continue;
+        auto local = local_segment(full, c.max_local_path_m);
+        if (local.size() < 2 || (local.back() - local.front()).norm() < 1e-6 ||
+            !path_is_known_free(m, local, c))
+          continue;
+        ExplorationPlan plan;
+        plan.goal_xyz = p;
+        plan.goal_yaw_rad = view.yaw;
+        plan.local_path_xyz = std::move(local);
+        plan.frontier_key = *view.frontier;
+        plan.score = score;
+        plan.visible_unknown_count = view.count;
+        plan.surface_gain = view.surface;
+        plan.outbound_time_s = out;
+        plan.return_time_s = back;
+        plan.clearance_m = clear;
+        plan.localization_variance_m2 = quality;
+        plan.reserve_margin_s = margin;
+        plan.rotation_time_s = turn_out + turn_home;
+        plan.observation_time_s = c.viewpoint_dwell_s;
+        plan.full_path_xyz = full;
+        plan.return_path_xyz = returning;
+        decision.plan = std::move(plan);
+      }
+    }
+    if (decision.plan)
+      return decision;
+    const bool exhaustive =
+        outward.distance.size() == homeward.distance.size() &&
+        candidates.size() <= size_t(c.max_candidates) &&
+        targets.size() == unknown.size();
+    if (exhaustive && observable_views > 0 && low_budget > 0 &&
+        poor_quality == 0)
+      return fail(PlanningFailure::ReturnReserveLow,
+                  "observable candidates in the reachable component fail the "
+                  "time reserve");
+    if (exhaustive && spatial_eligible > 0 &&
+        poor_quality >= spatial_eligible && low_budget == 0)
+      return fail(PlanningFailure::LocalizationPoor,
+                  "reachable candidate/path localization exceeds limit");
+    return fail(PlanningFailure::NoLocalCandidate,
+                "frontiers remain; bounded reachability/view policy found no "
+                "plan (budget_rejections=" +
+                    std::to_string(low_budget) + ", quality_rejections=" +
+                    std::to_string(poor_quality) + ")");
+  } catch (const PlanningCancelled &) {
+    return fail(PlanningFailure::Cancelled, "planning cancelled");
+  } catch (const std::invalid_argument &error) {
+    return fail(PlanningFailure::InvalidInput, error.what());
+  }
+}
 std::optional<ExplorationPlan>
 plan_frontier(const PlanningMap &m, const Vec3 &current, const Vec3 &home,
               double remaining, double variance, const ExplorationConfig &c,
               const KeyMap<double> &surfaces,
               const std::function<double(const Key &)> &variance_at,
               const Keys &visited, const Cancel &cancel) {
-  validate(m, c);
-  if (!std::isfinite(remaining) || remaining <= 0 || !std::isfinite(variance) ||
-      variance < 0 || variance > c.max_position_variance_m2)
-    return {};
-  auto free = filtered_free(m);
-  PlanningMap clean{free, m.occupied, m.resolution, m.bounds};
-  auto frontiers = extract_frontiers(clean);
-  if (frontiers.empty())
-    return {};
-  auto safe = safe_keys(free, m, c.clearance_radius_m, cancel);
-  auto sk = snap(current, safe, m.resolution, c.start_snap_radius_m),
-       hk = snap(home, safe, m.resolution, c.goal_snap_radius_m);
-  if (!sk || !hk)
-    return {};
-  auto outward =
-      dijkstra(safe, *sk, m.resolution, c.max_search_radius_m, cancel);
-  auto homeward = dijkstra(safe, *hk, m.resolution, inf, cancel);
-  Keys unknown;
-  for (const auto &item : frontiers)
-    unknown.insert(item.second.begin(), item.second.end());
-  std::vector<std::pair<double, Key>> by_distance;
-  for (const auto &k : unknown)
-    by_distance.emplace_back((center(k, m.resolution) - current).norm(), k);
-  std::sort(by_distance.begin(), by_distance.end());
-  std::vector<Key> targets;
-  for (size_t i = 0;
-       i < std::min(by_distance.size(), size_t(c.max_frontier_targets)); ++i)
-    targets.push_back(by_distance[i].second);
-  if (targets.empty())
-    return {};
-  double start_offset = (current - center(*sk, m.resolution)).norm(),
-         home_offset = (home - center(*hk, m.resolution)).norm();
-  int spacing =
-      std::max(1, int(std::nearbyint(c.candidate_spacing_m / m.resolution)));
-  std::map<Key, std::pair<double, Key>> buckets;
-  auto var = [&](const Key &k) {
-    return variance_at ? variance_at(k) : variance;
-  };
-  std::vector<Key> reachable;
-  for (const auto &[k, d] : outward.distance)
-    if (homeward.distance.count(k))
-      reachable.push_back(k);
-  std::sort(reachable.begin(), reachable.end());
-  for (const auto &k : reachable) {
-    check_cancel(cancel);
-    if (visited.count(k))
-      continue;
-    auto p = center(k, m.resolution);
-    if ((p - current).norm() < c.min_goal_distance_m)
-      continue;
-    double out = (outward.distance.at(k) + start_offset) / c.cruise_speed_mps;
-    double back = (homeward.distance.at(k) + home_offset) / c.return_speed_mps;
-    double v = var(k);
-    if (out + back + c.reserve_s > remaining || !std::isfinite(v) || v < 0 ||
-        v > c.max_position_variance_m2)
-      continue;
-    int potential = 0;
-    double surface = 0;
-    for (const auto &t : targets)
-      if ((center(t, m.resolution) - p).norm() <= c.sensor_range_m)
-        ++potential;
-    if (!potential)
-      continue;
-    for (const auto &[t, gain] : surfaces)
-      if (std::isfinite(gain) && gain > 0 &&
-          (center(t, m.resolution) - p).norm() <= c.sensor_range_m)
-        surface += gain;
-    Key bucket;
-    for (int i = 0; i < 3; ++i)
-      bucket[i] = int(std::floor(double(k[i]) / spacing));
-    double priority = -c.information_weight * std::log1p(potential) -
-                      c.surface_weight * std::log1p(surface) +
-                      c.travel_time_weight * (out + back) +
-                      c.localization_weight * std::max(variance, v);
-    auto found = buckets.find(bucket);
-    if (found == buckets.end() || priority < found->second.first)
-      buckets[bucket] = {priority, k};
-  }
-  std::vector<std::pair<double, Key>> candidates;
-  for (const auto &item : buckets)
-    candidates.push_back(item.second);
-  std::sort(candidates.begin(), candidates.end());
-  std::optional<ExplorationPlan> best;
-  KeyMap<double> clearance_cache;
-  for (size_t i = 0; i < std::min(candidates.size(), size_t(c.max_candidates));
-       ++i) {
-    check_cancel(cancel);
-    auto k = candidates[i].second;
-    auto out_route = route(outward, *sk, k),
-         back_route = route(homeward, *hk, k);
-    if (out_route.empty() || back_route.empty())
-      continue;
-    double out = (outward.distance.at(k) + start_offset) / c.cruise_speed_mps;
-    double back = (homeward.distance.at(k) + home_offset) / c.return_speed_mps;
-    double margin = remaining - out - back - c.reserve_s;
-    if (margin < 0)
-      continue;
-    Keys route_keys(out_route.begin(), out_route.end());
-    route_keys.insert(back_route.begin(), back_route.end());
-    double v = variance;
-    bool valid = true;
-    for (const auto &t : route_keys) {
-      double vt = var(t);
-      if (!std::isfinite(vt) || vt < 0) {
-        valid = false;
-        break;
-      }
-      v = std::max(v, vt);
-    }
-    if (!valid || v > c.max_position_variance_m2)
-      continue;
-    auto p = center(k, m.resolution);
-    auto view = view_gain(p, targets, surfaces, unknown, free, m.resolution, c);
-    if (view.count < 1 || !view.frontier)
-      continue;
-    double clear = inf;
-    for (const auto &t : route_keys) {
-      check_cancel(cancel);
-      if (!clearance_cache.count(t))
-        clearance_cache[t] = clearance(
-            t, free, m, std::max(c.clearance_radius_m + m.resolution, 1.0));
-      clear = std::min(clear, clearance_cache.at(t));
-    }
-    double score = c.information_weight * std::log1p(view.count) +
-                   c.surface_weight * std::log1p(view.surface) -
-                   c.travel_time_weight * (out + back) +
-                   c.clearance_weight * clear -
-                   c.localization_weight * v * (1 + out + back) +
-                   c.reserve_weight * margin / std::max(remaining, 1.0);
-    if (best && score <= best->score)
-      continue;
-    auto path =
-        local_segment(route_points(out_route, current, p, safe, m.resolution),
-                      c.max_local_path_m);
-    if (path.size() < 2 || (path.back() - path.front()).norm() < 1e-6 ||
-        !path_is_known_free(m, path, c))
-      continue;
-    best =
-        ExplorationPlan{p,          view.yaw,     path, *view.frontier, score,
-                        view.count, view.surface, out,  back,           clear,
-                        v,          margin};
-  }
-  return best;
+  return plan_frontier_detailed(m, current, home, remaining, variance, c,
+                                surfaces, variance_at, visited, cancel)
+      .plan;
 }
 } // namespace powerplant

@@ -7,6 +7,14 @@ in the original Python package.
 
 Current results and remaining integration checks: [migration status](MIGRATION_STATUS.md).
 
+P0 input health, takeoff configuration, landing confirmation and reproducible ROS
+checks: [P0 validation](P0_VALIDATION.md).
+
+Research and staged improvements for indoor mapping, exploration and inspection:
+[research.md](research.md) (Chinese; historical code audit and literature review).
+Implemented P1 algorithms, parameters, changed behavior and limitations:
+[P1 implementation](P1_IMPLEMENTATION.md). P2/P3 remain future work.
+
 ## Build with bounded resource use
 
 From the workspace root:
@@ -31,16 +39,24 @@ dependencies are needed.
 
 ## Modules
 
+- `input_validation.hpp`: ROS sample timestamps and full pose covariance checks.
 - `core.hpp`, `voxel_grid.cpp`: probability updates, 2D projection, stamped pose
   history, initial yaw scan and setpoint slew limits.
+- `raycast.hpp`, `depth_sampling.hpp`: positive-length voxel traversal and
+  depth/edge-adaptive measured-pixel sampling with a per-frame ray budget.
+- `planning_index.cpp`: immutable incremental frontier and clearance caches.
 - `frontier_planner.cpp`: six-neighbor paths, known-free clearance, frontier view
-  scoring, local path length and known-free return budget.
+  scoring with calibrated rectangular camera bounds, turn/dwell time and
+  known-free return budget; explicit failure reasons.
 - `voxel_mapper_node.cpp`: bounded sensor queue, camera calibration matching,
   per-beam lidar motion compensation and map publications.
 - `map_snapshot.cpp`: exact cloud/status timestamp pairing, field/count checks,
-  observed-state classification and freshness tracking.
+  observed-state classification, bounded classification-change history and
+  freshness tracking.
 - `offboard_node.cpp`, `offboard_subscriptions_*.cpp`: ROS interfaces and status.
 - `mission_state_machine.cpp`: explicit mission stages and transition conditions.
+- `scan_coverage.hpp`: actual fused-depth heading coverage and camera geometry;
+  nominal yaw-step completion alone does not authorize exploration.
 - `mission_planning.cpp`, `worker.hpp`: immutable planning jobs, bounded work queue,
   cooperative cancellation and stale-result rejection.
 - `offboard_control.cpp`: PX4 heartbeat, NED setpoints, commands, preflight/arm
@@ -55,17 +71,21 @@ threads are joined during orderly node shutdown.
 ## Interface compatibility
 
 The executables remain `voxel_mapper_node` and `offboard_mission_node`; node names
-remain `powerplant_voxel_mapper` and `powerplant_offboard_mission`. Existing YAML,
-ROS topics/types, service names, QoS, ENU/FLU to NED conventions, JSON fields,
-map field layout and phase strings are retained. The ROS contract suite compares
-all 151 native parameter defaults with the original Python declarations; see the
-migration status for the current cross-process communication blocker.
+remain `powerplant_voxel_mapper` and `powerplant_offboard_mission`. The core ROS topics/types, service names, QoS, ENU/FLU to NED conventions and
+four-field map layout are retained. P0 adds strict localization/map health
+metadata, VehicleLandDetected, a latched FAULT phase and explicit takeoff-region
+parameters. P1 adds successful-depth camera/observation metadata to fusion_status
+and coverage/planning-reason diagnostics to mission_status. The contract suite
+checks retained defaults and the intentional require_image_for_photo=true change.
+See P0_VALIDATION.md for the start conditions and middleware profile, and
+P1_IMPLEMENTATION.md for the new parameters. Actual matched CameraInfo is required
+for normal exploration by default.
 
 `/powerplant/map/observed_voxels` still uses four float32 fields (`x,y,z,state`).
 Unknown/missing and uncertain (`state=-1`) cells cannot carry a flight path.
-Truncated snapshots never authorize exploration. The mapper uses ROS simulation
-time when requested by launch; the controller retains the original receipt-time
-freshness behavior and default wall-clock domain.
+Truncated snapshots never authorize exploration. Launch gives localization, mapping, YOLO and control the same use_sim_time
+setting. Header samples use ROS time; wall timers and steady receipt deadlines
+also detect a frozen simulation clock.
 
 Algorithm tie-breaking is deterministic in C++ (lexicographic voxel keys), so
 exactly equal candidate priorities may choose a different equivalent viewpoint
@@ -75,16 +95,26 @@ not an API guarantee. Numeric calculations use doubles and wire map fields use
 float32, matching the Python pipeline.
 
 Image saving now completes asynchronously; photo events and counters follow the
-write result on a later control cycle. The `require_image_for_photo` fallback and
-landing-timeout-to-`COMPLETE` behaviors remain compatible. Invalid input is
-rejected rather than permitted to produce a non-finite control setpoint.
+write result on a later control cycle. A photo is counted only after a fresh image is written successfully. Landing
+completion requires fresh PX4 landed and disarmed states; timeout stays
+unconfirmed. Invalid navigation latches FAULT and stops heartbeat/setpoints,
+allowing the configured PX4 Offboard-loss behavior to take over. Recovery never
+automatically rearms.
 
 ## Validation
 
-Run sequentially after compilation:
+Run the complete reproducible baseline after compilation:
 
 ```bash
+bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
+```
+
+For individual checks, source the same middleware environment first:
+
+```bash
+source /opt/ros/jazzy/setup.bash
 source install/setup.bash
+source src/px4_powerplant_mission_cpp/scripts/p0_ros_env.sh
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 CTEST_PARALLEL_LEVEL=1 \
   colcon test --packages-select px4_powerplant_mission_cpp --executor sequential \
   --ctest-args -j1 --output-on-failure
@@ -94,10 +124,15 @@ PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
   -p no:cacheprovider -q src/px4_powerplant_mission/test
 ```
 
-Native tests cover geometry, time history, map contracts, scan/state transitions,
-setpoint limits and cancellation. The test-only `core_probe` performs JSON
-input/output to compare the unchanged Python reference with C++ on original
-planning scenarios, random obstacle routes and random ray updates. The ROS
+Native tests cover geometry, time history, map contracts, incremental indexes,
+adaptive sampling, calibrated visibility, turn/dwell budgets, scan coverage,
+view confirmation, planning dependencies, setpoint limits and cancellation.
+The test-only `core_probe` performs JSON input/output for original planning
+invariants and random obstacle routes. Legacy planning comparisons explicitly
+neutralize new turn/dwell costs; native P1 tests exercise the production model.
+Exact ray updates intentionally differ from the old Python fixed-step sampler
+and are checked against independent segment geometry oracles. The ROS
 contract tests start only one native process at a time, inject synthetic sensor
-and PX4 messages, and verify parameter defaults, publications and services.
+and PX4 messages, and verify parameter defaults, publications and services;
+localization/EV tests also start separate Python processes for both profiles.
 These tests do not replace a full PX4/Gazebo flight validation.

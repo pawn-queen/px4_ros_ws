@@ -113,6 +113,27 @@ def test_idle_publish_preserves_stamp_stop_degrades_covariance(pipeline):
     assert nav.odom_pub.messages[-1].header.stamp == nav.odom_pub.messages[0].header.stamp
 
 
+def test_health_epoch_changes_on_estimator_reset_without_retiming_samples(pipeline):
+    nav, _ = pipeline
+    sample = nav.get_clock().now().nanoseconds - 50_000_000
+    nav._uwb_pose_callback(uwb(sample))
+    nav._vehicle_odometry_callback(px4(sample))
+    before = nav._status()
+    repeated = nav._status()
+    assert repeated['localization_epoch'] == before['localization_epoch'] > 0
+    assert repeated['status_sequence'] > before['status_sequence']
+    assert repeated['navigation_sample_ns'] == before['navigation_sample_ns']
+    state = px4(sample + 1_000_000)
+    state.reset_counter = 1
+    nav._vehicle_odometry_callback(state)
+    after = nav._status()
+    assert after['localization_epoch'] != before['localization_epoch']
+    assert after['status_sequence'] == 1
+    assert after['navigation_sample_ns'] == state.timestamp_sample * 1000
+    assert after['status_stamp_ns'] >= after['navigation_sample_ns']
+    assert not after['has_independent_position']
+
+
 def test_stale_or_unknown_px4_pose_never_becomes_fresh_navigation(pipeline):
     nav, _ = pipeline
     ns = nav.get_clock().now().nanoseconds
