@@ -16,7 +16,7 @@ class VoxelGrid:
     miss_log_odds: float = -0.4
     min_log_odds: float = -4.0
     max_log_odds: float = 4.0
-    occupied_threshold: float = 0.0
+    occupied_threshold: float = 0.3
     free_threshold: float = -0.2
     cells: dict[tuple[int, int, int], float] = field(default_factory=dict)
 

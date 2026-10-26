@@ -92,10 +92,10 @@ powerplant_voxel_mapper:
     voxel_marker_topic: /powerplant/map/voxel_markers
     map_frame: map
     base_frame: base_link
-    voxel_resolution_m: 0.25
+    voxel_resolution_m: 0.15
     hit_log_odds: 0.85
     miss_log_odds: -0.4
-    occupied_log_odds_threshold: 1.7
+    occupied_log_odds_threshold: 1.5
     free_log_odds_threshold: -0.2
     ray_clear_enabled: true
     publish_rate_hz: 2.0
@@ -221,6 +221,6 @@ powerplant_offboard_mission:
                 -15.0, 40.0, 5.0,
                 24.0, 40.0, 5.0,
                 24.0, 0.0, 5.0,
-                0.0, 40.0, 6.0,
-                0.0, 0.0, 5.0,
+                0.0, 40.0, 7.0,
+                0.0, 0.0, 7.0,
             ]

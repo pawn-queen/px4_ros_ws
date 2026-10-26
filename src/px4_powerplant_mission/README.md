@@ -28,7 +28,7 @@ PX4 uORB 使用 `NED/FRD`，本包内部和对外发布使用 ROS 常用的 `ENU
 先构建工作区：
 
 ```bash
-cd /home/pawn/px4_ros_ws
+cd /home/duoxuanyi/px4_ros_ws
 deactivate 2>/dev/null || true
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
@@ -65,23 +65,30 @@ MicroXRCEAgent udp4 -p 8888
 终端 2，启动 PX4 Gazebo：
 
 ```bash
-cd /home/pawn/drone-simulation
+cd /home/duoxuanyi/drone-simulation
+
+unset GZ_CONFIG_PATH
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH
+
+/usr/bin/gz --commands
+/usr/bin/gz sim --help
+
 PX4_GZ_WORLD=powerplant make px4_sitl gz_x500_depth
 ```
 
 终端 3，启动本任务栈：
 
 ```bash
-cd /home/pawn/px4_ros_ws
+cd /home/duoxuanyi/px4_ros_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-ros2 launch px4_powerplant_mission powerplant_system.launch.py
+ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
 ```
 
 这个 launch 会默认启动 Gazebo 真值桥接，UWB 默认使用 `/world/powerplant/dynamic_pose/info` 的模型位姿；`/model/x500_depth/odometry_with_covariance` 仍保留为可选 odometry 后备源。如果你已经在别处桥接同一 truth topic，可以加 `use_gazebo_truth_bridge:=false`。默认不会启动 YOLO 和飞控。需要时显式打开：
 
 ```bash
-ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
+
 ```
 
 飞控节点启动后仍不会自动执行任务，默认需要服务触发：
@@ -92,7 +99,7 @@ ros2 service call /land_powerplant_mission std_srvs/srv/Trigger
 ```
 
 如果按“非虚拟环境”启动 ROS 任务栈，也可以直接 `use_yolo:=true`；launch 默认会用
-`/home/pawn/px4_ros_ws/.venv/bin/python` 运行 YOLO 节点，避免系统 Python 缺少
+`/home/duoxuanyi/px4_ros_ws/.venv/bin/python` 运行 YOLO 节点，避免系统 Python 缺少
 `ultralytics` 时产生启动错误。若已经把 YOLO 依赖安装到系统 Python，可覆盖
 `yolo_python:=python3`。
 
@@ -151,7 +158,7 @@ ros2 topic echo /powerplant/control/mission_status std_msgs/msg/String --once --
 建议先关掉卡住的 ROS2 daemon，后续诊断命令都可以复用同一个终端环境：
 
 ```bash
-cd /home/pawn/px4_ros_ws
+cd /home/duoxuanyi/px4_ros_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 daemon stop
@@ -166,7 +173,7 @@ RViz 只负责显示，不会主动创建地图或路径。先按正常流程启
 时不会启动飞控节点，也就不会有路径 topic。
 
 ```bash
-cd /home/pawn/px4_ros_ws
+cd /home/duoxuanyi/px4_ros_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
@@ -178,7 +185,7 @@ ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true us
 如果图像、深度图或雷达 topic 没有出现，再启动 Gazebo sensor bridge：
 
 ```bash
-cd /home/pawn/px4_ros_ws
+cd /home/duoxuanyi/px4_ros_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py
@@ -189,7 +196,7 @@ ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py
 推荐直接用本包的 RViz 配置启动，它已经预置栅格、路径、定位、UWB anchor 和点云显示：
 
 ```bash
-cd /home/pawn/px4_ros_ws
+cd /home/duoxuanyi/px4_ros_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 launch px4_powerplant_mission visualization.launch.py
@@ -267,12 +274,16 @@ ros2 run rqt_image_view rqt_image_view
 也可以直接用 `image_view` 打开单个窗口：
 
 ```bash
+source /opt/ros/jazzy/setup.bash
+ros2 run rqt_image_view rqt_image_view
 ros2 run image_view image_view --ros-args -r image:=/camera
 ros2 run image_view image_view --ros-args -r image:=/depth_camera
 ros2 run image_view image_view --ros-args -r image:=/powerplant/perception/yolo_annotated
 ```
 
-如果这些命令不存在，安装对应工具包：
+如果这些命令不存在，安装对应工具包：cd /home/duoxuanyi/px4_ros_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
 
 ```bash
 sudo apt install ros-jazzy-rviz2 ros-jazzy-rqt-image-view ros-jazzy-image-view
@@ -349,7 +360,7 @@ ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py \
 工作区构建继续使用系统 Python，YOLO 依赖不要参与 `colcon build`。如果希望不使用虚拟环境运行 YOLO，需要把推理依赖安装到系统/用户 Python：
 
 ```bash
-cd /home/pawn/px4_ros_ws
+cd /home/duoxuanyi/px4_ros_ws
 python3 -m pip install --user --break-system-packages -r src/px4_powerplant_mission/requirements-yolo.txt
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install --packages-select px4_powerplant_mission --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
@@ -357,11 +368,11 @@ source install/setup.bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
 ```
 
-默认会使用 `/home/pawn/px4_ros_ws/.venv/bin/python` 运行 YOLO。也可以显式覆盖启动参数：
+默认会使用 `/home/duoxuanyi/px4_ros_ws/.venv/bin/python` 运行 YOLO。也可以显式覆盖启动参数：
 
 ```bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py \
   use_yolo:=true \
   use_control:=true \
-  yolo_python:=/home/pawn/px4_ros_ws/.venv/bin/python
+  yolo_python:=/home/duoxuanyi/px4_ros_ws/.venv/bin/python
 ```
