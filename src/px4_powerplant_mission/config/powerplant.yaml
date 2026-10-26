@@ -95,7 +95,7 @@ powerplant_voxel_mapper:
     voxel_resolution_m: 0.25
     hit_log_odds: 0.85
     miss_log_odds: -0.4
-    occupied_log_odds_threshold: 0.0
+    occupied_log_odds_threshold: 1.7
     free_log_odds_threshold: -0.2
     ray_clear_enabled: true
     publish_rate_hz: 2.0
@@ -178,7 +178,7 @@ powerplant_offboard_mission:
     max_vertical_setpoint_speed_mps: 0.8
     max_yaw_rate_radps: 0.6
     use_occupancy_grid_planner: true
-    planner_inflation_radius_m: 0.6
+    planner_inflation_radius_m: 0.45
     planner_unknown_policy: cost
     planner_unknown_cost: 2.0
     path_waypoint_stride: 4
@@ -187,10 +187,10 @@ powerplant_offboard_mission:
     avoidance_startup_max_tilt_rad: 0.35
     replan_interval_s: 2.0
     safety_stop_enabled: true
-    safety_stop_distance_m: 1.2
-    safety_stop_width_m: 0.5
+    safety_stop_distance_m: 0.9
+    safety_stop_width_m: 0.4
     safety_stop_treat_unknown_as_blocked: false
-    target_class_name: gas_cylinder
+    target_class_name: gas_cylinders
     min_target_confidence: 0.35
     target_memory_s: 8.0
     lock_target_after_acquisition: true

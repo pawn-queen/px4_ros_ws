@@ -27,7 +27,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("use_control", default_value="false"),
             DeclareLaunchArgument(
                 "yolo_python",
-                default_value="/home/pawn/px4_ros_ws/.venv/bin/python",
+                default_value="/usr/bin/python3",
                 description="Python interpreter used to run the YOLO detector.",
             ),
             Node(

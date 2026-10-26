@@ -257,7 +257,7 @@ class OffboardMissionNode(Node):
         self.declare_parameter("max_vertical_setpoint_speed_mps", 0.8)
         self.declare_parameter("max_yaw_rate_radps", 0.6)
         self.declare_parameter("use_occupancy_grid_planner", True)
-        self.declare_parameter("planner_inflation_radius_m", 0.6)
+        self.declare_parameter("planner_inflation_radius_m", 0.45)
         self.declare_parameter("planner_unknown_policy", "cost")
         self.declare_parameter("planner_unknown_cost", 2.0)
         self.declare_parameter("path_waypoint_stride", 4)
@@ -266,10 +266,10 @@ class OffboardMissionNode(Node):
         self.declare_parameter("avoidance_startup_max_tilt_rad", 0.35)
         self.declare_parameter("replan_interval_s", 2.0)
         self.declare_parameter("safety_stop_enabled", True)
-        self.declare_parameter("safety_stop_distance_m", 1.2)
-        self.declare_parameter("safety_stop_width_m", 0.5)
+        self.declare_parameter("safety_stop_distance_m", 0.9)
+        self.declare_parameter("safety_stop_width_m", 0.4)
         self.declare_parameter("safety_stop_treat_unknown_as_blocked", False)
-        self.declare_parameter("target_class_name", "gas_cylinder")
+        self.declare_parameter("target_class_name", "gas_cylinders")
         self.declare_parameter("min_target_confidence", 0.35)
         self.declare_parameter("target_memory_s", 8.0)
         self.declare_parameter("lock_target_after_acquisition", True)
@@ -300,8 +300,8 @@ class OffboardMissionNode(Node):
                 -15.0, 40.0, 5.0,
                 24.0, 40.0, 5.0,
                 24.0, 0.0, 5.0,
-                0.0, 40.0, 6.0,
-                0.0, 0.0, 5.0,
+                0.0, 40.0, 7.0,
+                0.0, 0.0, 7.0,
             ],
         )
 
