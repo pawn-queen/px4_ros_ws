@@ -6,9 +6,22 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from px4_msgs.msg import BatteryStatus, VehicleCommandAck, VehicleLocalPosition, VehicleStatus
 
 
 def generate_launch_description() -> LaunchDescription:
+    # PX4's generated DDS topics carry a suffix for versioned schemas. Keep
+    # direct-node/default parameter compatibility; launch maps only the default
+    # base names to the schema supplied by the installed px4_msgs package.
+    px4_versioned_topics = [
+        (base, f"{base}_v{message.MESSAGE_VERSION}")
+        for base, message in (
+            ("/fmu/out/vehicle_status", VehicleStatus),
+            ("/fmu/out/vehicle_command_ack", VehicleCommandAck),
+            ("/fmu/out/battery_status", BatteryStatus),
+            ("/fmu/out/vehicle_local_position", VehicleLocalPosition),
+        ) if message.MESSAGE_VERSION > 0
+    ]
     config_file = LaunchConfiguration("config_file")
     profile = LaunchConfiguration("localization_profile")
     simulation = PythonExpression(["'", profile, "' == 'simulation'"])
@@ -16,6 +29,13 @@ def generate_launch_description() -> LaunchDescription:
         FindPackageShare("px4_powerplant_mission"), "config",
         PythonExpression(["'localization_", profile, ".yaml'"]),
     ])
+
+    default_motion_profile = PathJoinSubstitution([
+        FindPackageShare("px4_powerplant_mission"), "config",
+        PythonExpression(["'p2_", profile, ".yaml'"]),
+    ])
+
+    motion_profile_config = LaunchConfiguration("motion_config_file")
 
     default_config = PathJoinSubstitution(
         [FindPackageShare("px4_powerplant_mission"), "config", "powerplant.yaml"]
@@ -26,6 +46,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("config_file", default_value=default_config),
             DeclareLaunchArgument("localization_profile", default_value="simulation",
                                   choices=["simulation", "hardware"]),
+            DeclareLaunchArgument("motion_config_file", default_value=default_motion_profile),
             DeclareLaunchArgument("use_localization", default_value="true"),
             DeclareLaunchArgument("use_external_vision", default_value="true"),
             DeclareLaunchArgument("use_uwb", default_value=simulation),
@@ -53,6 +74,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="localization_node",
                 name="powerplant_localization",
                 output="screen",
+                remappings=px4_versioned_topics,
                 parameters=[config_file, profile_config, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
                 condition=IfCondition(LaunchConfiguration("use_localization")),
             ),
@@ -105,7 +127,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="voxel_mapper_node",
                 name="powerplant_voxel_mapper",
                 output="screen",
-                parameters=[config_file, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
+                parameters=[config_file, motion_profile_config, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
                 condition=IfCondition(LaunchConfiguration("use_mapping")),
             ),
             Node(
@@ -122,7 +144,8 @@ def generate_launch_description() -> LaunchDescription:
                 executable="offboard_mission_node",
                 name="powerplant_offboard_mission",
                 output="screen",
-                parameters=[config_file, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
+                remappings=px4_versioned_topics,
+                parameters=[config_file, motion_profile_config, {"use_sim_time": LaunchConfiguration("use_sim_time")}],
                 condition=IfCondition(LaunchConfiguration("use_control")),
             ),
         ]

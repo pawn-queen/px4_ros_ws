@@ -1,5 +1,5 @@
-#include "px4_powerplant_mission_cpp/offboard.hpp"
 #include "px4_powerplant_mission_cpp/input_validation.hpp"
+#include "px4_powerplant_mission_cpp/offboard.hpp"
 namespace powerplant {
 void OffboardMissionNode::cancel_jobs() {
   planner_.cancel();
@@ -12,7 +12,14 @@ void OffboardMissionNode::start(Trigger::Response &response) {
       vehicle_.arming_state != Status::ARMING_STATE_DISARMED ||
       !localization_ready()) {
     response.success = false;
-    response.message = "start requires fresh navigation, disarmed PX4 and no active mission";
+    response.message =
+        "start requires fresh navigation, disarmed PX4 and no active mission";
+    return;
+  }
+  if (!b("motion_model_configured") || !std::isfinite(velocity_sigma_mps_)) {
+    response.success = false;
+    response.message =
+        "P2 motion model or velocity covariance is not configured";
     return;
   }
   const auto previous_home = home_;
@@ -27,7 +34,27 @@ void OffboardMissionNode::start(Trigger::Response &response) {
   cancel_jobs();
   active_ = true;
   phase_ = Phase::Start;
+  if (motion_)
+    motion_->disable();
   warmup_ = 0;
+  warmup_started_ = 0;
+  motion_publication_base_ = motion_ ? motion_->publications() : 0;
+  motion_brake_requested_ = false;
+  takeoff_bootstrap_active_ = false;
+  inspection_ = InspectionSession(inspection_config());
+  inspection_.reset(localization_epoch_, uint64_t(ns()));
+  inspection_classified_revision_ = 0;
+  attempted_inspection_views_.clear();
+  inspection_result_ = "UNCONFIRMED";
+  inspection_view_.reset();
+  registered_frame_.reset();
+  registration_.cancel();
+  registration_busy_ = false;
+  submitted_observation_ = 0;
+  inspection_aligned_since_ = last_capture_attempt_ = 0;
+  topology_.reset();
+  selected_region_id_ = 0;
+  recent_regions_.clear();
   waypoint_ = 0;
   waypoints_.clear();
   goal_ids_.clear();
@@ -51,12 +78,16 @@ void OffboardMissionNode::start(Trigger::Response &response) {
   mission_steady_ = steady_ns();
   response.success = true;
   response.message = "mission requested: START";
+  publish_status();
 }
 void OffboardMissionNode::initialize() {
   if (!position_)
     return;
   home_ = position_;
   reset_setpoint();
+  motion_target_ = *home_;
+  motion_target_yaw_ = yaw_;
+  takeoff_bootstrap_active_ = false;
   phase_ = Phase::Takeoff;
   mission_started_ = ns();
   mission_steady_ = steady_ns();
@@ -75,6 +106,7 @@ void OffboardMissionNode::initialize() {
 }
 void OffboardMissionNode::tick() {
   observe_clock();
+  consume_map_commit();
   if (phase_ == Phase::Landing) {
     update_landing();
     publish_status();
@@ -90,19 +122,23 @@ void OffboardMissionNode::tick() {
     publish_status();
     return;
   }
-  // Consume disk completion independently of route availability. A map update
-  // may clear waypoints while the image is being written.
-  if (photo_pending_ && phase_ == Phase::Target) {
-    auto result = recorder_.take();
-    if (result) {
-      photo_pending_ = false;
-      event("inspection_photo", result->event);
-      if (result->success && captured_.insert(photo_goal_).second) {
-        ++photos_;
-        if (photos_ >= i("inspection_required_photos") || photo_final_)
-          enter_return("inspection complete");
-      }
-    }
+  consume_registered_observation();
+  if (phase_ == Phase::Target)
+    consume_photo_result();
+  if (motion_ && motion_->report().mode == MotionMode::Hold &&
+      motion_->report().reason.rfind("MOTION_PLAN_UNAVAILABLE:", 0) == 0 &&
+      !waypoints_.empty()) {
+    explore_wait_ = motion_->report().reason;
+    waypoints_.clear();
+    inspection_view_.reset();
+    target_plan_stamp_ = explore_plan_stamp_ = return_plan_stamp_ = 0;
+    stop_motion(explore_wait_);
+    event("motion_plan_rejected");
+  }
+  if (motion_ && motion_->report().mode == MotionMode::Fault) {
+    fault("motion executor: " + motion_->report().reason);
+    publish_status();
+    return;
   }
   if (phase_ == Phase::Start) {
     if (!localization_ready()) {
@@ -149,8 +185,12 @@ void OffboardMissionNode::tick() {
     return;
   }
   if (home_ && phase_ != Phase::Return &&
-      (battery_low() || remaining_flight() <= d("explore_return_reserve_s")))
-    enter_return("global return reserve reached");
+      (battery_low() || remaining_flight() <= config().reserve_s)) {
+    if (phase_ == Phase::Target)
+      finish_inspection("return reserve reached");
+    else
+      enter_return("global return reserve reached");
+  }
   if (phase_ == Phase::Explore)
     prepare_explore();
   else if (phase_ == Phase::Return)
@@ -161,36 +201,24 @@ void OffboardMissionNode::tick() {
   }
   prepare_target();
   auto [target, heading] = select_target();
-  auto [stop, reason] = safety_required(target);
-  if (stop) {
-    safety(true, reason);
-    heartbeat();
-    reset_setpoint();
-    setpoint(*position_, yaw_);
-    engage();
-    publish_status(target, *position_);
+  if (!active_ || phase_ == Phase::Fault) {
+    publish_status();
     return;
   }
-  safety(false, "");
-  if (!slew_.position)
-    reset_setpoint();
-  bool scanning = phase_ == Phase::Scan;
-  double xy = d(scanning ? "initial_scan_max_horizontal_setpoint_speed_mps"
-                         : "max_horizontal_setpoint_speed_mps");
-  double rate =
-      d(scanning ? "initial_scan_yaw_rate_radps" : "max_yaw_rate_radps");
-  if (scanning) {
-    xy = std::max(.01, xy);
-    rate = std::max(.01, rate);
-  }
-  auto [point, y] = slew_.update(target, heading, ns(), xy,
-                                 d("max_vertical_setpoint_speed_mps"), rate);
-  heartbeat();
-  setpoint(point, y);
+  auto [stop, reason] = safety_required(target);
+  safety(stop, reason);
+  if (motion_stopped())
+    motion_brake_requested_ = false;
+  update_motion_input(target, heading, !stop, reason);
   engage();
-  update_phase(target, heading);
-  publish_status(target, point);
+  if (!stop && (phase_ == Phase::Scan || motion_stopped()))
+    update_phase(target, heading);
+  const auto report = motion_ ? motion_->report() : MotionUpdate{};
+  publish_status(target, report.valid
+                             ? std::optional<Vec3>(report.sample.position_enu)
+                             : position_);
 }
+
 bool OffboardMissionNode::reached(const Vec3 &p, double tolerance) const {
   return position_ &&
          (*position_ - p).norm() <=
@@ -231,6 +259,9 @@ void OffboardMissionNode::reset_scan() {
 void OffboardMissionNode::enter_scan(const Vec3 &target) {
   phase_ = Phase::Scan;
   scan_anchor_ = target;
+  scan_original_anchor_ = target;
+  scan_moves_ = 0;
+  scan_move_started_ = ns();
   scan_ = YawScan{yaw_, std::max(0.0, d("initial_scan_yaw_dwell_s")),
                   std::max(4, i("initial_scan_yaw_steps")), 0, 0};
   scan_entered_ = ns();
@@ -275,11 +306,13 @@ std::pair<bool, std::string> OffboardMissionNode::scan_data_ready() const {
   double max_age = std::max(.1, d("initial_scan_max_sensor_age_s"));
   if (lidar_sample_ < scan_entered_ ||
       !receipt_fresh(lidar_stamp_, lidar_steady_, max_age) ||
-      !stamp_reason(lidar_sample_, ns(), max_age, d("max_future_stamp_skew_s")).empty())
+      !stamp_reason(lidar_sample_, ns(), max_age, d("max_future_stamp_skew_s"))
+           .empty())
     return {false, "waiting for valid horizontal lidar scan"};
   if (depth_sample_ < scan_entered_ ||
       !receipt_fresh(depth_stamp_, depth_steady_, max_age) ||
-      !stamp_reason(depth_sample_, ns(), max_age, d("max_future_stamp_skew_s")).empty())
+      !stamp_reason(depth_sample_, ns(), max_age, d("max_future_stamp_skew_s"))
+           .empty())
     return {false, "waiting for forward depth image"};
   if (!scan_depth_base_ || !scan_lidar_base_)
     return {false, "waiting for mapper fusion status"};
@@ -308,13 +341,16 @@ bool OffboardMissionNode::scan_first_segment_ready() const {
   const double length = d("initial_scan_min_free_path_m");
   if (!std::isfinite(length) || length <= 0)
     return false;
-  const auto &map = planning_map();
+  const auto map = planning_domain_map();
   const auto cfg = config();
   for (int direction = 0; direction < 8; ++direction) {
     const double heading = yaw_ + direction * pi / 4;
-    const Vec3 goal = *scan_anchor_ +
-        Vec3(length * std::cos(heading), length * std::sin(heading), 0);
-    if (path_is_known_free(map, {*scan_anchor_, goal}, cfg))
+    const Vec3 goal = *scan_anchor_ + Vec3(length * std::cos(heading),
+                                           length * std::sin(heading), 0);
+    if (path_is_known_free(map, {*scan_anchor_, goal}, cfg) &&
+        build_motion_plan(motion_domain(), motion_state(),
+                          {*scan_anchor_, goal}, heading, motion_limits())
+            .plan)
       return true;
   }
   return false;
@@ -331,7 +367,8 @@ void OffboardMissionNode::update_scan() {
   const auto [data, data_reason] = scan_data_ready();
   const double required = d("initial_scan_required_coverage_fraction");
   if (!std::isfinite(required) || required <= 0 || required > 1)
-    throw std::invalid_argument("initial scan coverage fraction must be in (0,1]");
+    throw std::invalid_argument(
+        "initial scan coverage fraction must be in (0,1]");
   // Completion is evidence-based. A nominal sequence of yaw targets alone
   // cannot authorize exploration, nor can repeated old images fill sectors.
   if (data && camera_ready() && scan_coverage_.fraction() >= required &&
@@ -354,21 +391,46 @@ void OffboardMissionNode::update_scan() {
     }
     auto event_fields = object();
     event_fields["coverage_fraction"] = scan_coverage_.fraction();
-    event_fields["accepted_observations"] = integer(scan_accepted_observations_);
+    event_fields["accepted_observations"] =
+        integer(scan_accepted_observations_);
     event_fields["known_grid_cells"] = integer(grid_known_);
     event("initial_scan_complete", event_fields);
     enter_explore();
     return;
+  }
+  if (data && camera_ready() && scan_coverage_.fraction() >= required &&
+      motion_stopped() && scan_original_anchor_ &&
+      scan_moves_ < i("initial_scan_max_moves") &&
+      age(scan_move_started_) >= d("initial_scan_move_wait_s")) {
+    for (int j = 0; j < 8; ++j) {
+      const double angle = yaw_ + j * pi / 4;
+      const Vec3 goal =
+          *scan_original_anchor_ + Vec3(std::cos(angle), std::sin(angle), 0) *
+                                       d("initial_scan_move_length_m");
+      auto checked =
+          build_motion_plan(motion_domain(), motion_state(), {*position_, goal},
+                            yaw_, motion_limits());
+      if (checked.plan && (goal - *position_).norm() > .05) {
+        scan_anchor_ = goal;
+        ++scan_moves_;
+        scan_move_started_ = ns();
+        rotating_ = false;
+        hover_since_ = 0;
+        event("initial_scan_safe_translation");
+        break;
+      }
+    }
   }
   // Rotation only needs a verified takeoff column, stable pose and actual
   // horizontal lidar evidence. Missing depth is precisely why another yaw
   // direction may be useful; it does not grant any horizontal translation.
   const double max_age = std::max(.1, d("initial_scan_max_sensor_age_s"));
   bool lidar_ready = lidar_sample_ >= scan_entered_ &&
-      receipt_fresh(lidar_stamp_, lidar_steady_, max_age) &&
-      scan_lidar_base_ && maps_.lidar_count > *scan_lidar_base_;
+                     receipt_fresh(lidar_stamp_, lidar_steady_, max_age) &&
+                     scan_lidar_base_ && maps_.lidar_count > *scan_lidar_base_;
   if (!pose || !lidar_ready) {
-    scan_wait_ = !pose ? pose_reason : "waiting for actual horizontal lidar contour";
+    scan_wait_ =
+        !pose ? pose_reason : "waiting for actual horizontal lidar contour";
     hover_since_ = 0;
     scan_->reached_since = 0;
     if (rotating_) {
@@ -400,18 +462,21 @@ void OffboardMissionNode::update_scan() {
   }
   const bool reached_heading =
       std::abs(wrap_pi(yaw_ - scan_heading_)) <=
-          std::max(.01, d("initial_scan_yaw_tolerance_rad"));
+      std::max(.01, d("initial_scan_yaw_tolerance_rad"));
   if (!reached_heading)
     scan_->reached_since = 0;
   else if (!scan_->reached_since)
     scan_->reached_since = ns();
-  const bool heading_observed = reached_heading && scan_->reached_since &&
+  const bool heading_observed =
+      reached_heading && scan_->reached_since &&
       scan_last_accepted_sample_ >= scan_->reached_since &&
       std::abs(wrap_pi(scan_last_accepted_yaw_ - scan_heading_)) <=
           std::max(.01, d("initial_scan_yaw_tolerance_rad"));
-  const bool dwell_complete = heading_observed &&
+  const bool dwell_complete =
+      heading_observed &&
       age(scan_->reached_since) >= d("initial_scan_yaw_dwell_s");
-  const bool heading_timeout = reached_heading && scan_->reached_since &&
+  const bool heading_timeout =
+      reached_heading && scan_->reached_since &&
       age(scan_->reached_since) >= d("initial_scan_heading_timeout_s");
   if (dwell_complete || heading_timeout) {
     ++scan_->index;
@@ -422,13 +487,15 @@ void OffboardMissionNode::update_scan() {
     step_lidar_base_ = maps_.lidar_count;
   }
   if (!camera_ready())
-    scan_wait_ = "turning slowly; waiting for matched CameraInfo and fused depth";
+    scan_wait_ =
+        "turning slowly; waiting for matched CameraInfo and fused depth";
   else if (!data)
     scan_wait_ = "turning slowly; " + data_reason;
   else if (scan_coverage_.fraction() < required)
     scan_wait_ = "turning slowly to fill unobserved depth heading sectors";
   else
-    scan_wait_ = "coverage sufficient; waiting for a known-free initial segment";
+    scan_wait_ =
+        "coverage sufficient; waiting for a known-free initial segment";
 }
 void OffboardMissionNode::enter_explore() {
   cancel_jobs();
@@ -452,6 +519,7 @@ void OffboardMissionNode::enter_target() {
   if (!target_)
     return;
   cancel_jobs();
+  stop_motion("YOLO target takeover");
   phase_ = Phase::Target;
   waypoints_.clear();
   waypoint_ = 0;
@@ -459,23 +527,24 @@ void OffboardMissionNode::enter_target() {
   target_revision_ = -1;
   captured_.clear();
   photos_ = 0;
-  navigation_goals_ = inspection_goals(target_->position);
+  navigation_goals_.clear();
   navigation_ids_.clear();
   for (size_t j = 0; j < navigation_goals_.size(); ++j)
     navigation_ids_.push_back(j);
   target_plan_stamp_ = 0;
-  if (map_fresh()) {
+  if (map_fresh() && motion_stopped()) {
     target_plan_stamp_ = ns();
     submit_plan(Phase::Target, navigation_goals_, navigation_ids_);
   }
   auto p = object();
   p["target_class"] = target_->class_name;
   p["target_enu"] = vector_json(target_->position);
-  p["inspection_waypoints"] = integer(navigation_goals_.size());
+  p["inspection_strategy"] = "reachable_surface_gain";
   event("target_acquired", p);
 }
 void OffboardMissionNode::enter_return(const std::string &reason) {
   cancel_jobs();
+  stop_motion("return takeover: " + reason);
   phase_ = Phase::Return;
   return_reason_ = reason;
   if (!home_ && position_)
@@ -495,6 +564,7 @@ void OffboardMissionNode::enter_landing(const std::string &reason) {
   cancel_jobs();
   phase_ = Phase::Landing;
   active_ = false;
+  stop_motion("PX4 landing owns descent");
   return_reason_ = reason;
   safety_stop_ = false;
   safety_reason_.clear();
@@ -511,7 +581,8 @@ void OffboardMissionNode::enter_landing(const std::string &reason) {
   event("landing", p);
 }
 void OffboardMissionNode::update_landing() {
-  const bool confirmed = vehicle_fresh() &&
+  const bool confirmed =
+      vehicle_fresh() &&
       receipt_fresh(land_stamp_, land_steady_, d("max_land_detection_age_s")) &&
       vehicle_stamp_ >= landing_started_ && land_stamp_ >= landing_started_ &&
       vehicle_.arming_state == Status::ARMING_STATE_DISARMED && land_.landed;
@@ -520,8 +591,8 @@ void OffboardMissionNode::update_landing() {
       landed_since_ = steady_ns();
   } else
     landed_since_ = 0;
-  if (landed_since_ && (steady_ns() - landed_since_) * 1e-9 >=
-                           d("landing_confirm_dwell_s")) {
+  if (landed_since_ &&
+      (steady_ns() - landed_since_) * 1e-9 >= d("landing_confirm_dwell_s")) {
     phase_ = Phase::Complete;
     landing_sent_ = false;
     auto p = object();
@@ -530,10 +601,12 @@ void OffboardMissionNode::update_landing() {
     event("mission_complete", p);
   } else if (!landing_timeout_reported_ &&
              (age(landing_started_) > d("land_complete_timeout_s") ||
-              (steady_ns() - landing_started_steady_) * 1e-9 > d("land_complete_timeout_s"))) {
+              (steady_ns() - landing_started_steady_) * 1e-9 >
+                  d("land_complete_timeout_s"))) {
     landing_timeout_reported_ = true;
     auto p = object();
-    p["reason"] = "landing not confirmed by fresh landed and disarmed PX4 state";
+    p["reason"] =
+        "landing not confirmed by fresh landed and disarmed PX4 state";
     event("landing_unconfirmed", p);
   }
 }
@@ -541,16 +614,94 @@ std::pair<Vec3, double> OffboardMissionNode::select_target() {
   if (!position_)
     return {Vec3::Zero(), 0};
   if (phase_ == Phase::Takeoff) {
-    Vec3 target = home_.value_or(*position_);
-    target.z() += d("takeoff_height_m");
-    return {target, d("cruise_yaw_enu_rad")};
+    if (waypoints_.empty()) {
+      try {
+        const Vec3 origin = home_.value_or(*position_);
+        const auto limits = motion_limits();
+        const double bootstrap_height = d("motion_takeoff_bootstrap_height_m"),
+                     bootstrap_duration = d("motion_takeoff_bootstrap_duration_s");
+        const bool bootstrap = bootstrap_height > 0 || bootstrap_duration > 0;
+        if (!std::isfinite(bootstrap_height) || !std::isfinite(bootstrap_duration) ||
+            bootstrap_height < 0 || bootstrap_duration < 0 ||
+            (bootstrap && (bootstrap_height <= 0 || bootstrap_duration <= 0 ||
+                           bootstrap_height > limits.tracking_position_tolerance_m)))
+          throw std::invalid_argument("invalid takeoff bootstrap bounds");
+        const auto held = motion_ ? motion_->report() : MotionUpdate{};
+        if (bootstrap && (vehicle_.arming_state != Status::ARMING_STATE_ARMED ||
+                          vehicle_.nav_state != Status::NAVIGATION_STATE_OFFBOARD ||
+                          !held.valid || !held.stopped || held.mode != MotionMode::Hold))
+          return {held.valid ? held.sample.position_enu : *position_, motion_target_yaw_};
+        // At B*v^2/(A^2*a) the quintic velocity/acceleration time bounds
+        // intersect (A=1.875, B=10*sqrt(3)/3). Longer vertical legs waste
+        // initial acceleration. Generate short references and use the normal
+        // measured-settle gate before advancing, rather than treating an
+        // internal analytic zero velocity as an actual aircraft stop.
+        const double rise = 5.773502691896258 /
+                            (1.875 * 1.875) *
+                            limits.max_vertical_velocity_mps *
+                            limits.max_vertical_velocity_mps /
+                            limits.max_vertical_acceleration_mps2;
+        Vec3 previous = bootstrap ? held.sample.position_enu : origin;
+        double motion_time = 0;
+        takeoff_bootstrap_active_ = false;
+        const double final_height = origin.z() + d("takeoff_height_m");
+        if (bootstrap) {
+          const Vec3 next = previous + Vec3(0, 0, bootstrap_height);
+          if (next.z() >= final_height)
+            throw std::invalid_argument("takeoff height leaves no room for startup ascent");
+          motion_target_yaw_ = held.sample.yaw_rad;
+          auto startup_limits = limits;
+          startup_limits.minimum_leg_duration_s = bootstrap_duration;
+          motion_time += motion_path_time_s({previous, next}, motion_target_yaw_,
+                                             motion_target_yaw_, startup_limits) +
+                         d("motion_settle_dwell_s");
+          waypoints_.push_back(next);
+          previous = next;
+          takeoff_bootstrap_active_ = true;
+        }
+        const Vec3 ascent_origin = previous;
+        const double height = final_height - ascent_origin.z();
+        const double sections = std::ceil(height / rise - 1e-9);
+        if (!std::isfinite(rise) || rise <= 0 || !std::isfinite(sections) ||
+            sections < 1 || sections > 8192)
+          throw std::invalid_argument("invalid or excessive takeoff segment count");
+        for (size_t j = 1; j <= size_t(sections); ++j) {
+          Vec3 next = ascent_origin;
+          next.z() += height * double(j) / sections;
+          if (next.z() <= position_->z() && j < size_t(sections))
+            continue;
+          motion_time += motion_path_time_s(
+              {previous, next}, motion_target_yaw_, motion_target_yaw_, limits) +
+                         d("motion_settle_dwell_s");
+          waypoints_.push_back(next);
+          previous = next;
+        }
+        waypoint_ = 0;
+        publish_path();
+        auto evidence = object();
+        evidence["ascent_reference_count"] = integer(waypoints_.size());
+        evidence["ascent_motion_and_settle_budget_s"] = motion_time;
+        evidence["maximum_reference_rise_m"] = height / sections;
+        evidence["bootstrap_height_m"] = bootstrap ? bootstrap_height : 0;
+        evidence["bootstrap_minimum_duration_s"] = bootstrap ? bootstrap_duration : 0;
+        evidence["bootstrap_reference_enu_m"] = bootstrap
+            ? vector_json(held.sample.position_enu, 6) : JsonValue();
+        event("takeoff_references_generated", evidence);
+      } catch (const std::exception &error) {
+        fault(std::string("takeoff motion preparation: ") + error.what());
+        return {*position_, motion_target_yaw_};
+      }
+    }
+    return {waypoints_[std::min(waypoint_, waypoints_.size() - 1)],
+            motion_target_yaw_};
   }
   if (phase_ == Phase::Scan) {
     if (!scan_anchor_)
       return {*position_, yaw_};
     if (scan_pose_ready(false).first && scan_ && rotating_ &&
         lidar_sample_ >= scan_entered_ &&
-        receipt_fresh(lidar_stamp_, lidar_steady_, d("initial_scan_max_sensor_age_s")) &&
+        receipt_fresh(lidar_stamp_, lidar_steady_,
+                      d("initial_scan_max_sensor_age_s")) &&
         scan_lidar_base_ && maps_.lidar_count > *scan_lidar_base_)
       return {*scan_anchor_, scan_heading_};
     return {*scan_anchor_, yaw_};
@@ -564,11 +715,17 @@ std::pair<Vec3, double> OffboardMissionNode::select_target() {
     }
     double y = d("cruise_yaw_enu_rad");
     if (phase_ == Phase::Target && target_)
-      y = face(target_->position);
+      y = inspection_view_ ? inspection_view_->yaw_rad
+                           : face(target_->position);
     else if (phase_ == Phase::Explore)
       y = explore_yaw_;
-    else if (phase_ == Phase::Return)
-      y = face(target);
+    else if (phase_ == Phase::Return) {
+      const Vec3 from =
+          waypoint_ > 0 ? waypoints_[waypoint_ - 1] : route_origin_;
+      const Vec3 delta = target - from;
+      y = delta.head<2>().norm() > 1e-6 ? std::atan2(delta.y(), delta.x())
+                                        : motion_target_yaw_;
+    }
     return {target, y};
   }
   return {*position_, yaw_};
@@ -577,8 +734,22 @@ void OffboardMissionNode::update_phase(const Vec3 &target, double heading) {
   if (!position_)
     return;
   if (phase_ == Phase::Takeoff) {
-    if (reached(target, .35))
-      enter_scan(target);
+    const auto motion = motion_ ? motion_->report() : MotionUpdate{};
+    if (vehicle_.arming_state != Status::ARMING_STATE_ARMED ||
+        vehicle_.nav_state != Status::NAVIGATION_STATE_OFFBOARD ||
+        !motion.valid || !motion.stopped || motion.mode != MotionMode::Hold ||
+        (motion.sample.position_enu - target).norm() > 1e-6)
+      return;
+    if (reached(target, std::min(.1, d("target_acceptance_m")))) {
+      takeoff_bootstrap_active_ = false;
+      if (waypoint_ + 1 < waypoints_.size())
+        ++waypoint_;
+      else {
+        waypoints_.clear();
+        waypoint_ = 0;
+        enter_scan(target);
+      }
+    }
     return;
   }
   if (phase_ == Phase::Scan) {
@@ -596,36 +767,48 @@ void OffboardMissionNode::update_phase(const Vec3 &target, double heading) {
       if (!viewpoint_entered_) {
         viewpoint_entered_ = ns();
         viewpoint_depth_base_ = maps_.depth_count;
-        viewpoint_observation_id_=latest_depth_observation_id_;
-        viewpoint_revision_=maps_.observation_revision;
-        viewpoint_aligned_since_=0;
+        viewpoint_observation_id_ = latest_depth_observation_id_;
+        viewpoint_revision_ = maps_.observation_revision;
+        viewpoint_aligned_since_ = 0;
         return;
       }
-      if(std::abs(wrap_pi(explore_yaw_-yaw_))>d("yaw_acceptance_rad")) {
-        viewpoint_aligned_since_=0;
+      if (std::abs(wrap_pi(explore_yaw_ - yaw_)) > d("yaw_acceptance_rad")) {
+        viewpoint_aligned_since_ = 0;
         return;
       }
-      if(!viewpoint_aligned_since_)viewpoint_aligned_since_=ns();
-      if(age(viewpoint_aligned_since_)<d("explore_viewpoint_dwell_s") ||
-         maps_.depth_count<=viewpoint_depth_base_ ||
-         latest_depth_observation_id_<=viewpoint_observation_id_ ||
-         latest_depth_observation_sample_<viewpoint_aligned_since_+
-             int64_t(d("explore_viewpoint_dwell_s")*1e9) ||
-         (latest_depth_observation_position_-*explore_goal_).norm()>d("target_acceptance_m") ||
-         std::abs(wrap_pi(latest_depth_observation_yaw_-explore_yaw_))>d("yaw_acceptance_rad"))return;
-      const Key goal_key=key(*explore_goal_,maps_.map.resolution);
-      visited_.insert(goal_key); // retained diagnostic, not a permanent view exclusion
-      const int bins=i("explore_yaw_bins");
-      if(bins<1||bins>64)throw std::invalid_argument("explore_yaw_bins must be in [1,64]");
-      const int bin=int(std::llround((wrap_pi(explore_yaw_)+pi)/(2*pi)*bins))%bins;
-      visited_views_[goal_key]|=uint64_t(1)<<bin;
+      if (!viewpoint_aligned_since_)
+        viewpoint_aligned_since_ = ns();
+      if (age(viewpoint_aligned_since_) < d("explore_viewpoint_dwell_s") ||
+          maps_.depth_count <= viewpoint_depth_base_ ||
+          latest_depth_observation_id_ <= viewpoint_observation_id_ ||
+          latest_depth_observation_sample_ <
+              viewpoint_aligned_since_ +
+                  int64_t(d("explore_viewpoint_dwell_s") * 1e9) ||
+          (latest_depth_observation_position_ - *explore_goal_).norm() >
+              d("target_acceptance_m") ||
+          std::abs(wrap_pi(latest_depth_observation_yaw_ - explore_yaw_)) >
+              d("yaw_acceptance_rad"))
+        return;
+      const Key goal_key = key(*explore_goal_, maps_.map.resolution);
+      recent_regions_.push_back({ns(), selected_region_id_});
+      visited_.insert(
+          goal_key); // retained diagnostic, not a permanent view exclusion
+      const int bins = i("explore_yaw_bins");
+      if (bins < 1 || bins > 64)
+        throw std::invalid_argument("explore_yaw_bins must be in [1,64]");
+      const int bin =
+          int(std::llround((wrap_pi(explore_yaw_) + pi) / (2 * pi) * bins)) %
+          bins;
+      visited_views_[goal_key] |= uint64_t(1) << bin;
       Keys changed;
-      auto fields=object();
-      fields["goal_key"]=key_json(goal_key);fields["yaw_bin"]=bin;
-      fields["actual_depth_sample_id"]=integer(latest_depth_observation_id_);
-      fields["change_history_complete"]=maps_.changes_since(viewpoint_revision_,changed);
-      fields["changed_voxels_since_arrival"]=integer(changed.size());
-      event("explore_viewpoint_observed",fields);
+      auto fields = object();
+      fields["goal_key"] = key_json(goal_key);
+      fields["yaw_bin"] = bin;
+      fields["actual_depth_sample_id"] = integer(latest_depth_observation_id_);
+      fields["change_history_complete"] =
+          maps_.changes_since(viewpoint_revision_, changed);
+      fields["changed_voxels_since_arrival"] = integer(changed.size());
+      event("explore_viewpoint_observed", fields);
     }
     waypoints_.clear();
     waypoint_ = 0;
@@ -647,31 +830,28 @@ void OffboardMissionNode::update_phase(const Vec3 &target, double heading) {
 }
 void OffboardMissionNode::update_target(const Vec3 &target, double heading) {
   if (!target_) {
-    enter_return("target lost before targeting");
+    finish_inspection("target unconfirmed");
     return;
   }
-  if (!reached(target))
-    return;
-  auto marker = goal_ids_.find(waypoint_);
-  if (marker == goal_ids_.end()) {
-    if (waypoint_ < waypoints_.size() - 1)
-      ++waypoint_;
+  if (!reached(target) || !motion_stopped() ||
+      std::abs(wrap_pi(heading - yaw_)) > d("yaw_acceptance_rad")) {
+    inspection_aligned_since_ = 0;
     return;
   }
-  if (std::abs(wrap_pi(heading - yaw_)) > d("yaw_acceptance_rad"))
+  if (waypoints_.empty() || waypoint_ >= waypoints_.size())
     return;
-  int id = marker->second;
-  if (!captured_.count(id)) {
-    if (!capture_photo(waypoint_, id))
-      return;
-    captured_.insert(id);
-    ++photos_;
-  }
-  if (photos_ >= i("inspection_required_photos") ||
-      waypoint_ >= waypoints_.size() - 1) {
-    enter_return("inspection complete");
+  if (waypoint_ + 1 < waypoints_.size()) {
+    ++waypoint_;
     return;
   }
-  ++waypoint_;
+  if (!inspection_view_)
+    return;
+  if (!inspection_aligned_since_)
+    inspection_aligned_since_ = ns();
+  if (age(inspection_aligned_since_) < d("explore_viewpoint_dwell_s"))
+    return;
+  if (!photo_pending_ &&
+      age(last_capture_attempt_) >= d("inspection_capture_timeout_s"))
+    capture_photo(waypoint_, inspection_view_->view_id);
 }
 } // namespace powerplant

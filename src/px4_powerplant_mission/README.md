@@ -91,7 +91,7 @@ ros2 launch px4_powerplant_mission powerplant_system.launch.py
 ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
 ```
 
-建图与控制默认使用 C++ 可执行程序，沿用原节点名、YAML、话题、消息类型、QoS 和服务接口。C++ 已增加 P0 健康协议和 [P1 建图/观测改进](../px4_powerplant_mission_cpp/P1_IMPLEMENTATION.md)；保留的 Python mapper/controller 用于旧算法对照，应成对回退，不能把旧 mapper 的健康消息接入新 C++ 控制器授权探索。回退参数为：
+建图与控制默认使用 C++ 可执行程序，沿用原节点名、YAML、话题、消息类型、QoS 和服务接口。C++ 已增加 P0 健康协议、[P1 建图/观测改进](../px4_powerplant_mission_cpp/P1_IMPLEMENTATION.md) 和 [P2 轨迹/巡检闭环](../px4_powerplant_mission_cpp/P2_IMPLEMENTATION.md)；保留的 Python mapper/controller 用于旧算法对照，应成对回退，不能把旧 mapper 的健康消息接入新 C++ 控制器授权探索。回退参数为：
 
 ```bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py \
@@ -148,7 +148,7 @@ ros2 topic echo /powerplant/localization/odom nav_msgs/msg/Odometry --once --tim
 本包提供 Gazebo 模拟逐锚距离，外部 Host 已提供真实串口观测、时间戳及日志接口，但尚未用实测数据完成本项目飞行链路标定；学习式 NLOS 识别与因子图应在这些数据及所需传感器到位后再评估。`publish_truth_orientation=true` 注入的是 Gazebo 真值姿态，UWB 测距本身不提供横滚、俯仰或偏航。
 
 飞行过程中 `/powerplant/control/mission_status` 里有两个位置：`nav_target_enu` 是当前逻辑航点，
-`setpoint_enu` 是经过限速后的实际 PX4 setpoint。正常情况下 `setpoint_enu` 会逐步靠近
+`setpoint_enu` 是经过时序轨迹约束后的实际 PX4 setpoint。正常情况下 `setpoint_enu` 会逐步靠近
 `nav_target_enu`，不是瞬间跳到远端航点。
 
 调用 `/start_powerplant_mission` 前，应确认定位健康、飞控新鲜且已上锁，并配置已实测确认的起飞柱体。当前原生控制器默认 `takeoff_region_confirmed=false`、`takeoff_region_height_m=0`，条件不足时服务返回拒绝原因。通过后仍保留预热与预检。可用下面的话题确认状态：
@@ -164,18 +164,18 @@ ros2 topic echo /powerplant/control/mission_status std_msgs/msg/String --once --
 `/start_powerplant_mission` 会进入完整巡检流程：
 
 1. `START`：等待独立定位和可靠姿态估计，记录当前位置为 home。起飞区及垂直上升通道须预先确认安全；现有前向深度相机与水平雷达无法直接证明头顶无障碍。
-2. `SAFE_TAKEOFF`：保持 home 水平位置，发布限速的 Offboard 位置 setpoint，上升到 `home.z + takeoff_height_m`，相对起飞高度定义见 [P0 配置](../px4_powerplant_mission_cpp/P0_VALIDATION.md)。
+2. `SAFE_TAKEOFF`：保持 home 水平位置，在已确认柱体内发布限速度/加速度的 Offboard 位置、速度和加速度参考，上升到 `home.z + takeoff_height_m`，相对起飞高度定义见 [P0 配置](../px4_powerplant_mission_cpp/P0_VALIDATION.md)。
 3. `HOVER_SCAN`：在起飞点上方稳定悬停至少 `initial_scan_hover_s`，先用水平雷达取轮廓，再缓慢绕偏航轴转动，让前向深度相机观察各方向。默认 30° 搜索步幅、偏航 setpoint 最大 `0.2 rad/s`，不主动做大幅横滚或俯仰。完成条件改为合格实际深度射线方向覆盖（默认 72 个扇区、至少 90%）、稳定悬停、真实标定、雷达/深度实际融合，以及有净空的已知空闲首段（默认 0.75 m）；名义 12 步不能单独结束初扫。缺失深度时可在已确认起飞柱体内继续慢偏航寻找有效方向，雷达失鲜时暂停转动。若 90 秒仍无法完成，会请求降落。`mission_status` 的 `initial_scan_wait_reason`、`initial_scan_coverage_fraction` 和 `initial_scan_step` 可用于诊断。
 4. `EXPLORE`：从三维体素中的**已知空闲与未知的边界**提取前沿，候选观察点位于边界的已知空闲侧，并要求从当前位置和回 home 的路径都在已知空闲体素内，沿途满足三维净空。按成功融合的实际 CameraInfo 视锥对每个候选 yaw 估计新增可见未知体素、目标表面补拍收益、平移/转向/观察停留时间、净空、定位方差和返航余量；只下发最多 `explore_local_path_length_m` 的局部路径。最终观察点必须对准、停留并取得新合格深度才完成，记忆按位置与 yaw 保存。新几何观测、路径受阻、局部段结束或 YOLO 目标会触发决策；远处无关变化允许复用仍安全的异步结果，附近变化重新评估。局部无候选扩大一次搜索，分类报告原因，不把候选截断当作全图探索完成。YOLO 事件优先转入巡检。探索边界由 `explore_min/max_*_m` 指定，是允许飞行的空间约束，不是预置航点。
-5. `TARGETING_CYCLE`：沿用目标周围的环绕拍照状态机。YOLO 在 `/camera` 上检测 `target_class_name`，控制节点结合深度图和相机内参将检测框反投影为 ENU 目标位置。环绕点只在存在已知空闲三维路线时才执行；到点且航向对准后保存照片并发布事件。
+5. `TARGETING_CYCLE`：YOLO 以三次独立注册观测确认目标，控制端按曝光匹配源 RGB、深度、两套 CameraInfo 与插值位姿，构建稳定表面片。按新增可见表面收益选择安全观察点，照片须目标关联、质量与写盘全部成功才提交覆盖；每点最多三次尝试，未满足条件返回 PARTIAL/UNCONFIRMED。达到90%的可达已建模表面覆盖报告 REACHABLE_MODELED_COMPLETE，不宣称完整物体360°覆盖。
 6. `RETURN_HOME`：照片完成、允许边界内前沿耗尽、扩大搜索后策略仍无候选，或返航余量不足时，沿已知空闲的三维局部路段返回 home；分别报告原因。若地图过期、不完整或无安全返航路线则悬停并在 `mission_status.explore_wait_reason` 报告，不会向未知空间直飞。
 7. `LANDING` / `COMPLETE`：到达 home 上方后发送 PX4 land command，收到降落后的新鲜 landed 状态且飞控已上锁，持续确认后才标记任务完成。超时保留 LANDING 并报告未确认。原生控制器发生定位/时钟/坐标重置等故障时进入锁定的 FAULT，停止 Offboard 输出，数据恢复不会自动重新解锁。
 
 建图器缓存带时间戳的定位位姿，在雷达、深度图和点云采样时刻插值位置与姿态；有逐束 `time_increment` 的雷达扫描会按每束时间补偿偏航运动。没有有效时间戳或附近定位样本的数据不会投进地图。UWB 滤波延迟、相机曝光时间和定位误差仍可能形成投影残差。C++ 深度采样以 16 像素为最大 tile 尺度，按投影足迹和边缘细分，最细 1 像素、每帧最多 12000 条射线；空闲更新使用精确体素遍历。深度图与雷达各最多融合 3 帧/秒，地图以 2 Hz 发布。`/powerplant/map/observed_voxels` 是带 `x,y,z,state` 字段的完整已观测体素云，`state=0` 为已知空闲、`1` 为占据、`-1` 为证据不足；未出现的体素保持未知。控制节点用其时间戳与 `/powerplant/map/fusion_status.map_stamp_ns` 精确配对，只接受完整、健康且 epoch/序号有效、点云指纹一致的快照；分类差分驱动增量前沿/净空索引。新地图健康协议和跨进程 Cyclone DDS 基线入口见 [P0 验证说明](../px4_powerplant_mission_cpp/P0_VALIDATION.md)。`max_publish_points` 是快照上限，超过时控制节点停止新探索；当前上限为 200000。2D `/powerplant/map/occupancy_grid` 仍供初扫判据、辅助避障与可视化使用，巡检及返航路线都由三维已知空闲体素规划。`/powerplant/control/planned_path` 显示探索与返航的当前局部路段，或巡检阶段的已验证路线。
 
-P1 的视场默认要求与成功融合深度匹配的真实 CameraInfo（`explore_require_camera_info=true`），输入须是对应 K 的已校正 pinhole 深度；没有标定时等待，不用示例 FOV 冒充。新增参数、时间预算公式、失败原因及算法原理见 [P1 实现说明](../px4_powerplant_mission_cpp/P1_IMPLEMENTATION.md)。当前路径仍为离散几何路径，完整飞行和大地图实时性能仍待验收。
+P1 的视场默认要求与成功融合深度匹配的真实 CameraInfo（`explore_require_camera_info=true`），输入须是对应 K 的已校正 pinhole 深度；没有标定时等待，不用示例 FOV 冒充。新增参数、时间预算公式、失败原因及算法原理见 [P1 实现说明](../px4_powerplant_mission_cpp/P1_IMPLEMENTATION.md)。P2 在几何路径之后增加五次时间轨迹和持续停止包络，拐角停稳；独立50 Hz发布，主决策10 Hz。所有完整飞行和大地图实时性能结论以迁移记录中的实际验收为准。
 
-返航余量优先使用有效的 PX4 `/fmu/out/battery_status.time_remaining_s`，同时受 `explore_max_duration_s` 限制；电池时间不可用时使用任务时间上限估计。规划器支持目标表面补拍收益，但在首次 YOLO 发现之前没有目标表面语义，当前该收益为零；目标发现后直接进入拍照状态机。定位质量评分以当前定位协方差为基准，并按离当前位置的欧氏距离做保守方差增长估计（`explore_localization_variance_growth_m2_per_m`）；这不是实测的空间定位质量图。净空半径、定位方差门限和探索边界须按机体尺寸及定位精度调整。
+返航余量优先使用有效的 PX4 `/fmu/out/battery_status.time_remaining_s`，同时受 `explore_max_duration_s` 限制；电池时间不可用时使用任务时间上限估计。首次 YOLO 发现之前没有目标表面语义，补拍收益为零；目标确认后按真实面片收益巡检。定位质量评分以当前定位协方差为基准，并按离当前位置的欧氏距离做保守方差增长估计（`explore_localization_variance_growth_m2_per_m`）；这不是实测的空间定位质量图。净空半径、定位方差门限和探索边界须按机体尺寸及定位精度调整。
 
 ## 可视化窗口
 
@@ -341,7 +341,7 @@ PX4 的 `/fmu/out/...` 话题由 `MicroXRCEAgent` 提供；Gazebo 传感器图�
 gz topic -l | grep -E 'camera|depth|scan|points'
 ```
 
-如果 Gazebo 里就是 `/depth_camera`、`/camera` 和 `/mapping_lidar`，可以直接启动：
+当前 x500_depth_0 默认使用 `/depth_camera`、`/mapping_lidar`，深度 CameraInfo 实际位于 Gazebo `/camera_info`，RGB 与其 CameraInfo 使用包含 world/model/IMX214 的完整路径。bridge 默认已覆盖这一布局，并统一映射到 ROS `/camera`、`/camera/camera_info`、`/depth_camera/camera_info`：
 
 ```bash
 ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py
@@ -351,9 +351,11 @@ ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py
 
 ```bash
 ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py \
-  depth_gz_topic:=/world/powerplant/model/x500_depth/link/camera_link/sensor/StereoOV7251/depth_image \
-  rgb_gz_topic:=/world/powerplant/model/x500_depth/link/camera_link/sensor/IMX214/image \
-  scan_gz_topic:=/world/powerplant/model/x500_depth/link/mapping_lidar_link/sensor/mapping_lidar/scan
+  depth_gz_topic:=/depth_camera \
+  depth_info_gz_topic:=/camera_info \
+  rgb_gz_topic:=/world/powerplant/model/x500_depth_0/link/camera_link/sensor/IMX214/image \
+  rgb_info_gz_topic:=/world/powerplant/model/x500_depth_0/link/camera_link/sensor/IMX214/camera_info \
+  scan_gz_topic:=/mapping_lidar
 ```
 
 ## 重要输出话题
@@ -371,7 +373,8 @@ ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py \
 - `/powerplant/perception/target_position`：YOLO + 深度相机反投影得到的目标 ENU 三维坐标，`geometry_msgs/PointStamped`
 - `/powerplant/control/mission_status`：任务状态机 JSON，包括 `phase`、航点、照片计数、目标坐标
 - `/powerplant/control/inspection_events`：目标发现、目标坐标、拍照、返航、降落等事件 JSON
-- `/fmu/in/trajectory_setpoint`：飞控节点给 PX4 的 Offboard 位置 setpoint
+- `/powerplant/perception/yolo_source_image`：与检测同一曝光的未标注源图，用于注册、质量与保存
+- `/fmu/in/trajectory_setpoint`：给 PX4 的 Offboard 位置、速度、加速度及偏航参考
 
 ## YOLO 说明
 
@@ -398,3 +401,15 @@ ros2 launch px4_powerplant_mission powerplant_system.launch.py \
   use_control:=true \
   yolo_python:=/home/pawn/px4_ros_ws/.venv/bin/python
 ```
+
+P2 仿真安装与运动参数由 `config/p2_simulation.yaml` 覆盖；`hardware` 使用 `p2_hardware.yaml`，缺省 `motion_model_configured=false`。实机须提供相对PX4导航参考点的实测外参、机体包络、制动/时延与误差范围后启用。相机旋转参数是相机FLU到机体FLU的安装旋转；内部已处理光学轴转换，不能重复填入optical轴转换。仍须独立确认起飞区，不能只为通过检查修改确认值。
+
+仿真 P2 起飞先从已解锁后的当前连续、有效 HOLD 参考执行 `motion_takeoff_bootstrap_height_m=0.02` m 微上升，其一致的五次 P/V/A 至少持续 `motion_takeoff_bootstrap_duration_s=4.5` 秒，再经当前停止证书和实测停稳进入正常上升。该时长覆盖当前 PX4 的 spool 和 takeoff ramp，避免正常轨迹先跑完而飞控尚未响应；它不改变跟踪误差门控，也不以位置阶跃触发起飞。SITL 入口只读 `COM_SPOOLUP_TIME`、`MPC_TKO_RAMP_T`，核对微上升时长至少为两者之和加反应预算、微上升高度不超过位置跟踪容差，并记录实测飞行表现。共享与硬件缺省两值均为零，表示未启用或未标定；零不是已验证的零启动时延，硬件应根据实际飞控参数、载荷与响应重新标定，不能复制仿真值。
+
+全系统 launch 根据已安装 `px4_msgs.MESSAGE_VERSION` 将默认 PX4 输入话题映射到对应版本后缀；例如当前 `vehicle_status_v4`、`vehicle_command_ack_v1`。直接运行节点或使用自定义话题时，须在参数中与实际固件一致。RGB 与深度都要求校正后的 pinhole 图像及匹配 CameraInfo；未校正畸变、未处理的立体参考/裁剪/binning 会被拒绝。
+
+实际 P2 验收入口、检测重放与真实 YOLO 的区别、原始与 CPU 降采样渲染档的范围见 [P2 验证说明](../px4_powerplant_mission_cpp/P2_VALIDATION.md)。任务规格与验证缺口跟踪在 [Issue #2](https://github.com/pawn-queen/px4_ros_ws/issues/2)。
+
+本轮已完成 P2 软件逻辑核查，316 个直接回归用例通过；飞控/动力学参数由用户调整，完整飞行尚未验收。安全模型和标定参数应在任务开始前设置，调整后在上锁状态重启节点/任务；本轮不提供飞行中热切换机体、制动或误差模型的保证。上述微上升和时长仍是仿真初值，参数核对通过不等于实际推力或跟踪表现通过。
+
+实机运动覆盖文件通过 `motion_config_file:=/绝对路径/实测_motion.yaml` 传入，优先级高于共享配置及默认profile选择。该文件同时配置mapper与controller的同一安装约定。

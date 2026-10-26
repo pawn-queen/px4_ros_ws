@@ -1,7 +1,10 @@
 #pragma once
+#include "px4_powerplant_mission_cpp/inspection.hpp"
 #include "px4_powerplant_mission_cpp/map_snapshot.hpp"
-#include "px4_powerplant_mission_cpp/worker.hpp"
+#include "px4_powerplant_mission_cpp/motion_runtime.hpp"
 #include "px4_powerplant_mission_cpp/scan_coverage.hpp"
+#include "px4_powerplant_mission_cpp/topology.hpp"
+#include "px4_powerplant_mission_cpp/worker.hpp"
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -12,8 +15,8 @@
 #include <px4_msgs/msg/trajectory_setpoint.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_command_ack.hpp>
-#include <px4_msgs/msg/vehicle_status.hpp>
 #include <px4_msgs/msg/vehicle_land_detected.hpp>
+#include <px4_msgs/msg/vehicle_status.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <set>
@@ -55,20 +58,40 @@ struct PlanResult {
   Vec3 source_start = Vec3::Zero(), home = Vec3::Zero();
   size_t frontier_count = 0, candidate_count = 0;
   std::string detail;
+  std::shared_ptr<const TopologySnapshot> topology;
+  // Motion-feasible geometry establishes the monotonically growing coverage
+  // scope even when the remaining flight budget cannot fund another photo.
+  std::vector<InspectionView> inspection_classification_views;
+  std::vector<InspectionView> inspection_views;
+  uint64_t inspection_model_revision = 0;
 };
 struct PhotoResult {
   JsonValue event;
   bool success = false;
+  bool quality_accepted = false;
+  PhotoCoverageToken coverage_token;
+  int64_t camera_revision = 0;
 };
+struct RegisteredFrame {
+  std::optional<RegisteredTargetObservation> observation;
+  sensor_msgs::msg::Image::ConstSharedPtr source;
+  double speed_mps = inf, yaw_rate_radps = inf;
+  std::string reason;
+  int64_t camera_revision = 0, received_steady_ns = 0;
+  InspectionCamera depth_camera, rgb_camera;
+};
+class MotionRuntime;
 // ROS callbacks and the mission state have a single writer. Workers receive
 // copied inputs only.
 class OffboardMissionNode : public ParameterNode {
 public:
   OffboardMissionNode();
+  ~OffboardMissionNode();
 
 private:
   friend struct MissionTestAccess;
   friend struct P1MissionTestAccess;
+  friend struct P2MissionTestAccess;
   void subscribe_vehicle();
   void subscribe_map();
   void subscribe_camera();
@@ -82,6 +105,12 @@ private:
       scan_anchor_;
   Quat orientation_ = Quat::Identity();
   double yaw_ = 0, speed_ = inf, yaw_rate_ = inf;
+  Vec3 velocity_enu_ = Vec3::Zero();
+  Eigen::Matrix3d position_covariance_enu_ =
+      Eigen::Matrix3d::Constant(std::numeric_limits<double>::quiet_NaN());
+  Eigen::Matrix3d velocity_covariance_enu_ =
+      Eigen::Matrix3d::Constant(std::numeric_limits<double>::quiet_NaN());
+  double position_sigma_m_ = inf, velocity_sigma_mps_ = inf;
   int64_t odom_stamp_ = 0;
   int64_t odom_sample_ = 0, odom_seen_ = 0, odom_steady_ = 0, last_clock_ = 0;
   double xy_variance_ = inf, z_variance_ = inf, tilt_variance_ = inf,
@@ -95,8 +124,8 @@ private:
   std::set<int64_t> retired_localization_epochs_;
   Status vehicle_;
   px4_msgs::msg::VehicleLandDetected land_;
-  int64_t vehicle_stamp_ = 0, vehicle_steady_ = 0,
-          land_stamp_ = 0, land_steady_ = 0, landed_since_ = 0;
+  int64_t vehicle_stamp_ = 0, vehicle_steady_ = 0, land_stamp_ = 0,
+          land_steady_ = 0, landed_since_ = 0;
   bool flight_armed_ = false, flight_offboard_ = false,
        landing_timeout_reported_ = false;
   px4_msgs::msg::FailsafeFlags failsafe_;
@@ -148,7 +177,8 @@ private:
   int64_t viewpoint_entered_ = 0, viewpoint_depth_base_ = 0;
   int64_t viewpoint_aligned_since_ = 0;
   int64_t viewpoint_revision_ = 0, viewpoint_observation_id_ = 0;
-  int64_t latest_depth_observation_id_ = 0, latest_depth_observation_sample_ = 0;
+  int64_t latest_depth_observation_id_ = 0,
+          latest_depth_observation_sample_ = 0;
   Vec3 latest_depth_observation_position_ = Vec3::Zero();
   double latest_depth_observation_yaw_ = 0;
   int64_t explore_revision_ = -1, return_revision_ = -1, target_revision_ = -1;
@@ -159,6 +189,54 @@ private:
   PlanningFailure explore_failure_ = PlanningFailure::WaitingForMap;
   uint64_t reused_plan_results_ = 0, rejected_plan_results_ = 0;
   Phase planning_phase_ = Phase::Idle;
+  std::shared_ptr<const TopologySnapshot> topology_;
+  uint64_t selected_region_id_ = 0;
+  int64_t topology_built_ = 0;
+  std::deque<std::pair<int64_t, uint64_t>> recent_regions_;
+  PoseHistory inspection_history_;
+  struct TimedKinematics {
+    int64_t stamp;
+    double speed, yaw_rate;
+  };
+  std::deque<TimedKinematics> inspection_kinematics_;
+  struct DepthFrame {
+    int64_t stamp;
+    cv::Mat image;
+    std::string frame;
+  };
+  std::deque<DepthFrame> depth_frames_;
+  std::deque<sensor_msgs::msg::Image::ConstSharedPtr> source_frames_;
+  std::deque<sensor_msgs::msg::CameraInfo::ConstSharedPtr> depth_infos_,
+      rgb_infos_;
+  std::optional<JsonValue> pending_detection_;
+  bool registration_busy_ = false;
+  int64_t submitted_observation_ = 0, last_capture_attempt_ = 0;
+  InspectionSession inspection_;
+  std::optional<RegisteredFrame> registered_frame_;
+  std::optional<InspectionView> inspection_view_;
+  uint64_t inspection_classified_revision_ = 0;
+  std::set<int> attempted_inspection_views_;
+  std::string inspection_result_ = "UNCONFIRMED", inspection_wait_;
+  int64_t inspection_aligned_since_ = 0;
+  int scan_moves_ = 0;
+  int64_t scan_move_started_ = 0;
+  std::optional<Vec3> scan_original_anchor_;
+  Vec3 route_origin_ = Vec3::Zero();
+  mutable int64_t motion_stop_since_ = 0;
+  uint64_t motion_generation_ = 0, motion_publication_base_ = 0;
+  std::shared_ptr<const PlanningMap> motion_map_;
+  int64_t motion_map_revision_ = -1, motion_map_epoch_ = -1;
+  Vec3 motion_target_ = Vec3::Zero();
+  double motion_target_yaw_ = 0;
+  bool motion_permit_ = false;
+  std::string motion_input_reason_;
+  MotionLimits motion_limits() const;
+  MotionState motion_state() const;
+  MotionSafetyDomain motion_domain() const;
+
+  bool motion_brake_requested_ = false;
+  bool takeoff_bootstrap_active_ = false;
+  int64_t warmup_started_ = 0;
   bool photo_pending_ = false;
   int photo_goal_ = 0;
   bool photo_final_ = false;
@@ -177,8 +255,34 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr target_pub_;
   // Workers are declared last and therefore stop before state/message members
   // are destroyed.
+  int64_t map_job_epoch_ = 0, map_job_sequence_ = 0, map_job_stamp_ = 0;
+  const sensor_msgs::msg::PointCloud2 *map_job_cloud_ = nullptr;
+  double map_job_clearance_ = -1;
+  AsyncMapCommitter map_committer_;
   LatestWorker<PlanResult> planner_;
   LatestWorker<PhotoResult> recorder_;
+  LatestWorker<RegisteredFrame> registration_;
+  std::unique_ptr<MotionRuntime> motion_;
+  void update_motion_input(const Vec3 &, double, bool permit,
+                           const std::string &reason = "");
+  void stop_motion(const std::string &);
+  bool motion_stopped() const;
+  void refresh_motion_geometry();
+  PlanningMap planning_domain_map() const;
+  void invalidate_inspection_calibration(const std::string &);
+  void try_registered_observation();
+  void consume_registered_observation();
+  void cache_depth_frame(const sensor_msgs::msg::Image &, const cv::Mat &);
+  void cache_source_frame(sensor_msgs::msg::Image::ConstSharedPtr);
+  InspectionConfig inspection_config() const;
+  InspectionCamera inspection_camera(const sensor_msgs::msg::CameraInfo &,
+                                     bool rgb) const;
+  void consume_photo_result();
+  void finish_inspection(const std::string &reason);
+
+  void schedule_map_commit();
+  void consume_map_commit();
+  void reset_p2_epoch();
   void on_odom(const nav_msgs::msg::Odometry &);
   void on_localization_status(const std::string &);
   void on_vehicle(const Status &);
@@ -199,8 +303,6 @@ private:
   bool plan_changes_relevant(const PlanResult &) const;
   void refresh_view_memory();
   void on_detection(const std::string &);
-  std::optional<Vec3> project_bbox(const JsonValue &, int width,
-                                   int height) const;
   void start(Trigger::Response &);
   void tick();
   void initialize();
@@ -232,7 +334,7 @@ private:
   void submit_plan(Phase phase, const Path &goals = {},
                    const std::vector<int> &ids = {});
   bool remaining_path_safe() const;
-  void set_local_route(const Path &, double length);
+  bool set_local_route(const Path &, double length);
   Path inspection_goals(const Vec3 &) const;
   std::pair<Path, std::vector<int>> remaining_goals() const;
   std::pair<Vec3, double> select_target();

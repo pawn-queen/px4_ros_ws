@@ -2,6 +2,7 @@
 import json
 import math
 from copy import deepcopy
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -111,6 +112,104 @@ def test_idle_publish_preserves_stamp_stop_degrades_covariance(pipeline):
     assert nav.odom_pub.messages[-1].pose.covariance[0] >= 25.
     assert nav.odom_pub.messages[-1].pose.covariance[14] >= 9.
     assert nav.odom_pub.messages[-1].header.stamp == nav.odom_pub.messages[0].header.stamp
+
+
+@pytest.mark.parametrize('rejection', [
+    {'accepted': False}, {'kind': 'observation_rejected'},
+])
+def test_new_rejected_measurement_preserves_only_original_good_sample_ttl(
+        pipeline, monkeypatch, rejection):
+    nav, ev = pipeline
+    current = [nav.get_clock().now().nanoseconds]
+    clock = SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=current[0]))
+    for node in (nav, ev):
+        monkeypatch.setattr(node, 'get_clock', lambda: clock)
+    good = current[0] - 50_000_000
+    rejected = good + 10_000_000
+    nav._uwb_pose_callback(uwb(good))
+    ev._pose_callback(uwb(good))
+    nav._vehicle_odometry_callback(px4(good))
+    event = String(data=json.dumps({**rejection, 'sample_stamp_ns': rejected,
+                                   'reason': 'range residual rejected'}))
+    nav._uwb_health_callback(event)
+    ev._health_callback(event)
+    assert nav._has_independent_position()
+    assert ev.input.healthy(current[0])
+    assert nav.input.last_sample_ns == ev.input.last_sample_ns == good
+    assert nav.input.invalid_before_ns == ev.input.invalid_before_ns == rejected
+    nav._publish_state()
+    assert nav.odom_pub.messages[-1].pose.covariance[0] < 25.
+    assert stamp_ns(nav.odom_pub.messages[-1].header.stamp) == good // 1000 * 1000
+
+    # The rejected pose cannot arrive later and replace the last good sample.
+    nav._uwb_pose_callback(uwb(rejected))
+    ev._pose_callback(uwb(rejected))
+    assert nav.input.last_sample_ns == ev.input.last_sample_ns == good
+    assert nav._has_independent_position()
+    assert len(ev.visual_odom_pub.messages) == 1
+    assert ev.visual_odom_pub.messages[0].timestamp_sample == good // 1000
+
+    assert nav.input.timeout_ns == ev.input.timeout_ns
+    current[0] = good + nav.input.timeout_ns
+    assert nav.input.healthy(current[0]) and ev.input.healthy(current[0])
+    current[0] += 1
+    assert not nav._has_independent_position()
+    assert not ev.input.healthy(current[0])
+    nav._vehicle_odometry_callback(px4(current[0] - 1_000_000))
+    nav._publish_state()
+    assert nav.odom_pub.messages[-1].pose.covariance[0] >= 25.
+    assert len(ev.visual_odom_pub.messages) == 1  # No fresh EV from old evidence.
+
+
+@pytest.mark.parametrize('rejection', [
+    {'accepted': False}, {'kind': 'observation_rejected'},
+])
+def test_rejection_of_current_used_measurement_revokes_until_new_pose(pipeline, rejection):
+    nav, ev = pipeline
+    sample = nav.get_clock().now().nanoseconds - 50_000_000
+    nav._uwb_pose_callback(uwb(sample))
+    ev._pose_callback(uwb(sample))
+    event = String(data=json.dumps({**rejection, 'sample_stamp_ns': sample}))
+    nav._uwb_health_callback(event)
+    ev._health_callback(event)
+    assert not nav._has_independent_position()
+    assert not ev.input.valid
+    # A positive quality result and replayed pose do not resurrect it.
+    positive = String(data=json.dumps({'accepted': True, 'sample_stamp_ns': sample}))
+    nav._uwb_health_callback(positive)
+    ev._health_callback(positive)
+    nav._uwb_pose_callback(uwb(sample))
+    ev._pose_callback(uwb(sample))
+    assert not nav._has_independent_position()
+    assert not ev.input.valid
+    assert len(ev.visual_odom_pub.messages) == 1
+    nav._uwb_pose_callback(uwb(sample + 1_000_000))
+    ev._pose_callback(uwb(sample + 1_000_000))
+    assert nav._has_independent_position()
+    assert ev.input.valid
+    assert len(ev.visual_odom_pub.messages) == 2
+
+
+@pytest.mark.parametrize('failure', [
+    {'kind': 'device_fault'}, {'kind': 'clock_rejected'},
+    {'kind': 'session_ended'}, {'kind': 'stale'},
+    {'accepted': False}, {'kind': 'observation_rejected'},
+])
+def test_hard_or_unstamped_negative_event_still_revokes_fresh_uwb(pipeline, failure):
+    nav, ev = pipeline
+    sample = nav.get_clock().now().nanoseconds - 50_000_000
+    nav._uwb_pose_callback(uwb(sample))
+    ev._pose_callback(uwb(sample))
+    event = String(data=json.dumps(failure))
+    nav._uwb_health_callback(event)
+    ev._health_callback(event)
+    assert not nav._has_independent_position()
+    assert not ev.input.valid
+    assert nav.input.last_sample_ns == ev.input.last_sample_ns == sample
+    nav._uwb_pose_callback(uwb(sample))
+    ev._pose_callback(uwb(sample))
+    assert len(ev.visual_odom_pub.messages) == 1
+    assert not nav._has_independent_position()
 
 
 def test_health_epoch_changes_on_estimator_reset_without_retiming_samples(pipeline):

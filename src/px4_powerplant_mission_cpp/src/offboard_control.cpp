@@ -1,11 +1,11 @@
-#include "px4_powerplant_mission_cpp/offboard.hpp"
 #include "px4_powerplant_mission_cpp/input_validation.hpp"
+#include "px4_powerplant_mission_cpp/offboard.hpp"
 namespace powerplant {
 bool OffboardMissionNode::receipt_fresh(int64_t stamp, int64_t steady,
                                         double max_age) const {
   const int64_t current = ns(), monotonic = steady_ns();
-  return stamp > 0 && steady > 0 && current >= stamp &&
-         monotonic >= steady && (current - stamp) * 1e-9 <= max_age &&
+  return stamp > 0 && steady > 0 && current >= stamp && monotonic >= steady &&
+         (current - stamp) * 1e-9 <= max_age &&
          (monotonic - steady) * 1e-9 <= max_age;
 }
 bool OffboardMissionNode::vehicle_fresh() const {
@@ -18,9 +18,11 @@ bool OffboardMissionNode::localization_ready() const {
       !receipt_fresh(localization_stamp_, localization_steady_,
                      d("max_localization_age_s")))
     return false;
-  return receipt_fresh(odom_stamp_, odom_steady_, d("max_localization_age_s")) &&
+  return receipt_fresh(odom_stamp_, odom_steady_,
+                       d("max_localization_age_s")) &&
          stamp_reason(odom_sample_, ns(), d("max_localization_age_s"),
-                      d("max_future_stamp_skew_s")).empty() &&
+                      d("max_future_stamp_skew_s"))
+             .empty() &&
          xy_variance_ <= d("max_start_position_variance_m2") &&
          z_variance_ <= d("max_start_height_variance_m2") && tilt_ready() &&
          yaw_variance_ <= d("max_start_yaw_variance_rad2");
@@ -51,6 +53,7 @@ void OffboardMissionNode::fault(const std::string &reason) {
   phase_ = Phase::Fault;
   active_ = false;
   fault_reason_ = reason;
+  stop_motion(reason);
   waypoints_.clear();
   goal_ids_.clear();
   slew_ = SlewState{};
@@ -70,10 +73,18 @@ std::string OffboardMissionNode::takeoff_space_reason() const {
                height = d("takeoff_region_height_m"),
                takeoff = d("takeoff_height_m"),
                clearance = d("explore_clearance_radius_m");
+  const double bootstrap_height = d("motion_takeoff_bootstrap_height_m"),
+               bootstrap_duration = d("motion_takeoff_bootstrap_duration_s");
+  if (!std::isfinite(bootstrap_height) || !std::isfinite(bootstrap_duration) ||
+      bootstrap_height < 0 || bootstrap_duration < 0 ||
+      ((bootstrap_height > 0 || bootstrap_duration > 0) &&
+       (bootstrap_height <= 0 || bootstrap_duration <= 0 ||
+        bootstrap_height >= takeoff ||
+        bootstrap_height > d("motion_tracking_position_tolerance_m"))))
+    return "takeoff bootstrap height/duration is invalid or uncalibrated";
   if (!std::isfinite(radius) || !std::isfinite(height) ||
       !std::isfinite(takeoff) || !std::isfinite(clearance) || clearance <= 0 ||
-      radius < clearance || takeoff <= 0 ||
-      height < takeoff + clearance)
+      radius < clearance || takeoff <= 0 || height < takeoff + clearance)
     return "confirmed takeoff region does not contain the configured ascent";
   const Vec3 origin = home_.value_or(*position_);
   if ((position_->head<2>() - origin.head<2>()).norm() + clearance > radius ||
@@ -157,8 +168,22 @@ void OffboardMissionNode::engage() {
   if (!active_ || phase_ == Phase::Fault || phase_ == Phase::Landing ||
       !motion_health_reason().empty())
     return;
-  warmup_ = std::min(warmup_ + 1, 1000);
-  if (warmup_ < i("offboard_warmup_setpoints")) {
+  const auto publications = motion_ ? motion_->publications() : 0;
+  const auto motion = motion_ ? motion_->report() : MotionUpdate{};
+  if (!motion.valid || !motion.stopping_envelope) {
+    warmup_ = 0;
+    warmup_started_ = 0;
+    motion_publication_base_ = publications;
+    command_wait_ = "waiting for a valid stationary motion certificate";
+    return;
+  }
+  if (!warmup_started_) {
+    warmup_started_ = steady_ns();
+    motion_publication_base_ = publications;
+  }
+  warmup_ = int(std::min<uint64_t>(1000, publications - motion_publication_base_));
+  if (warmup_ < i("offboard_warmup_setpoints") || !warmup_started_ ||
+      (steady_ns() - warmup_started_) * 1e-9 < d("offboard_warmup_min_s")) {
     command_wait_ = "warming up Offboard setpoints " + std::to_string(warmup_) +
                     "/" + std::to_string(i("offboard_warmup_setpoints"));
     return;

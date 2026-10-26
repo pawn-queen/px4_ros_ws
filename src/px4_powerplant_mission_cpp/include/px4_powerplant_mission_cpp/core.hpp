@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <map>
@@ -112,10 +113,12 @@ struct StampedPose {
 };
 class PoseHistory {
 public:
+  int64_t horizon_ns = 2000000000;
   std::vector<StampedPose> samples;
   bool add(const StampedPose &p);
   std::optional<StampedPose> at(int64_t stamp) const;
 };
+struct TopologyGuide;
 struct ExplorationConfig {
   double clearance_radius_m = .35, start_snap_radius_m = .35,
          goal_snap_radius_m = .35;
@@ -134,7 +137,14 @@ struct ExplorationConfig {
          camera_pitch_min_rad = -30 * pi / 180,
          camera_pitch_max_rad = 30 * pi / 180;
   Vec3 camera_translation_flu = Vec3::Zero();
+  Vec3 camera_rotation_rpy_rad = Vec3::Zero();
   KeyMap<uint64_t> visited_yaw_masks;
+  // Optional P2 adapters. Empty retains the explicit offline P1 model.
+  std::shared_ptr<const TopologyGuide> topology_guide;
+  // Includes motion and yaw time, excluding observation dwell. face_path=true
+  // faces each path leg; false maintains goal_yaw after the initial turn.
+  std::function<std::optional<double>(const Path &, double initial_yaw,
+                                     double goal_yaw, bool face_path)> path_time_s;
   double information_weight = 3, surface_weight = 2, travel_time_weight = .12,
          clearance_weight = .5, localization_weight = .5, reserve_weight = .5;
 };
@@ -149,6 +159,9 @@ struct ExplorationPlan {
          clearance_m = 0, localization_variance_m2 = 0, reserve_margin_s = 0;
   double rotation_time_s = 0, observation_time_s = 0;
   Path full_path_xyz, return_path_xyz;
+  uint64_t selected_region_id = 0;
+  int64_t topology_revision = 0;
+  double region_score = 0;
 };
 class PlanningIndex;
 struct PlanningMap {
@@ -178,6 +191,7 @@ struct FrontierDecision {
   std::optional<ExplorationPlan> plan;
   PlanningFailure failure = PlanningFailure::None;
   size_t frontier_count = 0, candidate_count = 0;
+  std::map<uint64_t, size_t> region_target_count, region_candidate_count;
   std::string detail;
 };
 void check_cancel(const Cancel &cancel);

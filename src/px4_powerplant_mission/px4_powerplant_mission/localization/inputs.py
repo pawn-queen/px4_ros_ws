@@ -78,27 +78,41 @@ class UwbInput:
         return self.valid and 0 <= now_ns - self.last_sample_ns <= self.timeout_ns
 
     def health(self, payload, now_ns):
-        """Negative events revoke trust; only a newer valid pose restores it."""
+        """Reject bad samples without extending the last good sample's life.
+
+        Device faults revoke trust immediately. A rejected *new* measurement
+        does not erase a previous, still-fresh measurement, but its stamp is
+        barred from later admission. Rejecting a sample already in use revokes
+        it; only a newer qualified pose can restore trust.
+        """
         self.clock(now_ns)
         try:
             event = json.loads(payload)
             if not isinstance(event, dict):
                 return
-            sample = int(event.get("sample_stamp_ns", 0) or 0)
+            sample = max(0, int(event.get("sample_stamp_ns", 0) or 0))
         except (ValueError, TypeError, OverflowError):
             return
         kind = event.get("kind", "")
-        failed = kind in {
+        hard_failure = kind in {
             "session_started", "session_ended", "device_fault", "clock_rejected",
-            "serial_unavailable", "stale", "observation_rejected",
+            "serial_unavailable", "stale",
         } or event.get("confirmed_running") is False
-        # Simulator quality messages have no kind. Diagnostics are not failures.
-        failed |= not kind and event.get("accepted") is False
-        if not failed or (sample > 0 and sample < self.last_sample_ns):
+        # Simulator quality messages have no kind. A statistical range gate
+        # rejects that observation, not the device or the prior valid sample.
+        measurement_rejected = kind == "observation_rejected" or (
+            not kind and event.get("accepted") is False
+        )
+        if not (hard_failure or measurement_rejected) or (
+                sample > 0 and sample < self.last_sample_ns):
             return
-        self.valid = False
         self.invalid_before_ns = max(self.invalid_before_ns, sample or now_ns)
         self.reason = str(event.get("reason", kind or "UWB quality rejected"))
+        if measurement_rejected and not hard_failure and sample > self.last_sample_ns:
+            # Retain the original stamp and validity; healthy() still expires
+            # it at the original TTL, and no old measurement is republished.
+            return
+        self.valid = False
         if kind in {"session_started", "session_ended"}:
             self.reset_counter = (self.reset_counter + 1) % 256
 

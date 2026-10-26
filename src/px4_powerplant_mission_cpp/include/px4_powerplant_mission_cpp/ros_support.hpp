@@ -5,11 +5,49 @@
 #include <json/json.h>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sstream>
 #include <std_msgs/msg/string.hpp>
 
 namespace powerplant {
+// Both mapper and RGB-D registration consume full, rectified pinhole images.
+// Raw distortion or an unaccounted rectification transform cannot be used as
+// if K described the received pixels. Drivers must publish corrected images
+// and matching K (zero D, identity R and compatible P) for this interface.
+inline bool rectified_pinhole_info(const sensor_msgs::msg::CameraInfo &m) {
+  if (!m.width || !m.height || m.header.frame_id.empty() ||
+      m.binning_x > 1 || m.binning_y > 1 || m.roi.x_offset || m.roi.y_offset ||
+      (m.roi.width && m.roi.width != m.width) ||
+      (m.roi.height && m.roi.height != m.height))
+    return false;
+  for (double x : m.k)
+    if (!std::isfinite(x)) return false;
+  if (m.k[0] <= 0 || m.k[4] <= 0 || std::abs(m.k[8] - 1) > 1e-9 ||
+      std::abs(m.k[1]) > 1e-9 || std::abs(m.k[3]) > 1e-9 ||
+      std::abs(m.k[6]) > 1e-9 || std::abs(m.k[7]) > 1e-9)
+    return false;
+  for (double x : m.d)
+    if (!std::isfinite(x) || std::abs(x) > 1e-9) return false;
+  const bool has_r = std::any_of(m.r.begin(), m.r.end(), [](double x) { return x != 0; });
+  for (size_t j = 0; j < m.r.size(); ++j)
+    if (!std::isfinite(m.r[j]) ||
+        (has_r && std::abs(m.r[j] - (j % 4 == 0 ? 1. : 0.)) > 1e-9))
+      return false;
+  const bool has_p = std::any_of(m.p.begin(), m.p.end(), [](double x) { return x != 0; });
+  for (size_t j = 0; j < m.p.size(); ++j) {
+    const double expected = j % 4 == 3 ? 0. : m.k[(j / 4) * 3 + j % 4];
+    if (!std::isfinite(m.p[j]) || (has_p && std::abs(m.p[j] - expected) > 1e-9))
+      return false;
+  }
+  return true;
+}
+inline Quat mount_rotation(const Vec3 &rpy) {
+  if (!rpy.allFinite()) throw std::invalid_argument("non-finite sensor mounting rotation");
+  return Quat(Eigen::AngleAxisd(rpy.z(), Vec3::UnitZ()) *
+              Eigen::AngleAxisd(rpy.y(), Vec3::UnitY()) *
+              Eigen::AngleAxisd(rpy.x(), Vec3::UnitX()));
+}
 using JsonValue = Json::Value;
 inline JsonValue object() { return JsonValue(Json::objectValue); }
 inline JsonValue array() { return JsonValue(Json::arrayValue); }

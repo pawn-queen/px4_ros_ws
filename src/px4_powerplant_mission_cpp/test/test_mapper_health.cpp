@@ -104,6 +104,35 @@ struct MapperTestAccess {
     health(n, sample, 1);
     EXPECT_EQ(n.map_epoch_, reset_epoch); // Late reset status cannot roll back.
   }
+  static void calibration_arrives_after_depth() {
+    VoxelMapperNode n;
+    n.set_parameter(rclcpp::Parameter("startup_gate_enabled", false));
+    const int64_t sample = n.ns() - 200000000;
+    health(n, sample);
+    n.odom(pose(sample));
+    n.odom(pose(sample + 100000000));
+    auto image = std::make_shared<Image>();
+    image->header.stamp = rclcpp::Time(sample + 50000000);
+    image->header.frame_id = "camera_optical";
+    image->width = image->height = 1;
+    image->encoding = "32FC1";
+    image->step = 4;
+    image->data = {0, 0, 0, 64}; // One little-endian float32 depth of 2 m.
+    n.queue(Image::ConstSharedPtr(image), 0);
+    EXPECT_EQ(n.depth_count_, 0);
+    EXPECT_TRUE(n.grid_.cells.empty());
+    ASSERT_EQ(n.pending_.size(), 1u);
+    auto info = std::make_shared<Info>();
+    info->header = image->header;
+    info->width = info->height = 1;
+    info->k = {100., 0., 0., 0., 100., 0., 0., 0., 1.};
+    n.infos_.push_back(info);
+    n.drain();
+    EXPECT_EQ(n.depth_count_, 1);
+    EXPECT_TRUE(n.pending_.empty());
+    EXPECT_TRUE(n.camera_intrinsics_["camera_info_valid"].asBool());
+    EXPECT_DOUBLE_EQ(n.camera_intrinsics_["fx"].asDouble(), 100.);
+  }
 };
 TEST(MapperHealth, DuplicateAndDelayedPoseDoNotResetOrRefreshMap) {
   MapperTestAccess::duplicate_and_old_pose();
@@ -116,5 +145,8 @@ TEST(MapperHealth, SteadyWatchdogAndStaleSamplesAreChecked) {
 }
 TEST(MapperHealth, ExplicitEstimatorResetChangesEpochButStartupGateDoesNot) {
   MapperTestAccess::explicit_reset_and_gate_epoch();
+}
+TEST(MapperHealth, DepthBeforeCameraInfoWaitsWithoutFusingNominalIntrinsics) {
+  MapperTestAccess::calibration_arrives_after_depth();
 }
 } // namespace powerplant

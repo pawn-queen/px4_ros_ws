@@ -1,0 +1,1529 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.9">
+  <world name="powerplant">
+    <physics name="physics" type="ignored">
+      <max_step_size>.004</max_step_size>
+      <real_time_factor>1</real_time_factor>
+    </physics>
+    <gravity>0 0 -9.80665</gravity>
+    <scene>
+      <ambient>.65 .65 .65 1</ambient>
+      <background>.75 .75 .75 1</background>
+      <shadows>false</shadows>
+    </scene>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics" />
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands" />
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster" />
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu" />
+    <plugin filename="gz-sim-air-pressure-system" name="gz::sim::systems::AirPressure" />
+    <plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat" />
+    <plugin filename="gz-sim-magnetometer-system" name="gz::sim::systems::Magnetometer" />
+    <plugin filename="gz-sim-contact-system" name="gz::sim::systems::Contact" />
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <light name="sun" type="directional">
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>.9 .9 .9 1</diffuse>
+      <specular>.2 .2 .2 1</specular>
+      <direction>-.4 -.2 -1</direction>
+    </light>
+    <model name="floor">
+      <static>true</static>
+      <pose>0.0 0 -0.1 0 0 0</pose>
+      <link name="body">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>12.4 12.4 0.2</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>12.4 12.4 0.2</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.55 .55 .55 1</ambient>
+            <diffuse>.55 .55 .55 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="ceiling">
+      <static>true</static>
+      <pose>0.0 0 7.1 0 0 0</pose>
+      <link name="body">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>12.4 12.4 0.2</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>12.4 12.4 0.2</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.8 .8 .8 1</ambient>
+            <diffuse>.8 .8 .8 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_y_-6.1">
+      <static>true</static>
+      <pose>0.0 -6.1 3.5 0 0 0</pose>
+      <link name="body">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>12.4 0.2 7</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>12.4 0.2 7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.6 .7 .8 1</ambient>
+            <diffuse>.6 .7 .8 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_y_6.1">
+      <static>true</static>
+      <pose>0.0 6.1 3.5 0 0 0</pose>
+      <link name="body">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>12.4 0.2 7</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>12.4 0.2 7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.6 .7 .8 1</ambient>
+            <diffuse>.6 .7 .8 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_x_-6.1">
+      <static>true</static>
+      <pose>-6.1 0 3.5 0 0 0</pose>
+      <link name="body">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.2 12.4 7</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.2 12.4 7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.8 .7 .6 1</ambient>
+            <diffuse>.8 .7 .6 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="wall_x_6.1">
+      <static>true</static>
+      <pose>6.1 0 3.5 0 0 0</pose>
+      <link name="body">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.2 12.4 7</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.2 12.4 7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.8 .7 .6 1</ambient>
+            <diffuse>.8 .7 .6 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="p2_brake_obstacle">
+      <static>true</static>
+      <pose>100 100 3 0 0 0</pose>
+      <link name="body">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.25 2.5 4</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.25 2.5 4</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 .2 .2 1</ambient>
+            <diffuse>1 .2 .2 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="p2_target">
+      <static>true</static>
+      <pose>3 0 3 0 0 0</pose>
+      <link name="body">
+        <collision name="collision">
+          <geometry>
+            <cylinder>
+              <radius>.35</radius>
+              <length>1.8</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>.35</radius>
+              <length>1.8</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>.8 .1 .1 1</ambient>
+            <diffuse>.8 .1 .1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_0_0">
+      <static>true</static>
+      <pose>2.64 -0.25 2.1750000000000003 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_0_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 2.1750000000000003 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_0_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 2.1750000000000003 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_0_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 2.1750000000000003 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_0_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 2.1750000000000003 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_0_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 2.1750000000000003 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_1_0">
+      <static>true</static>
+      <pose>2.64 -0.25 2.325 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_1_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 2.325 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_1_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 2.325 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_1_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 2.325 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_1_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 2.325 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_1_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 2.325 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_2_0">
+      <static>true</static>
+      <pose>2.64 -0.25 2.475 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_2_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 2.475 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_2_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 2.475 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_2_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 2.475 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_2_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 2.475 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_2_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 2.475 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_3_0">
+      <static>true</static>
+      <pose>2.64 -0.25 2.625 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_3_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 2.625 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_3_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 2.625 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_3_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 2.625 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_3_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 2.625 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_3_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 2.625 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_4_0">
+      <static>true</static>
+      <pose>2.64 -0.25 2.775 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_4_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 2.775 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_4_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 2.775 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_4_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 2.775 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_4_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 2.775 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_4_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 2.775 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_5_0">
+      <static>true</static>
+      <pose>2.64 -0.25 2.925 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_5_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 2.925 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_5_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 2.925 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_5_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 2.925 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_5_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 2.925 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_5_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 2.925 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_6_0">
+      <static>true</static>
+      <pose>2.64 -0.25 3.075 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_6_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 3.075 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_6_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 3.075 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_6_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 3.075 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_6_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 3.075 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_6_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 3.075 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_7_0">
+      <static>true</static>
+      <pose>2.64 -0.25 3.225 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_7_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 3.225 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_7_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 3.225 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_7_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 3.225 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_7_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 3.225 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_7_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 3.225 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_8_0">
+      <static>true</static>
+      <pose>2.64 -0.25 3.375 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_8_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 3.375 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_8_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 3.375 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_8_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 3.375 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_8_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 3.375 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_8_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 3.375 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_9_0">
+      <static>true</static>
+      <pose>2.64 -0.25 3.5250000000000004 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_9_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 3.5250000000000004 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_9_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 3.5250000000000004 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_9_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 3.5250000000000004 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_9_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 3.5250000000000004 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_9_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 3.5250000000000004 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_10_0">
+      <static>true</static>
+      <pose>2.64 -0.25 3.675 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_10_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 3.675 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_10_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 3.675 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_10_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 3.675 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_10_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 3.675 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_10_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 3.675 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_11_0">
+      <static>true</static>
+      <pose>2.64 -0.25 3.825 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_11_1">
+      <static>true</static>
+      <pose>2.64 -0.14999999999999997 3.825 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_11_2">
+      <static>true</static>
+      <pose>2.64 -0.04999999999999999 3.825 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_11_3">
+      <static>true</static>
+      <pose>2.64 0.050000000000000044 3.825 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_11_4">
+      <static>true</static>
+      <pose>2.64 0.15000000000000002 3.825 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.15 .15 .15 1</ambient>
+            <diffuse>.15 .15 .15 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+    <model name="target_checker_11_5">
+      <static>true</static>
+      <pose>2.64 0.25000000000000006 3.825 0 0 0</pose>
+      <link name="body">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.01 0.1 0.15</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.65 .65 .65 1</ambient>
+            <diffuse>.65 .65 .65 1</diffuse>
+          </material>
+          <cast_shadows>false</cast_shadows>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

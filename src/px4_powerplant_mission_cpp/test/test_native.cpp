@@ -190,7 +190,10 @@ struct MissionTestAccess {
     m.pose.pose.position.z = z;
     m.pose.pose.orientation.w = 1;
     for (int k : {0, 7, 14, 21, 28, 35})
-      m.pose.covariance[k] = .1;
+      m.pose.covariance[k] = .001;
+    for(int k:{0,7,14})m.twist.covariance[k]=.001;
+    n.set_parameter(rclcpp::Parameter("motion_model_configured",true));
+    n.set_parameter(rclcpp::Parameter("motion_tracking_position_tolerance_m",.1));
     n.on_odom(m);
     n.yaw_rate_ = 0;
     if (!n.mission_started_)
@@ -232,7 +235,7 @@ struct MissionTestAccess {
     n.tick();
     EXPECT_EQ(n.phase_, Phase::Takeoff);
     EXPECT_TRUE(n.home_);
-    EXPECT_GT(n.warmup_, 0);
+    EXPECT_TRUE(n.b("motion_model_configured")); // Actual prestream is checked across ROS processes.
   }
   static void initial_scan() {
     OffboardMissionNode n;
@@ -352,7 +355,7 @@ struct MissionTestAccess {
     n.battery_stamp_ = n.ns() - 10000000000;
     EXPECT_FALSE(n.battery_low());
   }
-  static void photo_completion_after_map_loss() {
+  static void saved_only_photo_cannot_complete_after_map_loss() {
     OffboardMissionNode n;
     pose(n);
     n.home_ = Vec3(-5, 0, 0);
@@ -369,9 +372,10 @@ struct MissionTestAccess {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     EXPECT_FALSE(n.photo_pending_);
-    EXPECT_EQ(n.photos_, 1);
-    EXPECT_TRUE(n.captured_.count(7));
-    EXPECT_EQ(n.phase_, Phase::Return);
+    EXPECT_EQ(n.photos_, 0); // A write without qualified coverage evidence is not a photo success.
+    EXPECT_FALSE(n.captured_.count(7));
+    EXPECT_EQ(n.phase_, Phase::Target);
+    EXPECT_NE(n.inspection_result_, "REACHABLE_MODELED_COMPLETE");
   }
   static void photo_and_landing_contract() {
     OffboardMissionNode n;
@@ -442,7 +446,11 @@ struct MissionTestAccess {
     n.set_parameter(rclcpp::Parameter("takeoff_region_confirmed", true));
     n.set_parameter(rclcpp::Parameter("takeoff_region_height_m", 6.0));
     n.phase_ = Phase::Takeoff;
-    EXPECT_DOUBLE_EQ(n.select_target().first.z(), 15);
+    const auto first_ascent = n.select_target().first;
+    EXPECT_GT(first_ascent.z(), 10);
+    EXPECT_LE(first_ascent.z(), 10.5);
+    ASSERT_FALSE(n.waypoints_.empty());
+    EXPECT_DOUBLE_EQ(n.waypoints_.back().z(), 15);
     EXPECT_TRUE(n.takeoff_space_reason().empty());
     n.maps_.complete = true;
     n.maps_.map.occupied.insert(key(Vec3(2, 0, 12), .25));
@@ -454,6 +462,86 @@ struct MissionTestAccess {
     EXPECT_EQ(n.odom_stamp_, 0); // Zero covariance is a health downgrade.
     EXPECT_GT(n.rejected_odom_, 0u);
     EXPECT_GT(received, 0);
+  }
+  static void complete_roll_velocity_covariance() {
+    OffboardMissionNode n;
+    nav_msgs::msg::Odometry m;
+    m.header.stamp = n.now();
+    m.header.frame_id = "map";
+    m.child_frame_id = "base_link";
+    const Quat roll(Eigen::AngleAxisd(pi / 2, Vec3::UnitX()));
+    m.pose.pose.orientation.x = roll.x();
+    m.pose.pose.orientation.y = roll.y();
+    m.pose.pose.orientation.z = roll.z();
+    m.pose.pose.orientation.w = roll.w();
+    for (int k : {0, 7, 14, 21, 28, 35})
+      m.pose.covariance[k] = .001;
+    m.twist.twist.linear.x = 1;
+    m.twist.twist.linear.y = 2;
+    m.twist.twist.linear.z = 3;
+    Eigen::Matrix3d body_covariance, world_position_covariance;
+    body_covariance << .04, .01, 0, .01, .09, 0, 0, 0, .16;
+    world_position_covariance << .0004, .0001, 0, .0001, .0009, 0, 0, 0, .0016;
+    for (int row = 0; row < 3; ++row)
+      for (int col = 0; col < 3; ++col) {
+        m.twist.covariance[row * 6 + col] = body_covariance(row, col);
+        m.pose.covariance[row * 6 + col] = world_position_covariance(row, col);
+      }
+    n.on_odom(m);
+    const Vec3 expected_velocity(1, -3, 2);
+    Eigen::Matrix3d expected_covariance;
+    expected_covariance << .04, 0, .01, 0, .16, 0, .01, 0, .09;
+    EXPECT_TRUE(n.velocity_enu_.isApprox(expected_velocity, 1e-12));
+    EXPECT_TRUE(n.velocity_covariance_enu_.isApprox(expected_covariance, 1e-12));
+    EXPECT_NEAR(n.velocity_sigma_mps_, .4, 1e-12);
+    // Pose position covariance is already fixed ENU and must not rotate with
+    // the rolled vehicle, unlike the child-frame linear velocity covariance.
+    EXPECT_TRUE(n.position_covariance_enu_.isApprox(world_position_covariance, 1e-12));
+    EXPECT_NEAR(n.position_sigma_m_, .04, 1e-12);
+    const auto state = n.motion_state();
+    EXPECT_TRUE(state.position_covariance_enu_m2.isApprox(world_position_covariance, 1e-12));
+    EXPECT_TRUE(state.velocity_enu.isApprox(expected_velocity, 1e-12));
+    EXPECT_TRUE(state.linear_velocity_covariance_enu_m2ps2.isApprox(
+        expected_covariance, 1e-12));
+    EXPECT_NEAR(state.velocity_sigma_mps, .4, 1e-12);
+    // A new sample with unspecified covariance must not retain the previous
+    // valid matrix or manufacture a new zero-covariance measurement.
+    m.header.stamp = rclcpp::Time(n.odom_sample_ + 1);
+    m.twist.covariance[0] = 0;
+    n.on_odom(m);
+    EXPECT_FALSE(n.velocity_covariance_enu_.allFinite());
+    EXPECT_FALSE(n.motion_state().linear_velocity_covariance_enu_m2ps2.allFinite());
+    EXPECT_FALSE(std::isfinite(n.velocity_sigma_mps_));
+    // A rejected same-sample quality downgrade also revokes its matrix.
+    m.header.stamp = rclcpp::Time(n.odom_sample_);
+    n.on_odom(m);
+    EXPECT_EQ(n.odom_stamp_, 0);
+    EXPECT_FALSE(n.velocity_covariance_enu_.allFinite());
+    EXPECT_FALSE(n.position_covariance_enu_.allFinite());
+    EXPECT_FALSE(n.motion_state().position_covariance_enu_m2.allFinite());
+  }
+  static void duplicate_velocity_quality_downgrade() {
+    for (double variance : {0., -1., 2., std::numeric_limits<double>::quiet_NaN()}) {
+      OffboardMissionNode n;
+      pose(n);
+      ASSERT_TRUE(n.localization_ready());
+      const auto sample = n.odom_sample_;
+      nav_msgs::msg::Odometry downgraded;
+      downgraded.header.stamp = rclcpp::Time(sample);
+      downgraded.header.frame_id = "map";
+      downgraded.child_frame_id = "base_link";
+      downgraded.pose.pose.orientation.w = 1;
+      for (int k : {0, 7, 14, 21, 28, 35})
+        downgraded.pose.covariance[k] = .001;
+      for (int k : {0, 7, 14})
+        downgraded.twist.covariance[k] = .001;
+      downgraded.twist.covariance[0] = variance;
+      n.on_odom(downgraded);
+      EXPECT_EQ(n.odom_sample_, sample);
+      EXPECT_EQ(n.odom_stamp_, 0);
+      EXPECT_EQ(n.odom_steady_, 0);
+      EXPECT_FALSE(n.localization_ready());
+    }
   }
   static void landing_requires_new_both_sources() {
     OffboardMissionNode n;
@@ -518,6 +606,12 @@ TEST(Mission, RelativeTakeoffColumnAndDuplicateDowngrade) {
 TEST(Mission, LandingNeedsFreshLandedAndDisarmed) {
   MissionTestAccess::landing_requires_new_both_sources();
 }
+TEST(Mission, SameSampleVelocityQualityDowngradeRevokesNavigation) {
+  MissionTestAccess::duplicate_velocity_quality_downgrade();
+}
+TEST(Mission, FullRollTransformsVelocityAndRetainsCorrelatedEnuCovariance) {
+  MissionTestAccess::complete_roll_velocity_covariance();
+}
 TEST(Mission, IndependentLocalizationAndTiltGate) {
   MissionTestAccess::start_gate();
 }
@@ -540,8 +634,27 @@ TEST(Mission, ViewpointCounterAloneDoesNotCompleteObservation) {
 TEST(Mission, BatteryBudgetAndStaleness) {
   MissionTestAccess::battery_budget();
 }
-TEST(Mission, PhotoCompletionSurvivesMapLoss) {
-  MissionTestAccess::photo_completion_after_map_loss();
+TEST(Mission, SavedOnlyPhotoCannotCompleteAfterMapLoss) {
+  MissionTestAccess::saved_only_photo_cannot_complete_after_map_loss();
+}
+TEST(CameraCalibration, RejectsUnmodeledRawDistortionAndRectification) {
+  sensor_msgs::msg::CameraInfo info;
+  info.header.frame_id = "camera_optical";
+  info.width = 640;
+  info.height = 480;
+  info.k = {400, 0, 319.5, 0, 400, 239.5, 0, 0, 1};
+  EXPECT_TRUE(rectified_pinhole_info(info));
+  info.d = {.1, 0, 0, 0, 0};
+  EXPECT_FALSE(rectified_pinhole_info(info));
+  info.d.assign(5, 0);
+  info.r = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  info.p = {400, 0, 319.5, 0, 0, 400, 239.5, 0, 0, 0, 1, 0};
+  EXPECT_TRUE(rectified_pinhole_info(info));
+  info.p[3] = -40; // A second stereo reference needs an explicit mount.
+  EXPECT_FALSE(rectified_pinhole_info(info));
+  info.p[3] = 0;
+  info.r[1] = .01;
+  EXPECT_FALSE(rectified_pinhole_info(info));
 }
 TEST(Mission, PhotoAndLandingCompatibility) {
   MissionTestAccess::photo_and_landing_contract();

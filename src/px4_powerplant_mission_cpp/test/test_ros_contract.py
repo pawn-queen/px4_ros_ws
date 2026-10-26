@@ -85,7 +85,9 @@ def odometry(stamp=None, z=5.0):
     m.pose.pose.position.z = z
     m.pose.pose.orientation.w = 1.0
     for k in (0, 7, 14, 21, 28, 35):
-        m.pose.covariance[k] = .1
+        m.pose.covariance[k] = .001
+    for k in (0, 7, 14):
+        m.twist.covariance[k] = .001
     return m
 
 
@@ -262,7 +264,7 @@ def test_offboard_services_qos_warmup_commands_and_ned_setpoint(transport):
     vp = node.create_publisher(VehicleStatus, "/fmu/out/vehicle_status", PX4)
     lp = node.create_publisher(VehicleLandDetected, "/fmu/out/vehicle_land_detected", PX4)
     launch("offboard_mission_node", "offboard_warmup_setpoints:=3", "command_retry_interval_s:=0.1",
-           "takeoff_region_confirmed:=true", "takeoff_region_height_m:=6.0", "landing_confirm_dwell_s:=0.1")
+           "motion_tracking_position_tolerance_m:=0.1", "motion_model_configured:=true", "offboard_warmup_min_s:=0.3", "takeoff_region_confirmed:=true", "takeoff_region_height_m:=6.0", "landing_confirm_dwell_s:=0.1")
     start = node.create_client(Trigger, "/start_powerplant_mission")
     land_service = node.create_client(Trigger, "/land_powerplant_mission")
     wait(lambda: start.service_is_ready() and land_service.service_is_ready() and statuses)
@@ -275,12 +277,16 @@ def test_offboard_services_qos_warmup_commands_and_ned_setpoint(transport):
     vehicle.pre_flight_checks_pass = True
     sequence = 0
     landed = False
+    high_velocity_uncertainty = True
 
     def pump():
         nonlocal sequence
         sequence += 1
         m = odometry(z=10.)  # A raised platform verifies relative takeoff.
         m.pose.pose.position.x, m.pose.pose.position.y = 1., 2.
+        if high_velocity_uncertainty:
+            for index in (0, 7, 14):
+                m.twist.covariance[index] = .16
         sample = m.header.stamp.sec * 10**9 + m.header.stamp.nanosec
         health(node, hp, sample, sequence)
         op.publish(m)
@@ -295,13 +301,32 @@ def test_offboard_services_qos_warmup_commands_and_ned_setpoint(transport):
     reply = start.call_async(Trigger.Request())
     wait(reply.done, pump=pump)
     assert reply.result().success
+    # Waiting without a first safe certificate is not Offboard prestream time.
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        pump()
+        rclpy.spin_once(node, timeout_sec=.02)
+    assert not setpoints and not commands
+    high_velocity_uncertainty = False
     wait(lambda: any(c.command == VehicleCommand.VEHICLE_CMD_DO_SET_MODE for c in commands), pump=pump)
+    first_mode = next(c for c in commands if c.command == VehicleCommand.VEHICLE_CMD_DO_SET_MODE)
+    assert first_mode.timestamp - setpoints[0].timestamp >= 280_000
     assert all(c.command != VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM for c in commands)
     assert len(setpoints) >= 3
     assert setpoints[-1].position[0] == pytest.approx(2.)
     assert setpoints[-1].position[1] == pytest.approx(1.)
     assert setpoints[-1].position[2] <= -10.
-    assert all(np.isnan(v) for v in setpoints[-1].velocity)
+    assert all(np.isfinite(v) for v in setpoints[-1].velocity)
+    assert all(np.isfinite(v) for v in setpoints[-1].acceleration)
+    assert np.isfinite(setpoints[-1].yawspeed)
+    assert statuses[-1]["motion_stop_certificate_valid"]
+    assert len(statuses[-1]["linear_velocity_covariance_enu_m2ps2"]) == 9
+    assert all(np.isfinite(v) for v in statuses[-1]["linear_velocity_covariance_enu_m2ps2"])
+    envelope = statuses[-1]["motion_stopping_envelope_enu"]
+    assert len(envelope["minimum_m"]) == len(envelope["maximum_m"]) == 3
+    assert all(lo <= hi for lo, hi in zip(envelope["minimum_m"], envelope["maximum_m"]))
+    margin = statuses[-1]["motion_stop_margin_lower_bound_m"]
+    assert margin is None or margin >= 0  # No map evidence means unknown extra clearance.
     vehicle.nav_state = VehicleStatus.NAVIGATION_STATE_OFFBOARD
     wait(lambda: any(c.command == VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM for c in commands), pump=pump)
     response = land_service.call_async(Trigger.Request())
@@ -322,7 +347,7 @@ def test_replayed_navigation_cannot_keep_active_mission_alive(transport):
     op = node.create_publisher(Odometry, "/powerplant/localization/odom", 10)
     hp = node.create_publisher(String, "/powerplant/localization/status", 10)
     vp = node.create_publisher(VehicleStatus, "/fmu/out/vehicle_status", PX4)
-    launch("offboard_mission_node", "takeoff_region_confirmed:=true", "takeoff_region_height_m:=6.0")
+    launch("offboard_mission_node", "motion_tracking_position_tolerance_m:=0.1", "motion_model_configured:=true", "offboard_warmup_min_s:=0.3", "takeoff_region_confirmed:=true", "takeoff_region_height_m:=6.0")
     start = node.create_client(Trigger, "/start_powerplant_mission")
     sequence = 0
     last = None

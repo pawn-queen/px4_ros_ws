@@ -1,10 +1,31 @@
+#include "px4_powerplant_mission_cpp/input_validation.hpp"
 #include "px4_powerplant_mission_cpp/offboard.hpp"
 #include "px4_powerplant_mission_cpp/parameters.hpp"
 #include "px4_powerplant_mission_cpp/planning_index.hpp"
-#include "px4_powerplant_mission_cpp/input_validation.hpp"
+#include <Eigen/Eigenvalues>
 #include <rclcpp/create_timer.hpp>
 
 namespace powerplant {
+namespace {
+void append_motion_evidence(JsonValue &fields, const MotionUpdate &motion) {
+  fields["motion_mode"] = motion_mode_name(motion.mode);
+  fields["motion_reason"] = motion.reason;
+  fields["motion_stopped"] = motion.stopped;
+  fields["motion_stop_time_s"] = motion.stop_time_s;
+  fields["motion_stop_certificate_valid"] =
+      motion.valid && motion.stopping_envelope.has_value();
+  fields["motion_stop_margin_lower_bound_m"] =
+      motion.stop_margin_lower_bound_m
+          ? JsonValue(*motion.stop_margin_lower_bound_m) : JsonValue();
+  fields["motion_stopping_envelope_enu"] = JsonValue();
+  if (motion.stopping_envelope) {
+    auto envelope = object();
+    envelope["minimum_m"] = vector_json(motion.stopping_envelope->minimum, 6);
+    envelope["maximum_m"] = vector_json(motion.stopping_envelope->maximum, 6);
+    fields["motion_stopping_envelope_enu"] = envelope;
+  }
+}
+} // namespace
 const char *phase_name(Phase p) {
   switch (p) {
   case Phase::Idle:
@@ -50,6 +71,31 @@ OffboardMissionNode::OffboardMissionNode()
                                                     reliable_qos());
   target_pub_ = create_publisher<geometry_msgs::msg::PointStamped>(
       s("target_position_topic"), reliable_qos());
+  inspection_history_.horizon_ns = 2500000000LL;
+  const auto clock = get_clock();
+  const auto hp = heartbeat_pub_;
+  const auto sp = setpoint_pub_;
+  motion_ = std::make_unique<MotionRuntime>(
+      [clock] { return clock->now().nanoseconds(); },
+      [hp, sp](const MotionSample &s, int64_t stamp) {
+        px4_msgs::msg::TrajectorySetpoint out;
+        out.timestamp = stamp / 1000;
+        out.position = {float(s.position_enu.y()), float(s.position_enu.x()),
+                        float(-s.position_enu.z())};
+        out.velocity = {float(s.velocity_enu.y()), float(s.velocity_enu.x()),
+                        float(-s.velocity_enu.z())};
+        out.acceleration = {float(s.acceleration_enu.y()),
+                            float(s.acceleration_enu.x()),
+                            float(-s.acceleration_enu.z())};
+        out.jerk.fill(NAN);
+        out.yaw = float(wrap_pi(pi / 2 - s.yaw_rad));
+        out.yawspeed = float(-s.yaw_rate_radps);
+        px4_msgs::msg::OffboardControlMode heartbeat;
+        heartbeat.timestamp = stamp / 1000;
+        heartbeat.position = true;
+        hp->publish(heartbeat);
+        sp->publish(out);
+      });
   subscribe_vehicle();
   subscribe_map();
   subscribe_camera();
@@ -65,16 +111,16 @@ OffboardMissionNode::OffboardMissionNode()
         response->message = "land command sent";
       });
   timer_ = create_wall_timer(std::chrono::milliseconds(100), [this] {
-        try {
-          tick();
-        } catch (const std::exception &e) {
-          RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
-                                "mission update rejected: %s", e.what());
-          if (active_)
-            fault(std::string("mission update exception: ") + e.what());
-          publish_status();
-        }
-      });
+    try {
+      tick();
+    } catch (const std::exception &e) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
+                            "mission update rejected: %s", e.what());
+      if (active_)
+        fault(std::string("mission update exception: ") + e.what());
+      publish_status();
+    }
+  });
 }
 void OffboardMissionNode::on_odom(const nav_msgs::msg::Odometry &m) {
   if (!observe_clock())
@@ -83,8 +129,15 @@ void OffboardMissionNode::on_odom(const nav_msgs::msg::Odometry &m) {
   auto reject = [&](const std::string &reason, bool invalidate = false) {
     ++rejected_odom_;
     input_reject_reason_ = reason;
-    if (invalidate)
+    if (invalidate) {
       odom_stamp_ = odom_steady_ = 0;
+      position_covariance_enu_.setConstant(
+          std::numeric_limits<double>::quiet_NaN());
+      position_sigma_m_ = inf;
+      velocity_covariance_enu_.setConstant(
+          std::numeric_limits<double>::quiet_NaN());
+      velocity_sigma_mps_ = inf;
+    }
   };
   auto stamp_error = stamp_reason(sample, received, d("max_localization_age_s"),
                                   d("max_future_stamp_skew_s"));
@@ -96,9 +149,34 @@ void OffboardMissionNode::on_odom(const nav_msgs::msg::Odometry &m) {
     // A health downgrade may retain the original sample stamp. It must not
     // refresh receipt time, but must invalidate the previously good sample.
     bool bad_quality = sample == odom_seen_ &&
-        !pose_covariance_reason(m.pose.covariance,
-             std::max(d("max_start_position_variance_m2"), d("max_start_height_variance_m2")),
-             std::max(d("initial_scan_max_tilt_variance_rad2"), d("max_start_yaw_variance_rad2"))).empty();
+                       !pose_covariance_reason(
+                            m.pose.covariance,
+                            std::max(d("max_start_position_variance_m2"),
+                                     d("max_start_height_variance_m2")),
+                            std::max(d("initial_scan_max_tilt_variance_rad2"),
+                                     d("max_start_yaw_variance_rad2")))
+                            .empty();
+    if (sample == odom_seen_) {
+      Eigen::Matrix3d covariance;
+      for (int row = 0; row < 3; ++row)
+        for (int col = 0; col < 3; ++col)
+          covariance(row, col) = m.twist.covariance[row * 6 + col];
+      if (!covariance.allFinite() || covariance.diagonal().minCoeff() <= 0 ||
+          (covariance - covariance.transpose()).cwiseAbs().maxCoeff() >= 1e-8)
+        bad_quality = true;
+      else {
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen(covariance);
+        if (eigen.info() != Eigen::Success ||
+            eigen.eigenvalues().minCoeff() < 0 ||
+            eigen.eigenvalues().maxCoeff() >
+                d("motion_max_velocity_variance_m2ps2"))
+          bad_quality = true;
+      }
+      const auto &v = m.twist.twist.linear;
+      const auto &w = m.twist.twist.angular;
+      if (!Vec3(v.x, v.y, v.z).allFinite() || !Vec3(w.x, w.y, w.z).allFinite())
+        bad_quality = true;
+    }
     reject("duplicate or out-of-order odometry sample", bad_quality);
     return;
   }
@@ -115,25 +193,49 @@ void OffboardMissionNode::on_odom(const nav_msgs::msg::Odometry &m) {
   if (!position.allFinite() || !orientation.coeffs().allFinite() ||
       orientation.norm() < 1e-9)
     return reject("non-finite odometry pose", true);
-  auto covariance_error = pose_covariance_reason(
-      m.pose.covariance,
-      std::max(d("max_start_position_variance_m2"),
-               d("max_start_height_variance_m2")),
-      std::max(d("initial_scan_max_tilt_variance_rad2"),
-               d("max_start_yaw_variance_rad2")));
+  auto covariance_error =
+      pose_covariance_reason(m.pose.covariance,
+                             std::max(d("max_start_position_variance_m2"),
+                                      d("max_start_height_variance_m2")),
+                             std::max(d("initial_scan_max_tilt_variance_rad2"),
+                                      d("max_start_yaw_variance_rad2")));
   if (!covariance_error.empty())
     return reject(covariance_error, true);
   const auto &v = m.twist.twist.linear;
   const auto &w = m.twist.twist.angular;
-  if (!Vec3(v.x, v.y, v.z).allFinite() ||
-      !Vec3(w.x, w.y, w.z).allFinite())
+  if (!Vec3(v.x, v.y, v.z).allFinite() || !Vec3(w.x, w.y, w.z).allFinite())
     return reject("non-finite odometry velocity", true);
   double previous_yaw = yaw_;
   int64_t previous_stamp = odom_sample_;
   position_ = position;
   orientation_ = orientation.normalized();
   yaw_ = yaw(orientation_);
-  speed_ = Vec3(v.x, v.y, v.z).norm();
+  velocity_enu_ = orientation_ * Vec3(v.x, v.y, v.z);
+  speed_ = velocity_enu_.norm();
+  Eigen::Matrix3d pc, vc;
+  for (int row = 0; row < 3; ++row)
+    for (int col = 0; col < 3; ++col) {
+      pc(row, col) = m.pose.covariance[row * 6 + col];
+      vc(row, col) = m.twist.covariance[row * 6 + col];
+    }
+  position_covariance_enu_ = pc;
+  position_sigma_m_ =
+      std::sqrt(std::max(0., Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d>(pc)
+                                 .eigenvalues()
+                                 .maxCoeff()));
+  velocity_sigma_mps_ = inf;
+  velocity_covariance_enu_.setConstant(
+      std::numeric_limits<double>::quiet_NaN());
+  if (vc.allFinite() && vc.diagonal().minCoeff() > 0 &&
+      (vc - vc.transpose()).cwiseAbs().maxCoeff() < 1e-8) {
+    const Eigen::Matrix3d enu = orientation_.toRotationMatrix() * vc *
+                                orientation_.toRotationMatrix().transpose();
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen(enu);
+    if (eigen.info() == Eigen::Success && eigen.eigenvalues().minCoeff() >= 0) {
+      velocity_covariance_enu_ = enu;
+      velocity_sigma_mps_ = std::sqrt(eigen.eigenvalues().maxCoeff());
+    }
+  }
   odom_sample_ = sample;
   odom_stamp_ = received;
   odom_steady_ = steady_ns();
@@ -148,7 +250,17 @@ void OffboardMissionNode::on_odom(const nav_msgs::msg::Odometry &m) {
   z_variance_ = variance(14);
   tilt_variance_ = std::max(variance(21), variance(28));
   yaw_variance_ = variance(35);
+  yaw_rate_ = std::abs((orientation_ * Vec3(w.x, w.y, w.z)).z());
+  inspection_history_.add({sample, *position_, orientation_});
+  inspection_kinematics_.push_back({sample, speed_, yaw_rate_});
+  while (!inspection_kinematics_.empty() &&
+         sample - inspection_kinematics_.front().stamp > 2500000000LL)
+    inspection_kinematics_.pop_front();
   input_reject_reason_.clear();
+  try_registered_observation();
+  if (active_ && phase_ != Phase::Start)
+    update_motion_input(motion_target_, motion_target_yaw_, motion_permit_,
+                        motion_input_reason_);
 }
 bool OffboardMissionNode::observe_clock() {
   const int64_t current = ns();
@@ -165,6 +277,7 @@ bool OffboardMissionNode::observe_clock() {
     home_.reset();
     return_goal_.reset();
     target_.reset();
+    reset_p2_epoch();
     last_clock_ = current;
     return false;
   }
@@ -179,7 +292,8 @@ void OffboardMissionNode::on_localization_status(const std::string &text) {
     for (const auto *key : {"status_stamp_ns", "status_sequence",
                             "localization_epoch", "navigation_sample_ns"})
       if (!p[key].isInt64())
-        throw std::invalid_argument("missing localization health timestamp/epoch");
+        throw std::invalid_argument(
+            "missing localization health timestamp/epoch");
     const auto epoch = p["localization_epoch"].asInt64();
     const auto sequence = p["status_sequence"].asInt64();
     if (epoch <= 0 || sequence <= 0 || !p["uwb_input_healthy"].isBool() ||
@@ -189,17 +303,19 @@ void OffboardMissionNode::on_localization_status(const std::string &text) {
         (epoch == localization_epoch_ && sequence <= localization_sequence_))
       return;
     if (!stamp_reason(p["status_stamp_ns"].asInt64(), ns(),
-                      d("max_localization_age_s"),
-                      d("max_future_stamp_skew_s")).empty())
+                      d("max_localization_age_s"), d("max_future_stamp_skew_s"))
+             .empty())
       return;
     if (localization_epoch_ && epoch != localization_epoch_) {
       retired_localization_epochs_.insert(localization_epoch_);
+      reset_p2_epoch();
       odom_stamp_ = odom_steady_ = 0;
       home_.reset();
       return_goal_.reset();
       target_.reset();
       if (active_ || phase_ == Phase::Landing)
-        fault("localization coordinate epoch changed; explicit restart required");
+        fault(
+            "localization coordinate epoch changed; explicit restart required");
     }
     if (epoch != localization_epoch_)
       localization_boundary_sample_ = p["navigation_sample_ns"].asInt64();
@@ -208,7 +324,7 @@ void OffboardMissionNode::on_localization_status(const std::string &text) {
     localization_stamp_ = ns();
     localization_steady_ = steady_ns();
     independent_healthy_ = p["uwb_input_healthy"].asBool() &&
-                          p["has_independent_position"].asBool();
+                           p["has_independent_position"].asBool();
     if (!independent_healthy_ && active_ && phase_ != Phase::Start)
       fault("independent localization health lost");
   } catch (const std::exception &e) {
@@ -247,7 +363,8 @@ void OffboardMissionNode::on_grid(const nav_msgs::msg::OccupancyGrid &m) {
   const int64_t sample = stamp_ns(m.header.stamp);
   if (m.header.frame_id != s("map_frame") || sample <= grid_sample_ ||
       !stamp_reason(sample, ns(), d("initial_scan_max_sensor_age_s"),
-                    d("max_future_stamp_skew_s")).empty())
+                    d("max_future_stamp_skew_s"))
+           .empty())
     return;
   if (m.data.size() != size_t(m.info.width) * m.info.height ||
       !std::isfinite(m.info.resolution) || m.info.resolution <= 0)
@@ -266,8 +383,8 @@ void OffboardMissionNode::on_fusion(const std::string &text) {
     const int64_t old_epoch = maps_.map_epoch;
     const int64_t old_sequence = maps_.status_sequence;
     bool restarted = maps_.update_status(text, ns());
-    const bool accepted = maps_.map_epoch != old_epoch ||
-                          maps_.status_sequence > old_sequence;
+    const bool accepted =
+        maps_.map_epoch != old_epoch || maps_.status_sequence > old_sequence;
     if (old_epoch > 0 && maps_.map_epoch != old_epoch &&
         (active_ || phase_ == Phase::Landing)) {
       fault("map coordinate epoch changed; explicit restart required");
@@ -288,13 +405,15 @@ void OffboardMissionNode::on_fusion(const std::string &text) {
     if (accepted) {
       auto status = parse(text);
       observe_fused_camera(status);
-      if (old_epoch != maps_.map_epoch) latest_depth_observation_id_=0;
+      if (old_epoch != maps_.map_epoch)
+        latest_depth_observation_id_ = 0;
       observe_viewpoint_depth(status);
       if (phase_ == Phase::Scan)
         observe_scan_depth(status);
     }
-    maps_.index_clearance_radius_m=d("explore_clearance_radius_m");
-    maps_.commit(s("map_frame"), ns());
+    maps_.index_clearance_radius_m = d("explore_clearance_radius_m");
+    consume_map_commit();
+    schedule_map_commit();
   } catch (const std::exception &e) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                          "invalid map status: %s", e.what());
@@ -322,11 +441,11 @@ void OffboardMissionNode::observe_fused_camera(const JsonValue &status) {
   model.from_camera_info = p["camera_info_valid"].asBool();
   if (!model.valid())
     return;
-  bool changed = !fused_camera_ ||
-      fused_camera_->width != model.width || fused_camera_->height != model.height ||
-      fused_camera_->fx != model.fx || fused_camera_->fy != model.fy ||
-      fused_camera_->cx != model.cx || fused_camera_->cy != model.cy ||
-      fused_camera_->frame != model.frame ||
+  bool changed =
+      !fused_camera_ || fused_camera_->width != model.width ||
+      fused_camera_->height != model.height || fused_camera_->fx != model.fx ||
+      fused_camera_->fy != model.fy || fused_camera_->cx != model.cx ||
+      fused_camera_->cy != model.cy || fused_camera_->frame != model.frame ||
       fused_camera_->from_camera_info != model.from_camera_info;
   fused_camera_ = model;
   if (changed)
@@ -336,8 +455,8 @@ bool OffboardMissionNode::camera_ready() const {
   if (fused_camera_ && fused_camera_->valid())
     return fused_camera_->from_camera_info || !b("explore_require_camera_info");
   return !b("explore_require_camera_info") && !depth_.empty() &&
-      std::isfinite(d("camera_fx")) && d("camera_fx") > 0 &&
-      std::isfinite(d("camera_fy")) && d("camera_fy") > 0;
+         std::isfinite(d("camera_fx")) && d("camera_fx") > 0 &&
+         std::isfinite(d("camera_fy")) && d("camera_fy") > 0;
 }
 void OffboardMissionNode::observe_scan_depth(const JsonValue &status) {
   if (!scan_anchor_ || !status["localization_healthy"].asBool() ||
@@ -358,13 +477,16 @@ void OffboardMissionNode::observe_scan_depth(const JsonValue &status) {
     const int64_t sample = p["sample_stamp_ns"].asInt64();
     if (sample < scan_entered_ ||
         !stamp_reason(sample, ns(), d("initial_scan_max_sensor_age_s"),
-                      d("max_future_stamp_skew_s")).empty() ||
+                      d("max_future_stamp_skew_s"))
+             .empty() ||
         !p["valid_pixel_fraction"].isNumeric() ||
         !std::isfinite(p["valid_pixel_fraction"].asDouble()) ||
-        p["valid_pixel_fraction"].asDouble() < d("initial_scan_min_valid_depth_fraction") ||
+        p["valid_pixel_fraction"].asDouble() <
+            d("initial_scan_min_valid_depth_fraction") ||
         p["valid_pixel_fraction"].asDouble() > 1 ||
         !p["coverage_qualified"].asBool() ||
-        (!p["camera_info_valid"].asBool() && b("explore_require_camera_info")) ||
+        (!p["camera_info_valid"].asBool() &&
+         b("explore_require_camera_info")) ||
         !p["tilt_rad"].isNumeric() ||
         !std::isfinite(p["tilt_rad"].asDouble()) ||
         p["tilt_rad"].asDouble() > d("initial_scan_max_tilt_rad") ||
@@ -384,7 +506,8 @@ void OffboardMissionNode::observe_scan_depth(const JsonValue &status) {
       position[axis] = p["position_enu_m"][axis].asDouble();
     }
     if (!finite || !position.allFinite() ||
-        (position - *scan_anchor_).norm() > d("initial_scan_max_position_error_m"))
+        (position - *scan_anchor_).norm() >
+            d("initial_scan_max_position_error_m"))
       continue;
     for (const auto &sector : p["valid_yaw_sectors"])
       if (sector.isInt())
@@ -395,135 +518,67 @@ void OffboardMissionNode::observe_scan_depth(const JsonValue &status) {
   }
 }
 void OffboardMissionNode::observe_viewpoint_depth(const JsonValue &status) {
-  if(!status["localization_healthy"].asBool() || !status["depth_observations"].isArray())return;
-  for(const auto &p:status["depth_observations"]) {
-    if(!p["sample_id"].isInt64() || p["sample_id"].asInt64()<=latest_depth_observation_id_ ||
-       p["sample_id"].asInt64()>maps_.depth_count || !p["sample_stamp_ns"].isInt64() ||
-       !stamp_reason(p["sample_stamp_ns"].asInt64(),ns(),d("initial_scan_max_sensor_age_s"),d("max_future_stamp_skew_s")).empty() ||
-       !p["coverage_qualified"].asBool() ||
-       (b("explore_require_camera_info")&&!p["camera_info_valid"].asBool()) ||
-       !p["valid_pixel_fraction"].isNumeric() || !std::isfinite(p["valid_pixel_fraction"].asDouble()) ||
-       p["valid_pixel_fraction"].asDouble()<d("initial_scan_min_valid_depth_fraction") ||
-       p["valid_pixel_fraction"].asDouble()>1 ||
-       !p["yaw_enu_rad"].isNumeric() || !std::isfinite(p["yaw_enu_rad"].asDouble()) ||
-       !p["tilt_rad"].isNumeric() || !std::isfinite(p["tilt_rad"].asDouble()) ||
-       p["tilt_rad"].asDouble()<0 || p["tilt_rad"].asDouble()>d("initial_scan_max_tilt_rad") ||
-       !p["valid_yaw_sectors"].isArray() || p["valid_yaw_sectors"].empty() ||
-       !p["position_enu_m"].isArray() || p["position_enu_m"].size()!=3)continue;
+  if (!status["localization_healthy"].asBool() ||
+      !status["depth_observations"].isArray())
+    return;
+  for (const auto &p : status["depth_observations"]) {
+    if (!p["sample_id"].isInt64() ||
+        p["sample_id"].asInt64() <= latest_depth_observation_id_ ||
+        p["sample_id"].asInt64() > maps_.depth_count ||
+        !p["sample_stamp_ns"].isInt64() ||
+        !stamp_reason(p["sample_stamp_ns"].asInt64(), ns(),
+                      d("initial_scan_max_sensor_age_s"),
+                      d("max_future_stamp_skew_s"))
+             .empty() ||
+        !p["coverage_qualified"].asBool() ||
+        (b("explore_require_camera_info") &&
+         !p["camera_info_valid"].asBool()) ||
+        !p["valid_pixel_fraction"].isNumeric() ||
+        !std::isfinite(p["valid_pixel_fraction"].asDouble()) ||
+        p["valid_pixel_fraction"].asDouble() <
+            d("initial_scan_min_valid_depth_fraction") ||
+        p["valid_pixel_fraction"].asDouble() > 1 ||
+        !p["yaw_enu_rad"].isNumeric() ||
+        !std::isfinite(p["yaw_enu_rad"].asDouble()) ||
+        !p["tilt_rad"].isNumeric() ||
+        !std::isfinite(p["tilt_rad"].asDouble()) ||
+        p["tilt_rad"].asDouble() < 0 ||
+        p["tilt_rad"].asDouble() > d("initial_scan_max_tilt_rad") ||
+        !p["valid_yaw_sectors"].isArray() || p["valid_yaw_sectors"].empty() ||
+        !p["position_enu_m"].isArray() || p["position_enu_m"].size() != 3)
+      continue;
     Vec3 position;
-    bool valid=true;
-    for(int axis=0;axis<3;++axis) {
-      if(!p["position_enu_m"][axis].isNumeric()){valid=false;break;}
-      position[axis]=p["position_enu_m"][axis].asDouble();
+    bool valid = true;
+    for (int axis = 0; axis < 3; ++axis) {
+      if (!p["position_enu_m"][axis].isNumeric()) {
+        valid = false;
+        break;
+      }
+      position[axis] = p["position_enu_m"][axis].asDouble();
     }
-    if(!valid||!position.allFinite())continue;
-    latest_depth_observation_id_=p["sample_id"].asInt64();
-    latest_depth_observation_sample_=p["sample_stamp_ns"].asInt64();
-    latest_depth_observation_position_=position;
-    latest_depth_observation_yaw_=p["yaw_enu_rad"].asDouble();
+    if (!valid || !position.allFinite())
+      continue;
+    latest_depth_observation_id_ = p["sample_id"].asInt64();
+    latest_depth_observation_sample_ = p["sample_stamp_ns"].asInt64();
+    latest_depth_observation_position_ = position;
+    latest_depth_observation_yaw_ = p["yaw_enu_rad"].asDouble();
   }
 }
 void OffboardMissionNode::on_detection(const std::string &text) {
-  if (!position_ || depth_.empty() ||
-      (phase_ == Phase::Target && b("lock_target_after_acquisition") &&
-       target_recent()))
-    return;
   try {
-    auto p = parse(text);
-    if (!p["detections"].isArray())
-      return;
-    std::vector<JsonValue> detections;
-    for (const auto &det : p["detections"])
-      if (det.isObject())
-        detections.push_back(det);
-    auto confidence = [](const JsonValue &det) {
-      return det["confidence"].isNumeric() ? det["confidence"].asDouble() : 0.0;
-    };
-    std::stable_sort(detections.begin(), detections.end(),
-                     [&](const auto &a, const auto &b) {
-                       return confidence(a) > confidence(b);
-                     });
-    for (const auto &det : detections) {
-      std::string name = det.get("class_name", "").asString();
-      double conf = confidence(det);
-      if ((!s("target_class_name").empty() && name != s("target_class_name")) ||
-          !std::isfinite(conf) || conf < d("min_target_confidence"))
-        continue;
-      auto pos = project_bbox(det["bbox_xyxy"], p.get("image_width", 0).asInt(),
-                              p.get("image_height", 0).asInt());
-      if (!pos)
-        continue;
-      target_ = TargetObservation{name, conf, *pos, ns()};
-      geometry_msgs::msg::PointStamped msg;
-      msg.header.stamp = now();
-      msg.header.frame_id = "map";
-      msg.point.x = pos->x();
-      msg.point.y = pos->y();
-      msg.point.z = pos->z();
-      target_pub_->publish(msg);
-      auto fields = object();
-      fields["target_class"] = name;
-      fields["confidence"] = number(conf, 4);
-      fields["target_enu"] = vector_json(*pos);
-      event("target_position", fields);
-      break;
-    }
+    pending_detection_ = parse(text);
+    try_registered_observation();
   } catch (const std::exception &e) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                         "invalid detection: %s", e.what());
+    inspection_wait_ = std::string("invalid detection: ") + e.what();
   }
-}
-std::optional<Vec3> OffboardMissionNode::project_bbox(const JsonValue &box,
-                                                      int width,
-                                                      int height) const {
-  if (!position_ || depth_.empty() ||
-      age(depth_stamp_) > d("max_depth_age_s") || width <= 0 || height <= 0 ||
-      !box.isArray() || box.size() != 4)
-    return {};
-  for (const auto &v : box)
-    if (!v.isNumeric() || !std::isfinite(v.asDouble()))
-      return {};
-  double sx = double(depth_.cols) / width, sy = double(depth_.rows) / height;
-  double cx = .5 * (box[0].asDouble() + box[2].asDouble()) * sx,
-         cy = .5 * (box[1].asDouble() + box[3].asDouble()) * sy;
-  int hw = std::max(
-      1, int(.5 * std::max(2.0, (box[2].asDouble() - box[0].asDouble()) * sx) *
-             d("bbox_depth_sample_fraction")));
-  int hh = std::max(
-      1, int(.5 * std::max(2.0, (box[3].asDouble() - box[1].asDouble()) * sy) *
-             d("bbox_depth_sample_fraction")));
-  int x0 = std::max(0, int(std::nearbyint(cx)) - hw),
-      x1 = std::min(depth_.cols, int(std::nearbyint(cx)) + hw + 1);
-  int y0 = std::max(0, int(std::nearbyint(cy)) - hh),
-      y1 = std::min(depth_.rows, int(std::nearbyint(cy)) + hh + 1);
-  std::vector<float> samples;
-  for (int y = y0; y < y1; ++y)
-    for (int x = x0; x < x1; ++x) {
-      float v = depth_.at<float>(y, x);
-      if (std::isfinite(v) && v >= d("min_detection_depth_m") &&
-          v <= d("max_detection_depth_m"))
-        samples.push_back(v);
-    }
-  if (samples.empty())
-    return {};
-  double z = median(samples), fx = d("camera_fx"), fy = d("camera_fy"),
-         ox = d("camera_cx"), oy = d("camera_cy");
-  if (camera_info_ && camera_info_->k[0] > 0) {
-    fx = camera_info_->k[0];
-    fy = camera_info_->k[4];
-    ox = camera_info_->k[2];
-    oy = camera_info_->k[5];
-  }
-  if (!std::isfinite(fx) || !std::isfinite(fy) || fx <= 0 || fy <= 0)
-    return {};
-  return Vec3(*position_ +
-              orientation_.normalized() *
-                  (Vec3(z, -(cx - ox) * z / fx, -(cy - oy) * z / fy) +
-                   v("camera_translation_flu")));
 }
 void OffboardMissionNode::event(const std::string &name, JsonValue fields) {
   fields["event"] = name;
   fields["phase"] = phase_name(phase_);
+  fields["selected_region_id"] = integer(selected_region_id_);
+  fields["portal_count"] = integer(topology_ ? topology_->portals.size() : 0);
+  if (motion_)
+    append_motion_evidence(fields, motion_->report());
   publish_json(event_pub_, fields);
 }
 void OffboardMissionNode::publish_path() {
@@ -545,6 +600,42 @@ void OffboardMissionNode::publish_status(std::optional<Vec3> target,
                                          std::optional<Vec3> setpoint_value) {
   auto p = object();
   p["phase"] = phase_name(phase_);
+  p["takeoff_bootstrap_active"] = takeoff_bootstrap_active_;
+  p["takeoff_bootstrap_minimum_duration_s"] = takeoff_bootstrap_active_
+      ? d("motion_takeoff_bootstrap_duration_s") : 0;
+  if (motion_) {
+    const auto m = motion_->report();
+    append_motion_evidence(p, m);
+    p["motion_publications"] = integer(motion_->publications());
+  }
+  p["velocity_enu_mps"] = vector_json(velocity_enu_, 6);
+  p["position_covariance_enu_m2"] = array();
+  p["linear_velocity_covariance_enu_m2ps2"] = array();
+  for (int row = 0; row < 3; ++row)
+    for (int col = 0; col < 3; ++col) {
+      p["position_covariance_enu_m2"].append(
+          number(position_covariance_enu_(row, col), 8));
+      p["linear_velocity_covariance_enu_m2ps2"].append(
+          number(velocity_covariance_enu_(row, col), 8));
+    }
+  const auto cov = inspection_.coverage_report();
+  p["inspection_result"] = inspection_result_;
+  p["inspection_wait_reason"] = inspection_wait_;
+  p["inspection_target_id"] = integer(inspection_.target_id());
+  p["inspection_coverage_scope"] = "reachable_modeled_surface";
+  p["inspection_coverage_fraction"] = cov.fraction;
+  p["inspection_modeled_area_m2"] = cov.modeled_area_m2;
+  p["inspection_required_area_m2"] = cov.required_area_m2;
+  p["inspection_covered_area_m2"] = cov.covered_area_m2;
+  p["inspection_occluded_area_m2"] = cov.occluded_area_m2;
+  p["inspection_unreachable_area_m2"] = cov.unreachable_area_m2;
+  p["inspection_unknown_extent"] = cov.unknown_extent;
+  p["selected_region_id"] = integer(selected_region_id_);
+  p["region_count"] = integer(topology_ ? topology_->regions.size() : 0);
+  p["portal_count"] = integer(topology_ ? topology_->portals.size() : 0);
+  p["topology_revision"] =
+      integer(topology_ ? topology_->observation_revision : -1);
+
   p["active"] = active_;
   p["waypoint_index"] = integer(waypoint_);
   p["waypoint_count"] = integer(waypoints_.size());
@@ -600,11 +691,14 @@ void OffboardMissionNode::publish_status(std::optional<Vec3> target,
   p["map_epoch"] = integer(maps_.map_epoch);
   p["map_localization_healthy"] = maps_.localization_healthy;
   p["camera_geometry_ready"] = camera_ready();
-  p["camera_geometry_from_info"] = fused_camera_ && fused_camera_->from_camera_info;
+  p["camera_geometry_from_info"] =
+      fused_camera_ && fused_camera_->from_camera_info;
   p["camera_geometry_revision"] = integer(camera_revision_);
   if (fused_camera_) {
-    p["camera_horizontal_fov_rad"] = fused_camera_->yaw_max() - fused_camera_->yaw_min();
-    p["camera_vertical_fov_rad"] = fused_camera_->pitch_max() - fused_camera_->pitch_min();
+    p["camera_horizontal_fov_rad"] =
+        fused_camera_->yaw_max() - fused_camera_->yaw_min();
+    p["camera_vertical_fov_rad"] =
+        fused_camera_->pitch_max() - fused_camera_->pitch_min();
   }
   p["map_observation_revision"] = integer(maps_.observation_revision);
   p["explore_failure_reason"] = planning_failure_name(explore_failure_);
@@ -614,9 +708,10 @@ void OffboardMissionNode::publish_status(std::optional<Vec3> target,
   p["camera_calibrated"] = fused_camera_ && fused_camera_->from_camera_info;
   p["camera_revision"] = integer(camera_revision_);
   p["initial_scan_coverage_fraction"] = scan_coverage_.fraction();
-  p["initial_scan_accepted_observations"] = integer(scan_accepted_observations_);
-  if(maps_.map.index) {
-    const auto &stats=maps_.map.index->stats();
+  p["initial_scan_accepted_observations"] =
+      integer(scan_accepted_observations_);
+  if (maps_.map.index) {
+    const auto &stats = maps_.map.index->stats();
     p["index_changed_voxels"] = integer(stats.changed_voxels);
     p["index_frontier_recomputed"] = integer(stats.frontier_recomputed);
     p["index_safety_recomputed"] = integer(stats.safety_recomputed);
@@ -634,7 +729,8 @@ void OffboardMissionNode::publish_status(std::optional<Vec3> target,
     p["initial_scan_coverage_fraction"] = scan_coverage_.fraction();
     p["initial_scan_covered_sectors"] = scan_coverage_.count();
     p["initial_scan_sector_count"] = scan_coverage_.bins();
-    p["initial_scan_accepted_observations"] = integer(scan_accepted_observations_);
+    p["initial_scan_accepted_observations"] =
+        integer(scan_accepted_observations_);
     p["initial_scan_rotating"] = rotating_;
     p["initial_scan_wait_reason"] = scan_wait_;
     if (scan_) {

@@ -51,8 +51,12 @@ inline void declare_voxel_mapper_parameters(rclcpp::Node &n) {
   n.declare_parameter<double>("camera_fy", 430.0);
   n.declare_parameter<double>("camera_cx", 320.0);
   n.declare_parameter<double>("camera_cy", 240.0);
+  n.declare_parameter<std::vector<double>>("camera_rotation_rpy_rad",
+                                           {0., 0., 0.});
   n.declare_parameter<std::vector<double>>("camera_translation_flu",
                                            {0.12, -0.03, 0.24});
+  n.declare_parameter<std::vector<double>>("lidar_rotation_rpy_rad",
+                                           {0., 0., 0.});
   n.declare_parameter<std::vector<double>>("lidar_translation_flu",
                                            {0.0, 0.0, 0.0});
   n.declare_parameter<std::string>("pointcloud_frame", "base_link");
@@ -74,6 +78,60 @@ inline void declare_voxel_mapper_parameters(rclcpp::Node &n) {
   n.declare_parameter<double>("grid_max_y_m", 50.0);
 }
 inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
+  n.declare_parameter<bool>("motion_model_configured", false);
+  n.declare_parameter<double>("motion_max_horizontal_velocity_mps", .6);
+  n.declare_parameter<double>("motion_max_vertical_velocity_mps", .3);
+  n.declare_parameter<double>("motion_max_horizontal_acceleration_mps2", .5);
+  n.declare_parameter<double>("motion_max_vertical_acceleration_mps2", .3);
+  n.declare_parameter<double>("motion_brake_horizontal_mps2", .4);
+  n.declare_parameter<double>("motion_brake_vertical_mps2", .25);
+  n.declare_parameter<double>("motion_reaction_time_s", .3);
+  n.declare_parameter<double>("motion_tracking_position_tolerance_m", .2);
+  n.declare_parameter<double>("motion_tracking_velocity_tolerance_mps", .25);
+  n.declare_parameter<double>("motion_sigma_multiplier", 2.);
+  n.declare_parameter<double>("motion_map_margin_m", .05);
+  n.declare_parameter<double>("motion_body_radius_m", .35);
+  n.declare_parameter<double>("motion_body_z_min_m", 0.);
+  n.declare_parameter<double>("motion_body_z_max_m", .5);
+  n.declare_parameter<int64_t>("motion_max_check_voxels", 20000);
+  n.declare_parameter<double>("motion_max_velocity_variance_m2ps2", 1.);
+  n.declare_parameter<double>("motion_yaw_rate_radps", .2);
+  n.declare_parameter<double>("motion_yaw_acceleration_radps2", .3);
+  n.declare_parameter<double>("motion_settle_speed_mps", .08);
+  n.declare_parameter<double>("motion_settle_dwell_s", .3);
+  n.declare_parameter<double>("motion_takeoff_bootstrap_height_m", 0.0);
+  n.declare_parameter<double>("motion_takeoff_bootstrap_duration_s", 0.0);
+  n.declare_parameter<double>("motion_input_timeout_s", .3);
+  n.declare_parameter<double>("motion_landing_reserve_s", 10.);
+  n.declare_parameter<double>("offboard_warmup_min_s", 2.);
+  n.declare_parameter<int64_t>("initial_scan_max_moves", 4);
+  n.declare_parameter<double>("initial_scan_move_length_m", .3);
+  n.declare_parameter<double>("initial_scan_move_wait_s", 4.);
+  n.declare_parameter<bool>("explore_topology_enabled", true);
+  n.declare_parameter<double>("topology_core_extra_clearance_m", .5);
+  n.declare_parameter<double>("topology_switch_hysteresis", .1);
+  n.declare_parameter<double>("inspection_sync_tolerance_s", .05);
+  n.declare_parameter<double>("inspection_max_observation_age_s", 2.);
+  n.declare_parameter<int64_t>("inspection_cache_max_bytes", 100663296);
+  n.declare_parameter<double>("inspection_coverage_threshold", .9);
+  n.declare_parameter<double>("inspection_surfel_resolution_m", .1);
+  n.declare_parameter<int64_t>("inspection_max_view_attempts", 3);
+  n.declare_parameter<int64_t>("inspection_min_roi_pixels", 1024);
+  n.declare_parameter<double>("inspection_min_laplacian_variance", 40.);
+  n.declare_parameter<double>("inspection_max_exposure_fraction", .25);
+  n.declare_parameter<double>("inspection_min_depth_support_fraction", .2);
+  n.declare_parameter<double>("inspection_capture_timeout_s", 2.);
+  n.declare_parameter<double>("inspection_min_modeled_area_m2", .02);
+  n.declare_parameter<int64_t>("inspection_max_viewpoints", 32);
+  n.declare_parameter<double>("topology_rebuild_interval_s", 2.);
+  n.declare_parameter<std::string>("yolo_source_image_topic",
+                                   "/powerplant/perception/yolo_source_image");
+  n.declare_parameter<std::string>("rgb_camera_info_topic",
+                                   "/camera/camera_info");
+  n.declare_parameter<std::vector<double>>("rgb_camera_translation_flu",
+                                           {0.12, -0.03, 0.24});
+  n.declare_parameter<std::vector<double>>("rgb_camera_rotation_rpy_rad",
+                                           {0., 0., 0.});
   n.declare_parameter<std::string>("localized_odom_topic",
                                    "/powerplant/localization/odom");
   n.declare_parameter<std::string>("occupancy_grid_topic",
@@ -222,6 +280,8 @@ inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<double>("camera_fy", 430.0);
   n.declare_parameter<double>("camera_cx", 320.0);
   n.declare_parameter<double>("camera_cy", 240.0);
+  n.declare_parameter<std::vector<double>>("camera_rotation_rpy_rad",
+                                           {0., 0., 0.});
   n.declare_parameter<std::vector<double>>("camera_translation_flu",
                                            {0.12, -0.03, 0.24});
   n.declare_parameter<double>("bbox_depth_sample_fraction", 0.45);

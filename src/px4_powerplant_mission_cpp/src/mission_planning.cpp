@@ -1,4 +1,5 @@
 #include "px4_powerplant_mission_cpp/input_validation.hpp"
+#include "px4_powerplant_mission_cpp/mission_motion_proof.hpp"
 #include "px4_powerplant_mission_cpp/offboard.hpp"
 namespace powerplant {
 ExplorationConfig OffboardMissionNode::config() const {
@@ -27,6 +28,96 @@ ExplorationConfig OffboardMissionNode::config() const {
   c.localization_weight = d("explore_localization_weight");
   c.reserve_weight = d("explore_reserve_weight");
   c.camera_translation_flu = v("camera_translation_flu");
+  c.camera_rotation_rpy_rad = v("camera_rotation_rpy_rad");
+  c.cruise_speed_mps =
+      std::min(c.cruise_speed_mps, d("motion_max_horizontal_velocity_mps"));
+  c.return_speed_mps =
+      std::min(c.return_speed_mps, d("motion_max_horizontal_velocity_mps"));
+  const double ev = d("motion_tracking_velocity_tolerance_mps") +
+                    d("motion_sigma_multiplier") *
+                        std::sqrt(d("motion_max_velocity_variance_m2ps2"));
+  c.reserve_s +=
+      d("motion_landing_reserve_s") + d("motion_reaction_time_s") +
+      std::max(
+          {std::sqrt(2.) * (d("motion_max_horizontal_velocity_mps") + ev) /
+               d("motion_brake_horizontal_mps2"),
+           (d("motion_max_vertical_velocity_mps") + ev) /
+               d("motion_brake_vertical_mps2"),
+           d("motion_yaw_rate_radps") / d("motion_yaw_acceleration_radps2")});
+  const auto limits = motion_limits();
+  const double horizon = d("explore_local_path_length_m"),
+               settle = d("motion_settle_dwell_s");
+  c.path_time_s = [limits, horizon,
+                   settle](const Path &path, double initial, double goal,
+                           bool face_path) -> std::optional<double> {
+    if (path.empty() || path.size() > 8192 || !std::isfinite(horizon) ||
+        horizon <= 0 || !std::isfinite(settle) || settle < 0 ||
+        !std::isfinite(initial) || !std::isfinite(goal))
+      return {};
+    try {
+      Path compact;
+      for (const auto &p : path) {
+        if (!p.allFinite())
+          return {};
+        if (!compact.empty() && (p - compact.back()).norm() < 1e-9)
+          continue;
+        if (compact.size() > 1) {
+          const Vec3 a = compact.back() - compact[compact.size() - 2],
+                     b = p - compact.back();
+          if (a.dot(b) > 0 && a.cross(b).norm() < 1e-9 * a.norm() * b.norm())
+            compact.pop_back();
+        }
+        compact.push_back(p);
+      }
+      if (compact.size() == 1) {
+        const double duration = motion_path_time_s(
+            compact, initial, face_path ? initial : goal, limits);
+        return duration > 0 ? duration + settle : 0;
+      }
+      double total = 0, heading = initial, available = horizon;
+      size_t pieces = 0;
+      for (size_t j = 1; j < compact.size(); ++j) {
+        Vec3 begin = compact[j - 1];
+        while ((compact[j] - begin).norm() > 1e-9) {
+          if (++pieces > 8192)
+            return {};
+          // Match local_segment's greedy arc-length horizon. A turn consumes
+          // the remainder of the SAME local horizon; it does not start a new
+          // equal subdivision of the following straight run. Every retained
+          // corner and clipped local endpoint incurs the measured-settle gate.
+          if (available <= 1e-6)
+            available = horizon;
+          const Vec3 delta = compact[j] - begin;
+          const double length = delta.norm();
+          if (!delta.allFinite() || !std::isfinite(length) || length <= 0)
+            return {};
+          const bool finishes_run = length <= available + 1e-9;
+          Vec3 end = compact[j];
+          if (!finishes_run)
+            end = begin + delta * (available / length);
+          const Vec3 travel = end - begin;
+          // Return yaw follows each horizontal leg. A vertical leg preserves
+          // the preceding yaw, as select_target() does, rather than moving a
+          // later turn into an earlier long vertical leg for free.
+          const double next = face_path
+                                  ? (travel.head<2>().norm() > 1e-9
+                                         ? std::atan2(travel.y(), travel.x())
+                                         : heading)
+                                  : goal;
+          total += motion_path_time_s({begin, end}, heading, next, limits) + settle;
+          if (!std::isfinite(total))
+            return {};
+          heading = next;
+          available = finishes_run ? std::max(0., available - length) : horizon;
+          begin = end;
+        }
+      }
+      return total;
+    } catch (...) {
+      return {};
+    }
+  };
+
   c.visited_yaw_masks = visited_views_;
   if (fused_camera_ && fused_camera_->valid()) {
     c.camera_calibrated = fused_camera_->from_camera_info;
@@ -78,17 +169,36 @@ bool OffboardMissionNode::remaining_path_safe() const {
   Path path{*position_};
   for (size_t j = waypoint_; j < waypoints_.size(); ++j)
     path.push_back(waypoints_[j]);
-  return path_is_known_free(planning_map(), path, config());
+  return path_is_known_free(planning_domain_map(), path, config());
 }
-void OffboardMissionNode::set_local_route(const Path &path, double limit) {
+bool OffboardMissionNode::set_local_route(const Path &path, double limit) {
   waypoints_.clear();
-  if (!position_ || path.empty())
-    return;
+  waypoint_ = 0;
+  goal_ids_.clear();
+  if (!position_ || path.empty() || !std::isfinite(limit) || limit <= 0) {
+    explore_wait_ = "MOTION_PLAN_UNAVAILABLE: INVALID_LOCAL_ROUTE";
+    return false;
+  }
   Path actual{*position_};
   for (size_t j = 1; j < path.size(); ++j)
     if ((path[j] - actual.back()).norm() >= 1e-6)
       actual.push_back(path[j]);
   auto local = local_segment(actual, limit);
+  auto checked = build_motion_plan(
+      motion_domain(), motion_state(), local,
+      phase_ == Phase::Explore ? explore_yaw_ : yaw_, motion_limits());
+  if (checked.plan)
+    local = checked.plan->route;
+  else {
+    explore_wait_ = "MOTION_PLAN_UNAVAILABLE: " + checked.reason;
+    return false;
+  }
+  if (local.size() < 2) {
+    explore_wait_ = "MOTION_PLAN_UNAVAILABLE: EMPTY_LOCAL_ROUTE";
+    return false;
+  }
+  route_origin_ = *position_;
+
   if (local.size() > 1)
     waypoints_.assign(local.begin() + 1, local.end());
   reset_setpoint();
@@ -97,12 +207,14 @@ void OffboardMissionNode::set_local_route(const Path &path, double limit) {
   viewpoint_aligned_since_ = 0;
   goal_ids_.clear();
   publish_path();
+  return true;
 }
 void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
                                       const std::vector<int> &ids) {
   if (!position_)
     return;
-  auto map = planning_map();
+  refresh_motion_geometry();
+  auto map = planning_domain_map();
   auto c = config();
   if (phase == Phase::Explore && explore_global_search_)
     c.max_search_radius_m = std::max(
@@ -117,12 +229,41 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
   if (target_ && i("inspection_required_photos") > int(captured_.size()))
     surfaces[key(target_->position, map.resolution)] =
         i("inspection_required_photos") - captured_.size();
+  auto previous_topology = topology_;
+  const bool rebuild_topology =
+      b("explore_topology_enabled") &&
+      (!topology_ || topology_->map_epoch != epoch ||
+       age(topology_built_) >= d("topology_rebuild_interval_s"));
+  auto guide = std::make_shared<TopologyGuide>();
+  guide->snapshot = topology_;
+  guide->retained_region_id = selected_region_id_;
+  guide->configuration.core_extra_clearance_m =
+      d("topology_core_extra_clearance_m");
+  guide->configuration.switch_margin = d("topology_switch_hysteresis");
+  while (!recent_regions_.empty() && age(recent_regions_.front().first) > 30)
+    recent_regions_.pop_front();
+  for (const auto &entry : recent_regions_)
+    ++guide->recent_observations[entry.second];
+  auto inspection_session = inspection_;
+  InspectionCamera rgb_camera;
+  if (!rgb_infos_.empty())
+    rgb_camera = inspection_camera(*rgb_infos_.back(), true);
+  const auto domain = motion_domain();
+  const auto current_state = motion_state();
+  const auto state = motion_
+      ? motion_->planning_state(current_state, uint64_t(mission_started_))
+      : current_state;
+  const auto limits = motion_limits();
+  const double capture_cost =
+      d("inspection_capture_timeout_s") * i("inspection_max_view_attempts");
   planning_ = true;
   planning_phase_ = phase;
   planner_.submit([map = std::move(map), c, start, home, phase, revision,
                    remaining, variance, growth, epoch, camera_revision,
-                   surfaces = std::move(surfaces), goals,
-                   ids](const auto &token) {
+                   surfaces = std::move(surfaces), goals, ids, guide,
+                   rebuild_topology, previous_topology, inspection_session,
+                   rgb_camera, domain, state, limits,
+                   capture_cost](const auto &token) mutable {
     PlanResult out;
     out.phase = phase;
     out.revision = revision;
@@ -136,7 +277,31 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
     out.home = home;
     Cancel cancelled = [token] { return token->load(); };
     try {
+      // Candidate timing also rejects nominal sweep geometry. The executor
+      // separately maintains the reaction/stopping certificate at 50Hz.
+      const auto time_only = c.path_time_s;
+      c.path_time_s = [time_only, domain, state, limits, cancelled,
+                        horizon = c.max_local_path_m](
+                          const Path &route, double initial, double goal,
+                          bool face) -> std::optional<double> {
+        // Facing a return leg can only lengthen its time law. Proving the
+        // fastest no-yaw translation conservatively includes its slower sweep.
+        if (!complete_and_local_motion_are_authorized(
+                domain, state, route, initial, face ? initial : goal,
+                limits, horizon, cancelled))
+          return {};
+        return time_only(route, initial, goal, face);
+      };
       if (phase == Phase::Explore) {
+        if (rebuild_topology)
+          guide->snapshot = build_topology(map, c.clearance_radius_m, epoch,
+                                           revision, guide->configuration,
+                                           previous_topology, cancelled);
+        if (guide->snapshot) {
+          c.topology_guide = guide;
+          out.topology = guide->snapshot;
+        }
+
         auto variance_at = [&](const Key &k) {
           return variance + growth * (center(k, map.resolution) - start).norm();
         };
@@ -148,25 +313,27 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
         out.detail = decision.detail;
         out.frontier_count = decision.frontier_count;
         out.candidate_count = decision.candidate_count;
-      } else if (phase == Phase::Return)
+      } else if (phase == Phase::Return) {
         out.path = plan_known_free_path(map, start, home, c, cancelled);
-      else {
-        Vec3 from = start;
-        for (size_t j = 0; j < goals.size(); ++j) {
-          check_cancel(cancelled);
-          auto path = plan_known_free_path(map, from, goals[j], c, cancelled);
-          if (path.empty())
+        if (!out.path.empty() && !c.path_time_s(out.path, c.current_yaw_rad,
+                                                c.current_yaw_rad, true))
+          out.path.clear();
+      } else {
+        out.inspection_model_revision = inspection_session.model_revision();
+        auto views = inspection_session.candidate_views(map, start, home, c,
+                                                        rgb_camera, cancelled);
+        for (const auto &view : views) {
+          auto go =
+              c.path_time_s(view.path, c.current_yaw_rad, view.yaw_rad, false);
+          auto back =
+              c.path_time_s(view.return_path, view.yaw_rad, view.yaw_rad, true);
+          if (!go || !back)
             continue;
-          for (size_t k = 1; k < path.size(); ++k) {
-            if (!out.path.empty() && (out.path.back() - path[k]).norm() < .05)
-              out.path.back() = path[k];
-            else
-              out.path.push_back(path[k]);
-          }
-          if (out.path.empty())
-            out.path.push_back(goals[j]);
-          out.goal_ids[out.path.size() - 1] = j < ids.size() ? ids[j] : int(j);
-          from = goals[j];
+          // Budget decides what can be executed this flight, not which
+          // reachable modeled patches count toward its coverage obligation.
+          out.inspection_classification_views.push_back(view);
+          if (*go + *back + c.reserve_s + capture_cost <= remaining)
+            out.inspection_views.push_back(view);
         }
       }
     } catch (const PlanningCancelled &) {
@@ -198,6 +365,7 @@ bool OffboardMissionNode::plan_changes_relevant(
       old.viewpoint_dwell_s != c.viewpoint_dwell_s ||
       old.reserve_s != c.reserve_s || old.sensor_range_m != c.sensor_range_m ||
       (old.camera_translation_flu - c.camera_translation_flu).norm() > 1e-9 ||
+      (old.camera_rotation_rpy_rad - c.camera_rotation_rpy_rad).norm() > 1e-9 ||
       old.max_local_path_m != c.max_local_path_m ||
       old.yaw_bins != c.yaw_bins ||
 
@@ -329,6 +497,11 @@ void OffboardMissionNode::prepare_explore() {
   }
   if (!waypoints_.empty() && viewpoint_entered_ && !blocked)
     return;
+  if (!motion_stopped()) {
+    if (waypoints_.empty())
+      stop_motion("replan from verified stop");
+    return;
+  }
   if (planning_) {
     auto result = planner_.take();
     if (!result) {
@@ -344,6 +517,10 @@ void OffboardMissionNode::prepare_explore() {
       explore_plan_stamp_ = 0;
       explore_wait_ = "planning dependencies changed; recomputing viewpoint";
       return;
+    }
+    if (result->topology) {
+      topology_ = result->topology;
+      topology_built_ = ns();
     }
     explore_revision_ = maps_.observation_revision;
     if (!result->frontier) {
@@ -382,16 +559,12 @@ void OffboardMissionNode::prepare_explore() {
       return path;
     };
     auto full = from_current(plan.full_path_xyz);
-    const double old_turn =
-        std::abs(wrap_pi(plan.goal_yaw_rad -
-                         result->configuration.current_yaw_rad)) /
-        c.yaw_rate_radps;
-    const double new_turn =
-        std::abs(wrap_pi(plan.goal_yaw_rad - yaw_)) / c.yaw_rate_radps;
-    const double out =
-        plan.outbound_time_s + new_turn - old_turn +
-        (*position_ - result->source_start).norm() / c.cruise_speed_mps;
-    const double needed = out + plan.return_time_s + c.reserve_s;
+    const auto outbound = c.path_time_s(full, yaw_, plan.goal_yaw_rad, false);
+    const auto returning = c.path_time_s(
+        plan.return_path_xyz, plan.goal_yaw_rad, plan.goal_yaw_rad, true);
+    const double out = outbound ? *outbound + c.viewpoint_dwell_s : inf;
+    const double back = returning ? *returning : inf;
+    const double needed = out + back + c.reserve_s;
     double predicted_variance = xy_variance_;
     const double growth =
         std::max(0.0, d("explore_localization_variance_growth_m2_per_m"));
@@ -412,8 +585,9 @@ void OffboardMissionNode::prepare_explore() {
       return;
     }
     if (plan.full_path_xyz.size() < 2 || plan.return_path_xyz.empty() ||
-        remaining < needed || !path_is_known_free(planning_map(), full, c) ||
-        !path_is_known_free(planning_map(), plan.return_path_xyz, c)) {
+        remaining < needed ||
+        !path_is_known_free(planning_domain_map(), full, c) ||
+        !path_is_known_free(planning_domain_map(), plan.return_path_xyz, c)) {
       ++rejected_plan_results_;
       waypoints_.clear();
       explore_plan_stamp_ = 0;
@@ -425,10 +599,20 @@ void OffboardMissionNode::prepare_explore() {
     }
     if (result->revision != maps_.observation_revision)
       ++reused_plan_results_;
-    explore_goal_ = plan.goal_xyz;
     explore_yaw_ = plan.goal_yaw_rad;
+    if (!set_local_route(full, c.max_local_path_m)) {
+      ++rejected_plan_results_;
+      explore_failure_ = PlanningFailure::Blocked;
+      explore_plan_stamp_ = 0;
+      stop_motion(explore_wait_);
+      auto fields = object();
+      fields["reason"] = explore_wait_;
+      event("explore_motion_unavailable", fields);
+      return;
+    }
+    selected_region_id_ = plan.selected_region_id;
+    explore_goal_ = plan.goal_xyz;
     explore_score_ = plan.score;
-    set_local_route(full, c.max_local_path_m);
     explore_failure_ = PlanningFailure::None;
     explore_global_search_ = false;
     explore_wait_.clear();
@@ -438,7 +622,7 @@ void OffboardMissionNode::prepare_explore() {
     fields["visible_unknown_voxels"] = plan.visible_unknown_count;
     fields["surface_gain"] = plan.surface_gain;
     fields["outbound_time_s"] = out;
-    fields["return_time_s"] = plan.return_time_s;
+    fields["return_time_s"] = back;
     fields["rotation_time_s"] = plan.rotation_time_s;
     fields["observation_time_s"] = plan.observation_time_s;
     fields["return_margin_s"] = remaining - needed;
@@ -464,7 +648,7 @@ void OffboardMissionNode::prepare_explore() {
 void OffboardMissionNode::prepare_return() {
   if (!position_ || !return_goal_)
     return;
-  if (reached(*return_goal_)) {
+  if (reached(*return_goal_) && motion_stopped()) {
     enter_landing(return_reason_.empty() ? "return home complete"
                                          : return_reason_);
     return;
@@ -479,6 +663,11 @@ void OffboardMissionNode::prepare_return() {
     auto p = object();
     p["map_revision"] = integer(maps_.revision);
     event("return_path_blocked", p);
+  }
+  if (!motion_stopped()) {
+    if (waypoints_.empty())
+      stop_motion("return replanning");
+    return;
   }
   if (planning_) {
     auto result = planner_.take();
@@ -495,7 +684,7 @@ void OffboardMissionNode::prepare_return() {
     if (!result->path.empty())
       check.insert(check.end(), result->path.begin() + 1, result->path.end());
     if (result->path.empty() ||
-        !path_is_known_free(planning_map(), check, config())) {
+        !path_is_known_free(planning_domain_map(), check, config())) {
       waypoints_.clear();
       explore_wait_ = "no known-free 3D return path; holding";
       if (result->revision != maps_.observation_revision)
@@ -505,7 +694,15 @@ void OffboardMissionNode::prepare_return() {
       event("return_path_unavailable", p);
       return;
     }
-    set_local_route(result->path, config().max_local_path_m);
+    if (!set_local_route(result->path, config().max_local_path_m)) {
+      ++rejected_plan_results_;
+      return_plan_stamp_ = 0;
+      stop_motion(explore_wait_);
+      auto fields = object();
+      fields["reason"] = explore_wait_;
+      event("return_motion_unavailable", fields);
+      return;
+    }
     explore_wait_.clear();
     return;
   }
@@ -521,11 +718,26 @@ void OffboardMissionNode::prepare_return() {
 void OffboardMissionNode::prepare_target() {
   if (phase_ != Phase::Target)
     return;
+  const auto coverage = inspection_.coverage_report();
+  if (coverage.complete &&
+      inspection_classified_revision_ == inspection_.model_revision() &&
+      coverage.required_area_m2 >= d("inspection_min_modeled_area_m2")) {
+    finish_inspection("qualified coverage threshold reached");
+    return;
+  }
   if (!map_fresh()) {
     waypoints_.clear();
+    stop_motion("inspection map stale");
     return;
   }
   if (photo_pending_)
+    return;
+  if (!waypoints_.empty() && !remaining_path_safe()) {
+    waypoints_.clear();
+    inspection_view_.reset();
+    stop_motion("inspection path changed");
+  }
+  if (!motion_stopped())
     return;
   if (planning_) {
     auto result = planner_.take();
@@ -534,49 +746,75 @@ void OffboardMissionNode::prepare_target() {
     planning_ = false;
     if (result->phase != phase_)
       return;
-    if (result->path.empty()) {
+    if (result->map_epoch != maps_.map_epoch ||
+        result->camera_revision != camera_revision_)
+      return;
+    if (result->inspection_model_revision != inspection_.model_revision()) {
+      target_plan_stamp_ = 0;
+      return;
+    }
+    inspection_.classify_views(result->inspection_classification_views);
+    inspection_classified_revision_ = inspection_.model_revision();
+    if (result->inspection_views.empty()) {
       if (result->revision != maps_.observation_revision) {
         target_plan_stamp_ = 0;
         return;
       }
-      enter_return("no known-free inspection viewpoint");
+      finish_inspection(
+          "no remaining reachable surface view with return reserve");
       return;
     }
-    Path check{*position_};
-    check.insert(check.end(), result->path.begin(), result->path.end());
-    if (!path_is_known_free(planning_map(), check, config())) {
-      waypoints_.clear();
-      target_plan_stamp_ = 0;
+    for (const auto &view : result->inspection_views) {
+      if (inspection_.uncovered_area(view.visible_patch_ids) <= 0 ||
+          (!attempted_inspection_views_.count(view.view_id) &&
+           attempted_inspection_views_.size() >=
+               size_t(i("inspection_max_viewpoints"))))
+        continue;
+      auto current = config();
+      auto go = current.path_time_s(view.path, yaw_, view.yaw_rad, false);
+      auto back = current.path_time_s(view.return_path, view.yaw_rad,
+                                      view.yaw_rad, true);
+      if (!go || !back ||
+          *go + *back + current.reserve_s +
+                  d("inspection_capture_timeout_s") *
+                      i("inspection_max_view_attempts") >
+              remaining_flight())
+        continue;
+      if (!inspection_.view_available(view.view_id) ||
+          !path_is_known_free(planning_domain_map(), view.path, config()) ||
+          !path_is_known_free(planning_domain_map(), view.return_path,
+                              config()))
+        continue;
+      auto checked =
+          build_motion_plan(motion_domain(), motion_state(), view.path,
+                            view.yaw_rad, motion_limits());
+      if (!checked.plan)
+        continue;
+      attempted_inspection_views_.insert(view.view_id);
+      inspection_view_ = view;
+      route_origin_ = *position_;
+      waypoints_.assign(checked.plan->route.begin() + 1,
+                        checked.plan->route.end());
+      if (waypoints_.empty())
+        waypoints_.push_back(view.position);
+      goal_ids_.clear();
+      goal_ids_[waypoints_.size() - 1] = view.view_id;
+      waypoint_ = 0;
+      inspection_aligned_since_ = 0;
+      target_revision_ = maps_.observation_revision;
+      publish_path();
       return;
     }
-    size_t previous = waypoints_.size();
-    reset_setpoint();
-    waypoints_ = std::move(result->path);
-    goal_ids_ = std::move(result->goal_ids);
-    waypoint_ = 0;
-    target_revision_ = maps_.observation_revision;
-    publish_path();
-    auto p = object();
-    p["previous_waypoints"] = integer(previous);
-    p["new_waypoints"] = integer(waypoints_.size());
-    p["remaining_goals"] = integer(goal_ids_.size());
-    event("path_replanned", p);
+    finish_inspection("remaining inspection candidates blocked, exhausted or "
+                      "below return budget");
     return;
   }
-  if (!waypoints_.empty() && target_revision_ == maps_.observation_revision &&
-      remaining_path_safe())
+  if (!waypoints_.empty())
     return;
-  if (!waypoints_.empty() && age(target_plan_stamp_) < d("replan_interval_s"))
+  if (age(target_plan_stamp_) < d("replan_interval_s"))
     return;
-  auto [goals, ids] = remaining_goals();
-  if (goals.empty()) {
-    enter_return("inspection route complete");
-    return;
-  }
-  navigation_goals_ = goals;
-  navigation_ids_ = ids;
   target_plan_stamp_ = ns();
-  submit_plan(Phase::Target, goals, ids);
+  submit_plan(Phase::Target);
 }
 std::pair<Path, std::vector<int>> OffboardMissionNode::remaining_goals() const {
   Path goals;

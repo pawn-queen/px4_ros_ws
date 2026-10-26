@@ -1,5 +1,6 @@
 #include "px4_powerplant_mission_cpp/core.hpp"
 #include "px4_powerplant_mission_cpp/planning_index.hpp"
+#include "px4_powerplant_mission_cpp/topology.hpp"
 #include <queue>
 #include <set>
 
@@ -30,7 +31,8 @@ void validate(const PlanningMap &m, const ExplorationConfig &c) {
       c.max_candidates < 1 || c.max_frontier_targets < 1 || c.yaw_bins < 1 ||
       c.yaw_bins > 64 || !std::isfinite(c.current_yaw_rad) ||
       !std::isfinite(c.yaw_rate_radps) || c.yaw_rate_radps <= 0 ||
-      !c.camera_translation_flu.allFinite())
+      !c.camera_translation_flu.allFinite() ||
+      !c.camera_rotation_rpy_rad.allFinite())
     throw std::invalid_argument("invalid planner limits");
   if (std::ceil(c.clearance_radius_m / m.resolution) > 64)
     throw std::invalid_argument(
@@ -231,8 +233,13 @@ std::vector<View> views(const Vec3 &p, const std::vector<Key> &targets,
       continue;
     View v;
     v.yaw = -pi + bin * 2 * pi / c.yaw_bins;
-    const Quat rotation(Eigen::AngleAxisd(v.yaw, Vec3::UnitZ()));
-    const Vec3 origin = p + rotation * c.camera_translation_flu;
+    const Quat body_rotation(Eigen::AngleAxisd(v.yaw, Vec3::UnitZ()));
+    const auto &mount = c.camera_rotation_rpy_rad;
+    const Quat rotation = body_rotation *
+        Quat(Eigen::AngleAxisd(mount.z(), Vec3::UnitZ()) *
+             Eigen::AngleAxisd(mount.y(), Vec3::UnitY()) *
+             Eigen::AngleAxisd(mount.x(), Vec3::UnitX()));
+    const Vec3 origin = p + body_rotation * c.camera_translation_flu;
     if (!free.count(key(origin, r)))
       continue;
     auto in_view = [&](const Key &k) {
@@ -479,8 +486,13 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
     if (!sk || !hk)
       return fail(PlanningFailure::Blocked,
                   "start/home lacks known-free clearance");
-    auto outward =
-        dijkstra(safe, *sk, m.resolution, c.max_search_radius_m, cancel);
+    const bool use_topology = c.topology_guide &&
+        c.topology_guide->snapshot &&
+        c.topology_guide->snapshot->matches(m, c.clearance_radius_m);
+    // Global guidance must actually reach remote rooms; applying a bonus after
+    // the old local-radius/nearest-target truncation would never expose them.
+    auto outward = dijkstra(safe, *sk, m.resolution,
+                            use_topology ? inf : c.max_search_radius_m, cancel);
     auto homeward = dijkstra(safe, *hk, m.resolution, inf, cancel);
     if (!homeward.distance.count(*sk))
       return fail(PlanningFailure::Blocked,
@@ -488,14 +500,107 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
     Keys unknown;
     for (const auto &[k, neighbors] : frontiers)
       unknown.insert(neighbors.begin(), neighbors.end());
-    std::vector<std::pair<double, Key>> by_distance;
-    for (const auto &k : unknown)
-      by_distance.emplace_back((center(k, m.resolution) - current).norm(), k);
-    std::sort(by_distance.begin(), by_distance.end());
+    std::map<uint64_t, double> region_scores;
+    std::vector<uint64_t> region_order;
+    if (use_topology) {
+      const auto &snapshot = *c.topology_guide->snapshot;
+      std::map<uint64_t, Key> anchors;
+      for (const auto &[k, distance] : outward.distance) {
+        const uint64_t region = snapshot.region_at(k);
+        if (!region || !homeward.distance.count(k)) continue;
+        auto found = anchors.find(region);
+        if (found == anchors.end() ||
+            std::pair(distance, k) <
+                std::pair(outward.distance.at(found->second), found->second))
+          anchors[region] = k;
+      }
+      auto time_to_region = [&](uint64_t region) -> std::optional<double> {
+        auto anchor = anchors.find(region);
+        if (anchor == anchors.end()) return {};
+        const Key k = anchor->second;
+        if (!c.path_time_s)
+          return outward.distance.at(k) / c.cruise_speed_mps;
+        auto points = route_points(route(outward, *sk, k), current,
+                                    center(k, m.resolution), safe, m.resolution);
+        if (points.empty()) return {};
+        if (points.size() == 1) return 0;
+        return c.path_time_s(points, c.current_yaw_rad, c.current_yaw_rad, true);
+      };
+      for (const auto &priority : rank_topology_regions(
+               *c.topology_guide, remaining, time_to_region)) {
+        region_order.push_back(priority.region_id);
+        region_scores[priority.region_id] = priority.score;
+      }
+      // A stale/advisory graph may have no frontier aggregate for a new region.
+      // Keep reachable labels available; guidance never authorizes flight.
+      for (const auto &[region, anchor] : anchors) {
+        (void)anchor;
+        if (!region_scores.count(region)) {
+          region_order.push_back(region);
+          region_scores[region] = 0;
+        }
+      }
+      region_order.push_back(0); // unassociated boundary/new geometry fallback
+    }
+    auto region_for = [&](const Key &k, bool frontier) -> uint64_t {
+      if (!use_topology) return 0;
+      const auto &snapshot = *c.topology_guide->snapshot;
+      return frontier ? snapshot.frontier_region(k) : snapshot.region_at(k);
+    };
+    using Group = std::map<uint64_t, std::vector<std::pair<double, Key>>>;
+    // Round-robin starts with the preferred region but gives remote regions
+    // actual target/candidate slots before spending extra slots locally.
+    auto quota = [&](Group groups, size_t limit,
+                     std::map<uint64_t, size_t> &counts) {
+      for (auto &[region, values] : groups) {
+        (void)region;
+        std::sort(values.begin(), values.end());
+      }
+      std::vector<uint64_t> order = region_order;
+      if (!use_topology) order = {0};
+      std::map<uint64_t, size_t> cursor;
+      Keys selected;
+      std::vector<std::pair<double, Key>> result;
+      while (result.size() < limit) {
+        bool progress = false;
+        for (const uint64_t region : order) {
+          auto group = groups.find(region);
+          if (group == groups.end()) continue;
+          auto &index = cursor[region];
+          const auto &values = group->second;
+          while (index < values.size() && selected.count(values[index].second))
+            ++index;
+          if (index == values.size()) continue;
+          result.push_back(values[index++]);
+          selected.insert(result.back().second);
+          ++counts[region];
+          progress = true;
+          if (result.size() == limit) break;
+        }
+        if (!progress) break;
+      }
+      return result;
+    };
+    Group target_groups;
+    if (use_topology) {
+      std::map<uint64_t, Keys> grouped;
+      for (const auto &[k, neighbors] : frontiers) {
+        const uint64_t region = region_for(k, true);
+        grouped[region].insert(neighbors.begin(), neighbors.end());
+      }
+      for (const auto &[region, keys] : grouped)
+        for (const auto &k : keys)
+          target_groups[region].emplace_back(
+              (center(k, m.resolution) - current).norm(), k);
+    } else
+      for (const auto &k : unknown)
+        target_groups[0].emplace_back((center(k, m.resolution) - current).norm(), k);
     std::vector<Key> targets;
-    for (size_t i = 0;
-         i < std::min(by_distance.size(), size_t(c.max_frontier_targets)); ++i)
-      targets.push_back(by_distance[i].second);
+    for (const auto &[distance, k] : quota(std::move(target_groups),
+             size_t(c.max_frontier_targets), decision.region_target_count)) {
+      (void)distance;
+      targets.push_back(k);
+    }
     const double start_offset = (current - center(*sk, m.resolution)).norm(),
                  home_offset = (home - center(*hk, m.resolution)).norm();
     const int spacing =
@@ -504,8 +609,8 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
       return variance_at ? variance_at(k) : variance;
     };
     size_t low_budget = 0, poor_quality = 0, spatial_eligible = 0,
-           observable_views = 0;
-    std::map<Key, std::pair<double, Key>> buckets;
+           observable_views = 0, timing_rejections = 0;
+    std::map<std::pair<uint64_t, Key>, std::pair<double, Key>> buckets;
     std::vector<Key> reachable;
     for (const auto &[k, d] : outward.distance)
       if (homeward.distance.count(k))
@@ -529,7 +634,8 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
         ++poor_quality;
         continue;
       }
-      if (out + back + c.viewpoint_dwell_s + c.reserve_s > remaining) {
+      if (!c.path_time_s &&
+          out + back + c.viewpoint_dwell_s + c.reserve_s > remaining) {
         ++low_budget;
         continue;
       }
@@ -554,16 +660,20 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
                         c.surface_weight * std::log1p(surface) +
                         c.travel_time_weight * (out + back) +
                         c.localization_weight * std::max(variance, quality);
-      auto found = buckets.find(bucket);
+      const auto regional_bucket = std::pair(region_for(k, false), bucket);
+      auto found = buckets.find(regional_bucket);
       if (found == buckets.end() || priority < found->second.first)
-        buckets[bucket] = {priority, k};
+        buckets[regional_bucket] = {priority, k};
     }
-    std::vector<std::pair<double, Key>> candidates;
+    Group candidate_groups;
     for (const auto &[bucket, entry] : buckets)
-      candidates.push_back(entry);
-    std::sort(candidates.begin(), candidates.end());
-    decision.candidate_count =
-        std::min(candidates.size(), size_t(c.max_candidates));
+      candidate_groups[bucket.first].push_back(entry);
+    auto candidates = quota(std::move(candidate_groups), size_t(c.max_candidates),
+                             decision.region_candidate_count);
+    decision.candidate_count = candidates.size();
+    std::map<uint64_t, size_t> region_ranks;
+    for (size_t j = 0; j < region_order.size(); ++j) region_ranks[region_order[j]] = j;
+    size_t selected_region_rank = std::numeric_limits<size_t>::max();
     KeyMap<double> clearance_cache;
     for (size_t i = 0; i < decision.candidate_count; ++i) {
       check_cancel(cancel);
@@ -604,10 +714,20 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
             std::abs(wrap_pi(view.yaw - c.current_yaw_rad)) / c.yaw_rate_radps;
         const double turn_home =
             return_turn_time(returning, view.yaw, c.yaw_rate_radps);
-        const double out = path_length(full) / c.cruise_speed_mps + turn_out +
-                           c.viewpoint_dwell_s;
-        const double back =
-            path_length(returning) / c.return_speed_mps + turn_home;
+        double out = path_length(full) / c.cruise_speed_mps + turn_out +
+                     c.viewpoint_dwell_s;
+        double back = path_length(returning) / c.return_speed_mps + turn_home;
+        if (c.path_time_s) {
+          const auto go = c.path_time_s(full, c.current_yaw_rad, view.yaw, false);
+          const auto home_time = c.path_time_s(returning, view.yaw, view.yaw, true);
+          if (!go || !home_time || !std::isfinite(*go) ||
+              !std::isfinite(*home_time) || *go < 0 || *home_time < 0) {
+            ++timing_rejections;
+            continue;
+          }
+          out = *go + c.viewpoint_dwell_s;
+          back = *home_time;
+        }
         const double margin = remaining - out - back - c.reserve_s;
         if (margin < 0) {
           ++low_budget;
@@ -619,7 +739,12 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
             c.travel_time_weight * (out + back) + c.clearance_weight * clear -
             c.localization_weight * quality * (1 + out + back) +
             c.reserve_weight * margin / std::max(remaining, 1.0);
-        if (decision.plan && score <= decision.plan->score)
+        const uint64_t region_id = region_for(k, false);
+        const size_t rank = use_topology && region_ranks.count(region_id)
+                                ? region_ranks.at(region_id) : 0;
+        if (decision.plan &&
+            (rank > selected_region_rank ||
+             (rank == selected_region_rank && score <= decision.plan->score)))
           continue;
         auto local = local_segment(full, c.max_local_path_m);
         if (local.size() < 2 || (local.back() - local.front()).norm() < 1e-6 ||
@@ -642,6 +767,12 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
         plan.observation_time_s = c.viewpoint_dwell_s;
         plan.full_path_xyz = full;
         plan.return_path_xyz = returning;
+        plan.selected_region_id = region_id;
+        plan.topology_revision = use_topology
+            ? c.topology_guide->snapshot->observation_revision : 0;
+        plan.region_score = region_scores.count(region_id)
+                                ? region_scores.at(region_id) : 0;
+        selected_region_rank = rank;
         decision.plan = std::move(plan);
       }
     }
@@ -649,10 +780,10 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
       return decision;
     const bool exhaustive =
         outward.distance.size() == homeward.distance.size() &&
-        candidates.size() <= size_t(c.max_candidates) &&
+        buckets.size() <= size_t(c.max_candidates) &&
         targets.size() == unknown.size();
     if (exhaustive && observable_views > 0 && low_budget > 0 &&
-        poor_quality == 0)
+        poor_quality == 0 && timing_rejections == 0)
       return fail(PlanningFailure::ReturnReserveLow,
                   "observable candidates in the reachable component fail the "
                   "time reserve");
@@ -664,7 +795,8 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
                 "frontiers remain; bounded reachability/view policy found no "
                 "plan (budget_rejections=" +
                     std::to_string(low_budget) + ", quality_rejections=" +
-                    std::to_string(poor_quality) + ")");
+                    std::to_string(poor_quality) + ", timing_rejections=" +
+                    std::to_string(timing_rejections) + ")");
   } catch (const PlanningCancelled &) {
     return fail(PlanningFailure::Cancelled, "planning cancelled");
   } catch (const std::invalid_argument &error) {

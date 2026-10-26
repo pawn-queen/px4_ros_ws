@@ -159,7 +159,7 @@ bool PoseHistory::add(const StampedPose &p) {
     *it = p;
   else
     samples.insert(it, p);
-  int64_t cutoff = samples.back().stamp - 2000000000;
+  int64_t cutoff = samples.back().stamp - horizon_ns;
   samples.erase(
       samples.begin(),
       std::lower_bound(samples.begin(), samples.end(), cutoff,

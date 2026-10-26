@@ -13,7 +13,18 @@ checks: [P0 validation](P0_VALIDATION.md).
 Research and staged improvements for indoor mapping, exploration and inspection:
 [research.md](research.md) (Chinese; historical code audit and literature review).
 Implemented P1 algorithms, parameters, changed behavior and limitations:
-[P1 implementation](P1_IMPLEMENTATION.md). P2/P3 remain future work.
+[P1 implementation](P1_IMPLEMENTATION.md).
+P2 motion certificates, region guidance, registered target surfaces and photo
+evidence: [P2 implementation](P2_IMPLEMENTATION.md). P3 remains future work.
+
+The P2 software audit now checks sampling-time reference history, fresh HOLD
+confirmation, shared planner/executor uncertainty budgets, executable local
+prefixes, exact stop/time accounting, region identity and exposure-bound photo
+coverage. The latest build and 316 direct regression cases pass; see
+[P2 validation](P2_VALIDATION.md) for evidence and scope. Flight parameters and
+physical acceptance remain separate from these software checks. Configure
+safety/calibration parameters before the mission and restart while disarmed;
+in-flight hot-swapping of physical safety models is outside this interface.
 
 ## Build with bounded resource use
 
@@ -45,6 +56,11 @@ dependencies are needed.
 - `raycast.hpp`, `depth_sampling.hpp`: positive-length voxel traversal and
   depth/edge-adaptive measured-pixel sampling with a per-frame ray budget.
 - `planning_index.cpp`: immutable incremental frontier and clearance caches.
+- `motion.cpp`, `motion_runtime.cpp`: bounded quintic trajectories, continuous
+  stopping envelopes and an independent 50 Hz position/velocity/acceleration stream.
+- `topology.cpp`: 3D known-safe region/portal decomposition and regional quotas.
+- `inspection.cpp`: registered RGB/depth observations, stable surface patches,
+  quality assessment and transactional photo coverage.
 - `frontier_planner.cpp`: six-neighbor paths, known-free clearance, frontier view
   scoring with calibrated rectangular camera bounds, turn/dwell time and
   known-free return budget; explicit failure reasons.
@@ -79,7 +95,11 @@ and coverage/planning-reason diagnostics to mission_status. The contract suite
 checks retained defaults and the intentional require_image_for_photo=true change.
 See P0_VALIDATION.md for the start conditions and middleware profile, and
 P1_IMPLEMENTATION.md for the new parameters. Actual matched CameraInfo is required
-for normal exploration by default.
+for normal exploration by default. P2 also requires real RGB calibration and
+YOLO source exposures for inspection; hardware motion parameters must be
+configured explicitly. The motion stream now carries finite P/V/A feedforward;
+quality and coverage, rather than the last waypoint or photo count, determine
+the inspection result.
 
 `/powerplant/map/observed_voxels` still uses four float32 fields (`x,y,z,state`).
 Unknown/missing and uncertain (`state=-1`) cells cannot carry a flight path.

@@ -1,7 +1,10 @@
 #include "px4_powerplant_mission_cpp/input_validation.hpp"
 #include "px4_powerplant_mission_cpp/offboard.hpp"
 #include "px4_powerplant_mission_cpp/planning_index.hpp"
+#include "px4_powerplant_mission_cpp/mission_motion_proof.hpp"
 #include <gtest/gtest.h>
+#include <chrono>
+#include <thread>
 
 namespace powerplant {
 class P1RosEnvironment : public ::testing::Environment {
@@ -13,6 +16,7 @@ struct P1MissionTestAccess {
   static void prepare(OffboardMissionNode &n) {
     n.position_ = Vec3(0, 0, 5);
     n.home_ = Vec3::Zero();
+    n.position_sigma_m_=n.velocity_sigma_mps_=.01;
     n.yaw_ = 0;
     n.speed_ = n.yaw_rate_ = 0;
     n.xy_variance_ = n.z_variance_ = n.tilt_variance_ = n.yaw_variance_ = .1;
@@ -123,6 +127,7 @@ struct P1MissionTestAccess {
     sensors(blocked);
     observe_all(blocked);
     blocked.maps_.map.free.erase(key(*blocked.position_, .25));
+    blocked.maps_.map.occupied.insert(key(*blocked.position_, .25));
     blocked.maps_.map.index.reset();
     blocked.update_scan();
     EXPECT_EQ(blocked.phase_, Phase::Scan);
@@ -277,6 +282,250 @@ struct P1MissionTestAccess {
     n.maps_.cloud = std::make_shared<sensor_msgs::msg::PointCloud2>(cloud);
     ASSERT_TRUE(n.maps_.commit("map", n.ns()));
   }
+  template <class Predicate> static bool wait_for(Predicate predicate) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < end) {
+      if (predicate())
+        return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return predicate();
+  }
+  static MotionRuntimeInput held_runtime_input() {
+    MotionRuntimeInput input;
+    input.enabled = true;
+    input.session = 712;
+    input.state.epoch = 17;
+    input.state.healthy = true;
+    input.state.position_enu = Vec3(0, 0, 5);
+    input.state.position_sigma_m = input.state.velocity_sigma_mps = .0102;
+    input.state.position_covariance_enu_m2 =
+        Eigen::Matrix3d::Identity() * (.0102 * .0102);
+    input.state.linear_velocity_covariance_enu_m2ps2 = input.state.position_covariance_enu_m2;
+    input.state.sample_stamp_ns = input.state.receipt_steady_ns = steady_ns();
+    input.domain.epoch = 31;
+    input.domain.column = ConfirmedColumn{Vec3::Zero(), 5, -2, 9, true};
+    input.limits.max_state_age_s = 2;
+    return input;
+  }
+  static void planning_budget_uses_only_compatible_valid_evidence() {
+    MotionRuntime runtime([] { return steady_ns(); }, [](const MotionSample &, int64_t) {});
+    auto input = held_runtime_input();
+    const auto raw = input.state;
+    runtime.input(input);
+    ASSERT_TRUE(wait_for([&] { return runtime.report().valid; }));
+    input.state.position_sigma_m = input.state.velocity_sigma_mps = .0302;
+    input.state.position_covariance_enu_m2 = Eigen::Matrix3d::Identity() * (.0302 * .0302);
+    input.state.linear_velocity_covariance_enu_m2ps2 = input.state.position_covariance_enu_m2;
+    input.state.sample_stamp_ns = input.state.receipt_steady_ns = steady_ns();
+    runtime.input(input);
+    ASSERT_TRUE(wait_for([&] {
+      return runtime.planning_state(raw, input.session).position_sigma_m == .031;
+    }));
+    // The observed peak has already disappeared from the newest measurement.
+    // The planning proof still needs it, with the actual matrices untouched.
+    input.state = raw;
+    input.state.sample_stamp_ns = input.state.receipt_steady_ns = steady_ns();
+    runtime.input(input);
+    const auto budget = runtime.planning_state(input.state, input.session);
+    EXPECT_DOUBLE_EQ(budget.position_sigma_m, .031);
+    EXPECT_DOUBLE_EQ(budget.velocity_sigma_mps, .031);
+    EXPECT_TRUE(motion_position_axis_sigma_m(budget).isApprox(Vec3::Constant(.031)));
+    EXPECT_TRUE(motion_velocity_axis_sigma_mps(budget).isApprox(Vec3::Constant(.031)));
+    EXPECT_TRUE(budget.position_covariance_enu_m2.isApprox(raw.position_covariance_enu_m2));
+    EXPECT_TRUE(budget.linear_velocity_covariance_enu_m2ps2.isApprox(raw.linear_velocity_covariance_enu_m2ps2));
+    EXPECT_TRUE(budget.position_enu.isApprox(raw.position_enu));
+    EXPECT_EQ(budget.sample_stamp_ns, input.state.sample_stamp_ns);
+    EXPECT_DOUBLE_EQ(runtime.planning_state(raw, input.session + 1).position_sigma_m, .011);
+    auto other_epoch = raw;
+    ++other_epoch.epoch;
+    EXPECT_DOUBLE_EQ(runtime.planning_state(other_epoch, input.session).position_sigma_m, .011);
+    auto invalid = raw;
+    invalid.healthy = false;
+    EXPECT_FALSE(runtime.planning_state(invalid, input.session).healthy);
+    EXPECT_DOUBLE_EQ(runtime.planning_state(invalid, input.session).position_sigma_m, .011);
+    invalid = raw;
+    invalid.position_sigma_m = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_TRUE(std::isnan(runtime.planning_state(invalid, input.session).position_sigma_m));
+
+    input.limits.minimum_leg_duration_s = 4.5;
+    runtime.input(input);
+    EXPECT_DOUBLE_EQ(runtime.planning_state(raw, input.session).position_sigma_m, .031);
+    // A safety model change before any prepared plan was adopted must clear
+    // the observed floor too, not only an accepted-plan context.
+    ++input.limits.body_z_max_m;
+    runtime.input(input);
+    EXPECT_DOUBLE_EQ(runtime.planning_state(raw, input.session).position_sigma_m, .011);
+    const auto before = runtime.publications();
+    ASSERT_TRUE(wait_for([&] { return runtime.publications() >= before + 2; }));
+    EXPECT_DOUBLE_EQ(runtime.planning_state(raw, input.session).position_sigma_m, .011);
+    ++input.domain.epoch;
+    runtime.input(input);
+    EXPECT_DOUBLE_EQ(runtime.planning_state(raw, input.session).position_sigma_m, .011);
+    runtime.disable();
+    EXPECT_DOUBLE_EQ(runtime.planning_state(raw, input.session).position_sigma_m, .011);
+  }
+  static void invalid_live_stop_cannot_feed_planning_budget() {
+    MotionRuntime runtime([] { return steady_ns(); }, [](const MotionSample &, int64_t) {});
+    auto input = held_runtime_input();
+    const auto raw = input.state;
+    runtime.input(input);
+    ASSERT_TRUE(wait_for([&] { return runtime.report().valid; }));
+    input.state.position_sigma_m = .8;
+    input.state.velocity_sigma_mps = std::numeric_limits<double>::quiet_NaN();
+    input.state.sample_stamp_ns = input.state.receipt_steady_ns = steady_ns();
+    runtime.input(input);
+    ASSERT_TRUE(wait_for([&] { return runtime.report().mode == MotionMode::Fault; }));
+    EXPECT_DOUBLE_EQ(runtime.planning_state(raw, input.session).position_sigma_m, .011);
+    EXPECT_FALSE(runtime.report().valid);
+  }
+  static void full_shortcut_does_not_authorize_an_unsafe_local_branch() {
+    auto map = std::make_shared<PlanningMap>();
+    map->resolution = .25;
+    map->bounds = Bounds{Key{-8, -8, 12}, Key{24, 24, 28}};
+    for (int x = -8; x <= 24; ++x)
+      for (int y = -8; y <= 24; ++y)
+        for (int z = 12; z <= 28; ++z)
+          map->free.insert({x, y, z});
+    map->occupied.insert({-2, 8, 20});
+    map->free.erase({-2, 8, 20});
+    MotionSafetyDomain domain;
+    domain.map = map;
+    domain.map_fresh = true;
+    domain.epoch = domain.revision = 1;
+    auto state = held_runtime_input().state;
+    state.position_enu = Vec3(.125, .125, 5.125);
+    const Path route{state.position_enu, Vec3(.125, 3.125, 5.125),
+                     Vec3(3.125, 3.125, 5.125)};
+    MotionLimits limits;
+    ASSERT_TRUE(path_is_known_free(*map, route, ExplorationConfig{}));
+    const auto complete = build_motion_plan(domain, state, route, 0, limits);
+    ASSERT_TRUE(complete.plan) << complete.reason;
+    ASSERT_EQ(complete.plan->legs.size(), 1u); // A safe diagonal shortcut.
+    const auto local = local_segment(route, 2);
+    const auto clipped = build_motion_plan(domain, state, local, 0, limits);
+    ASSERT_FALSE(clipped.plan);
+    EXPECT_EQ(clipped.reason, "OCCUPIED_MOTION_ENVELOPE");
+    EXPECT_FALSE(complete_and_local_motion_are_authorized(
+        domain, state, route, 0, 0, limits, 2));
+    map->occupied.clear();
+    map->free.insert({-2, 8, 20});
+    EXPECT_TRUE(complete_and_local_motion_are_authorized(
+        domain, state, route, 0, 0, limits, 2));
+  }
+  static void greedy_motion_time_budget() {
+    OffboardMissionNode n;
+    const auto limits = n.motion_limits();
+    const double settle = n.d("motion_settle_dwell_s");
+    n.set_parameter(rclcpp::Parameter("explore_local_path_length_m", 2.0));
+    auto timing = n.config().path_time_s;
+    const Path straight{Vec3(0, 0, 5), Vec3(3, 0, 5)};
+    const auto first = local_segment(straight, 2);
+    ASSERT_EQ(first.size(), 2u);
+    EXPECT_TRUE(first.back().isApprox(Vec3(2, 0, 5), 1e-12));
+    const double actual = motion_path_time_s(first, 0, 0, limits) + settle +
+        motion_path_time_s({first.back(), straight.back()}, 0, 0, limits) + settle;
+    const auto budget = timing(straight, 0, 0, false);
+    ASSERT_TRUE(budget);
+    EXPECT_NEAR(*budget, actual, 1e-12);
+    const double equal_halves = 2 *
+        (motion_path_time_s({straight.front(), Vec3(1.5, 0, 5)}, 0, 0, limits) + settle);
+    EXPECT_GT(*budget, equal_halves + .2); // The former split undercounted time.
+
+    n.set_parameter(rclcpp::Parameter("explore_local_path_length_m", .6));
+    timing = n.config().path_time_s;
+    const Path turning{Vec3(0, 0, 5), Vec3(.2, 0, 5), Vec3(.2, 1.2, 5)};
+    const auto first_turn = local_segment(turning, .6);
+    ASSERT_EQ(first_turn.size(), 3u);
+    EXPECT_TRUE(first_turn.back().isApprox(Vec3(.2, .4, 5), 1e-12));
+    const std::vector<Path> executed{
+        {turning[0], turning[1]}, {turning[1], first_turn.back()},
+        {first_turn.back(), Vec3(.2, 1, 5)}, {Vec3(.2, 1, 5), turning.back()}};
+    double actual_turn = 0;
+    for (const auto &piece : executed)
+      actual_turn += motion_path_time_s(piece, 0, 0, limits) + settle;
+    const auto turning_budget = timing(turning, 0, 0, false);
+    ASSERT_TRUE(turning_budget);
+    EXPECT_NEAR(*turning_budget, actual_turn, 1e-12);
+  }
+  static void return_yaw_preserved_on_vertical_leg() {
+    OffboardMissionNode n;
+    const auto limits = n.motion_limits();
+    const double settle = n.d("motion_settle_dwell_s");
+    const Path path{Vec3(0, 0, 5), Vec3(.6, 0, 5),
+                    Vec3(.6, 0, 6), Vec3(.6, .01, 6)};
+    const auto timing = n.config().path_time_s;
+    const double actual =
+        motion_path_time_s({path[0], path[1]}, pi / 2, 0, limits) + settle +
+        motion_path_time_s({path[1], path[2]}, 0, 0, limits) + settle +
+        motion_path_time_s({path[2], path[3]}, 0, pi / 2, limits) + settle;
+    const auto budget = timing(path, pi / 2, pi / 2, true);
+    ASSERT_TRUE(budget);
+    EXPECT_NEAR(*budget, actual, 1e-12);
+    // A return's vertical movement does not perform a later turn early and
+    // hide its duration inside a long translation. Explore keeps fixed yaw.
+    const auto exploring = timing(path, pi / 2, pi / 2, false);
+    ASSERT_TRUE(exploring);
+    EXPECT_LT(*exploring, *budget - 1);
+  }
+  static void local_motion_rejection_survives_adoption(bool returning) {
+    OffboardMissionNode n;
+    prepare(n);
+    n.phase_ = returning ? Phase::Return : Phase::Explore;
+    if (returning) {
+      n.home_ = Vec3(2, 0, 0);
+      n.return_goal_ = n.home_air();
+    }
+    n.set_parameter(rclcpp::Parameter("motion_body_radius_m", 2.0));
+    // The geometric .35m corridor is clear. The larger motion/stop envelope
+    // is deliberately not observed-free, so adoption must reject it visibly.
+    const Vec3 goal = returning ? *n.return_goal_ : Vec3(1, 0, 5);
+    PlanResult result;
+    result.phase = n.phase_;
+    result.revision = n.maps_.observation_revision;
+    result.map_epoch = n.maps_.map_epoch;
+    result.camera_revision = n.camera_revision_;
+    result.configuration = n.config();
+    result.bounds = n.planning_map().bounds;
+    result.variance = n.xy_variance_;
+    result.variance_growth = n.d("explore_localization_variance_growth_m2_per_m");
+    result.source_start = *n.position_;
+    result.home = *n.home_air();
+    result.path = {*n.position_, goal};
+    if (!returning) {
+      ExplorationPlan candidate;
+      candidate.goal_xyz = goal;
+      candidate.goal_yaw_rad = 0;
+      candidate.selected_region_id = 77;
+      candidate.full_path_xyz = result.path;
+      candidate.return_path_xyz = {goal, *n.home_air()};
+      result.frontier = candidate;
+    }
+    ASSERT_TRUE(path_is_known_free(n.planning_domain_map(), result.path, n.config()));
+    n.planning_ = true;
+    n.explore_plan_stamp_ = n.return_plan_stamp_ = n.ns();
+    n.planner_.submit([result](const auto &) { return result; });
+    for (int k = 0; k < 200 && n.planning_; ++k) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      if (returning)
+        n.prepare_return();
+      else
+        n.prepare_explore();
+    }
+    ASSERT_FALSE(n.planning_);
+    EXPECT_TRUE(n.waypoints_.empty());
+    EXPECT_EQ(n.explore_wait_.rfind("MOTION_PLAN_UNAVAILABLE:", 0), 0u)
+        << n.explore_wait_;
+    EXPECT_EQ(n.rejected_plan_results_, 1u);
+    if (returning)
+      EXPECT_EQ(n.return_plan_stamp_, 0);
+    else {
+      EXPECT_EQ(n.explore_plan_stamp_, 0);
+      EXPECT_EQ(n.explore_failure_, PlanningFailure::Blocked);
+      EXPECT_EQ(n.selected_region_id_, 0u);
+      EXPECT_FALSE(n.explore_goal_); // Rejected view was never adopted.
+    }
+  }
   static void dependency_regions() {
     OffboardMissionNode n;
     prepare(n);
@@ -315,6 +564,27 @@ struct P1MissionTestAccess {
                     .empty()); // New nearby geometry permits useful revisit.
   }
 };
+TEST(P2MissionPlanning, PlannerReadsTransientStopValidatedBudgetWithoutChangingMeasurements) {
+  P1MissionTestAccess::planning_budget_uses_only_compatible_valid_evidence();
+}
+TEST(P2MissionPlanning, InvalidLiveNavigationCannotRaisePlanningBudget) {
+  P1MissionTestAccess::invalid_live_stop_cannot_feed_planning_budget();
+}
+TEST(P2MissionPlanning, SafeCompleteShortcutDoesNotAuthorizeUnsafeClippedPrefix) {
+  P1MissionTestAccess::full_shortcut_does_not_authorize_an_unsafe_local_branch();
+}
+TEST(P2MissionPlanning, GreedyHorizonAndCornerRemaindersUseActualStopTimeBudget) {
+  P1MissionTestAccess::greedy_motion_time_budget();
+}
+TEST(P2MissionPlanning, ReturnVerticalLegPreservesYawForLaterTurnBudget) {
+  P1MissionTestAccess::return_yaw_preserved_on_vertical_leg();
+}
+TEST(P2MissionPlanning, RejectedExploreMotionRetainsReasonWithoutSelectingView) {
+  P1MissionTestAccess::local_motion_rejection_survives_adoption(false);
+}
+TEST(P2MissionPlanning, RejectedReturnMotionRetainsReasonAndAllowsNewDecision) {
+  P1MissionTestAccess::local_motion_rejection_survives_adoption(true);
+}
 TEST(P1Mission, CoverageAndKnownFreeSegmentReplaceStepCountCompletion) {
   P1MissionTestAccess::scan_completion();
 }

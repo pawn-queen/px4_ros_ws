@@ -392,8 +392,10 @@ private:
         continue;
       try {
         if (auto image = std::get_if<Image::ConstSharedPtr>(&p.msg)) {
-          if (!matching_info(**image) &&
-              history_.samples.back().stamp < p.first + 50000000) {
+          // Topics have no cross-topic delivery order. A newer pose does not
+          // prove that calibration will never arrive; keep the bounded sensor
+          // sample pending until its matching CameraInfo or expiry.
+          if (!matching_info(**image)) {
             waiting.push_back(p);
             continue;
           }
@@ -419,8 +421,10 @@ private:
   size_t insert_depth(const Image &msg, const StampedPose &pose) {
     auto depth = depth_image(msg);
     auto info = matching_info(msg);
-    if (!info && !infos_.empty())
+    if (!info)
       return 0;
+    if (info && !rectified_pinhole_info(*info))
+      throw std::invalid_argument("depth requires full rectified image and matching pinhole CameraInfo");
     double fx = info ? info->k[0] : d("camera_fx"),
            fy = info ? info->k[4] : d("camera_fy");
     double cx = info ? info->k[2] : d("camera_cx"),
@@ -442,10 +446,11 @@ private:
     std::set<int> yaw_sectors;
     constexpr int coverage_sector_count = 72;
     auto translation = v("camera_translation_flu");
+    const auto mounting = mount_rotation(v("camera_rotation_rpy_rad"));
     for (const auto &pixel : selected.pixels) {
       double z = pixel.depth;
       Vec3 body(z, -(pixel.x - cx) * z / fx, -(pixel.y - cy) * z / fy);
-      const Vec3 direction = pose.orientation * body;
+      const Vec3 direction = pose.orientation * mounting * body;
       points.push_back(pose.position + direction + pose.orientation * translation);
       if (direction.head<2>().norm() > 1e-9) {
         const double angle = wrap_pi(std::atan2(direction.y(), direction.x()));
@@ -521,6 +526,7 @@ private:
     Path points, origins;
     int64_t increment = std::nearbyint(msg.time_increment * 1e9);
     auto translation = v("lidar_translation_flu");
+    const auto mounting = mount_rotation(v("lidar_rotation_rpy_rad"));
     for (size_t j = 0; j < msg.ranges.size(); ++j) {
       double r = msg.ranges[j];
       if (!std::isfinite(r) || r < msg.range_min || r > msg.range_max)
@@ -532,7 +538,7 @@ private:
       origins.push_back(pose->position + pose->orientation * translation);
       points.push_back(pose->position +
                        pose->orientation *
-                           (Vec3(r * std::cos(angle), r * std::sin(angle), 0) +
+                           (mounting * Vec3(r * std::cos(angle), r * std::sin(angle), 0) +
                             translation));
     }
     return b("ray_clear_enabled") ? grid_.insert_rays(origins, points)
