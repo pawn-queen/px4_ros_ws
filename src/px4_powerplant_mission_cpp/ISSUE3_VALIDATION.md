@@ -1,6 +1,6 @@
 # Issue #3：实际电厂验证记录
 
-验证日期：2026-10-28。证据根目录为 `log/issue3_powerplant/20261027_204849/`（下文路径相对此目录）。仅实际 `powerplant.sdf` 为正式场景；真值与探针只进入评估，不向在线规划注入地图或航点。**目前不能关闭 Issue #3：实际局部任务飞行尚未通过；传感器已补充实际GPU采样方向的合格独立证据。**
+验证日期：2026-10-28。此前资产/性能证据根目录为 `log/issue3_powerplant/20261027_204849/`；本轮地面保护续改为 `log/issue3_takeoff/20261028_143128/`。仅实际 `powerplant.sdf` 为正式场景；真值与探针只进入评估，不向在线规划注入地图或航点。**目前不能关闭 Issue #3：原1.03mm地面授权问题已用独立支持证书处理，实际主链仍在严格交接前触发跟踪保护；初扫、ROI接入及正常任务返航尚未通过。** 下方原记录的相对路径仍以此前资产/性能目录为根，最新续改单列于文末。
 
 ## 资产与几何：通过
 
@@ -107,3 +107,44 @@
 `screenshots/` 的原生PNG已逐张查看，保留完整顶棚，没有合成或修改图片；`screenshots.json`记录实际相机位置、原文件和SHA。`01_enclosed_exterior.png`、`02_plant_visual.png`、`03_takeoff_area.png`、`04_wall_clearance.png`、`06_collision_overlay_wide.png` 为1501×1032最终画面。早期窄窗口版本另存，避免旧哈希指向覆盖后的文件。
 
 Issue #3 当前保持开启；最终进度已发布至 https://github.com/pawn-queen/px4_ros_ws/issues/3#issuecomment-6458798754 ，资源对照更正记录为 https://github.com/pawn-queen/px4_ros_ws/issues/3#issuecomment-6458536198 。只有传感器、代表性动态接触、起飞域、局部ROI集成及性能均有合格实际证据后才能关闭。
+
+## 地面接触保护续改：软件通过，实际主链未通过
+
+本节证据根目录：`log/issue3_takeoff/20261028_143128/`。代码基线为本地主仓库 `e929b82d` 加未提交修改，具体源文件、实际可执行文件及哈希保存在各运行 `manifest.json`。模型资产仍为 `69f6511d0b11e2189b204ce6b10f12cbef24f119`；原 world、建筑、碰撞与 ROI 未修改，外部仓库仅保留原有 `x500_depth/model.sdf` 未提交修改。本轮没有提交或推送。
+
+### 已实现并通过软件检查
+
+- 起飞内部阶段为 `GROUND_CONTACT / LIFTOFF_TRANSITION / AIRBORNE_STRICT`。支持模型来自实际 floor 与完整机体审计；32个起落架角点、参考点接地偏置+0.013m、地面0±0.01m，补齐原证明0–0.04m间隙。`audit_actual.json` 为静态通过证据，不等于实际飞行通过。
+- 原1.03mm停止包络案例重放：严格证书仍拒绝，合格地面证书可处理，原始盒和协方差未缩小；占据、侧面和顶部仍否决。地面授权绑定 session、定位epoch、支持模型和独立授权版本；过期、错误平面、姿态不确定性、迟到异步结果均有回归。
+- 严格交接在执行器真实停稳/HOLD证据、离地样本与完整严格盒合格后回执revision+1，保留参考历史；任务收到回执前不能初扫。地面过渡继续使用慢时间律和限高、限时；已验证的保守协方差预算减少微上升反复制动，实时状态和停止检查保持原值。
+- 修复解锁回调与odometry到达顺序竞争、落地采样时间/异常未来时间戳、DDS只调整timestamp而不调整armed_time的时钟差异。解锁期限采用实际事件或更早的DISARMED采样界，不从迟到接收时刻续期。
+- 修复测试预算混用：整趟飞行仍为300s，独立 `explore_task_duration_s=60` 从首次EXPLORE开始；共享默认0。严格交接前需要结束则降落，不携地面证书返航。
+
+两包构建通过，最新C++增量再次通过，见 `build_final.log`、`build_clock_final.log`。最终 **473项直接用例，零失败、错误或跳过**，见 `software_test_summary.json` 和复制的 `test_results/`：C++原生200、parity26、跨进程ROS7、资产32、GCS20、传感器23、探针3、支持模型12、验收器23、共享Python127。完整CTest23组通过后，接触分类新增用例单独复测通过；不重复计入包装或重复执行。失败构建、红测试和旧仿真日志均保留。
+
+### 实际电厂运行与新阻断
+
+统一使用真实 `powerplant.sdf`、实际NVIDIA、RGB640×360/深度320×240/雷达360点、5Hz传感器，50Hz控制。启动轨迹仍为2cm、至少4.5s，保持原P/V/A、跟踪、导航、飞控失联与反应预算门限。建图器原2m启动门保持；起飞未通过时融合计数为0符合设计，不是传感器话题缺失。
+
+| 运行 | 范围及结果 |
+|---|---|
+| `sitl_scan_v1` | 原地面授权可用，但测试将探索60s误用整趟预算，起飞中提前返航；该预算错误已修复 |
+| `sitl_scan_v2` | 原PX4控制值；微上升连续完成，正常上升实际响应不足，触发跟踪保护 |
+| `sitl_scan_v3_hover` | 单独将临时SITL悬停初值设为0.74633，仍未通过；不是正式原配置验收 |
+| `sitl_scan_v4_hover_i0`、`sitl_scan_v5_slow_transition` | 临时诊断再将垂向积分置零，真实上升约0.3–0.4m，但水平/合成跟踪误差仍越界；均未取得严格证书，不作正常控制建议 |
+| `sitl_scan_v6_stock_recovery`、`sitl_scan_final_stock` | 恢复原PX4控制值，故障后继续采集实际降落与上锁证据；主链仍失败 |
+| `stock_contact_recovery` | 最终代码与原PX4控制值；`IDLE→START→SAFE_TAKEOFF→FAULT→LANDING→COMPLETE`。真实落地上锁和接触检查通过，主链明确FAIL |
+
+最终 `stock_contact_recovery/report.json` 的 `passed=false`、`exit_reason=mission_fault_recovered_land`，`no_mission_fault=false`。`failure_recovery` 的降落服务接受及landed/disarmed均true，`main_mission_pass_restored=false`。COMPLETE只表示失败后的落地结束，不能替代自主任务完成。
+
+当前阻断为 `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE`，不是原1.03mm未知空间问题，也没有证据表明是本次发布性能阻断。对照 `startup_response_diagnosis.json`、ULog及 `tracking.jsonl`：原控制值的垂直响应不足，临时参数诊断改善离地后仍有合成位置误差越界。理想静态悬停量约0.74633只由当前2.1453kg模型、电机常数和输出映射推算，不是实际响应验收，更不能用于硬件。需要继续标定控制响应及导航噪声对应的可兑现跟踪模型；本轮没有提高跟踪门限、扩大体素授权、删除占据或注入航点取得通过。
+
+### 最终有限阶段的独立证据
+
+`stock_contact_recovery/`：实际Ogre确认 `D3D12 (NVIDIA GeForce RTX 5060 Laptop GPU)`，原始传感器尺寸和5Hz曝光率匹配；81份代码/配置/二进制、101份资源的运行前后哈希一致。50Hz发布实测49.996Hz，p95/p99间隔27.3/60.2ms、最大97.9ms，低于原0.3s反应预算；已执行段最大垂向速度0.103m/s、加速度0.129m/s²。它们仅覆盖已运行的有限起飞与失败恢复阶段。
+
+临时4模型副本覆盖10个实际碰撞体的接触监测，展开后物理模型摘要保持一致。最终记录8640条合格支持接触，真实world步进、起落架接地阳性对照、全部话题与订阅通过；无建筑/围墙/旋翼/机身异常接触，无未分类或溢出。另2条是严格交接前FAULT瞬间仍在地面的起落架支持，单列 `prestrict_failure_support_contact_count`：不授予运动权限，也不能充当阳性对照。旧严格阶段或机身/墙面接触仍拒绝，新增回归覆盖此区别。
+
+**尚未通过：实际严格证书交接、HOVER_SCAN、ROI_ACCESS真实接入、自主视点停稳新增观测、正常RETURN_HOME及整条无故障主链。** YOLO巡检未执行；此前满传感器负载的静态性能结果不等于本轮飞行通过。只有这些约定的主链条件取得实际证据后才评估关闭Issue #3。
+
+本轮进度已通过gh发布至 https://github.com/pawn-queen/px4_ros_ws/issues/3#issuecomment-6469365548 ，Issue保持OPEN；`delivery_manifest.json`记录最终本地文件哈希与未完成边界。

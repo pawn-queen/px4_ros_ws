@@ -62,7 +62,7 @@ def point_bounds(r, z, alpha):
     return low, high, radius
 
 
-def derive(expanded, alpha):
+def derive(expanded, alpha, include_geometry=False):
     sdf = ET.fromstring(expanded)
     model = sdf.find("model")
     if model is None or model.findall("model") or model.findall("include"):
@@ -162,6 +162,9 @@ def derive(expanded, alpha):
                          "min_z_m": min(b[0] for b in bounds),
                          "max_z_m": max(b[1] for b in bounds),
                          "max_horizontal_radius_m": max(b[2] for b in bounds)})
+            if include_geometry:
+                rows[-1]["corners_model_origin_flu"] = corners
+                rows[-1]["box_size_m"] = sizes
     if not rows:
         raise ValueError("no collision geometry found")
     return {"sdf_version": sdf.get("version"), "model": model.get("name"),
@@ -174,6 +177,63 @@ def derive(expanded, alpha):
             "collisions": rows,
             "proof": "Convex box vertices suffice for linear height and convex radial extrema; complete vertical-joint yaw is enclosed analytically by pivot radius plus vertex orbit radius. The whole total-tilt cone uses exact scalar trigonometric extrema, not sampled attitudes.",
             "scope": "All collision boxes in this expanded SDF, all rotor yaw angles; not render mesh certification, hardware geometry, controller response or contact dynamics."}
+
+
+def derive_ground_support(expanded, alpha=.35):
+    """Extract audited supporting geometry in the retained navigation frame.
+
+    The conservative whole-body z_min is deliberately not a contact offset.
+    These fixed landing-gear box vertices support an attitude-dependent minimum
+    height calculation without altering the measured navigation pose.
+    """
+    if not math.isfinite(alpha) or not 0 <= alpha < math.pi/2:
+        raise ValueError("invalid total tilt for ground support")
+    body = derive(expanded, alpha, include_geometry=True)
+    if body["model"] != "x500_depth":
+        raise ValueError("ground-support audit requires x500_depth model origin")
+    names = tuple(f"base_link_collision_{i}" for i in range(1, 5))
+    rails = ("base_link_collision_3", "base_link_collision_4")
+    selected = []
+    for name in names:
+        matches = [r for r in body["collisions"]
+                   if r["link"] == "base_link" and r["collision"] == name]
+        if len(matches) != 1 or matches[0]["full_rotor_yaw_sweep"]:
+            raise ValueError(f"missing, duplicate or moving support collision: {name}")
+        selected.append(matches[0])
+    rail_rows = [r for r in selected if r["collision"] in rails]
+    contact_offset = min(r["zero_tilt_min_z_m"] for r in selected)
+    if any(abs(r["zero_tilt_min_z_m"]-contact_offset) > 1e-9 for r in rail_rows):
+        raise ValueError("audited bottom rails do not define the nominal support plane")
+    non_gear = [r for r in body["collisions"]
+                if not (r["link"] == "base_link" and r["collision"] in names)]
+    if not non_gear or min(r["zero_tilt_min_z_m"] for r in non_gear) <= contact_offset:
+        raise ValueError("a non-gear collision reaches the nominal support plane")
+    # A deliberately conservative all-tilt proof: every non-gear point is
+    # higher than every point of the two bottom rails over the admitted cone.
+    # Thus a supported body cannot first strike its camera, fuselage or rotors.
+    non_gear_lower = min(r["min_z_m"] for r in non_gear)
+    rail_upper = max(r["max_z_m"] for r in rail_rows)
+    if non_gear_lower <= rail_upper:
+        raise ValueError("support-first contact is unproven over the admitted tilt cone")
+    points = [p for r in selected for p in r["corners_model_origin_flu"]]
+    bottom_points = [p for r in rail_rows for p in r["corners_model_origin_flu"]
+                     if abs(p[2]-contact_offset) <= 1e-9]
+    geometry = {"collisions": body["collisions"], "total_tilt_bound_rad": alpha,
+                "reference": body["reference"]}
+    digest = hashlib.sha256(json.dumps(geometry, sort_keys=True, separators=(",", ":"),
+                                     allow_nan=False).encode()).hexdigest()
+    return {"verified": True, "reference": body["reference"],
+            "support_collision_names": list(names), "lowest_rail_collision_names": list(rails),
+            "support_points_flu": points, "lowest_rail_points_flu": bottom_points,
+            "nominal_contact_offset_m": contact_offset,
+            "total_tilt_bound_rad": alpha, "support_geometry_sha256": digest,
+            "non_gear_minimum_height_over_tilt_m": non_gear_lower,
+            "bottom_rails_maximum_height_over_tilt_m": rail_upper,
+            "support_first_height_gap_m": non_gear_lower-rail_upper,
+            "support_point_semantics": "complete fixed landing-gear box vertices; minimum after measured orientation gives contact offset",
+            "body_envelope": {k: body[k] for k in
+                ("collision_count", "minimum_z_m", "maximum_z_m", "maximum_horizontal_radius_m")},
+            "scope": "audited static SITL support geometry; not a new navigation measurement, runtime contact observation or hardware calibration"}
 
 
 def main():

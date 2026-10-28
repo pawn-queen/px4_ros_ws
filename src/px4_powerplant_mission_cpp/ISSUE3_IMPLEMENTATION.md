@@ -71,3 +71,11 @@ python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
 ```
 
 这是明确的降载调试配置，不能代替原始传感器负载性能或完整飞行验收。runner按本次Ogre日志的实际写入进程组/文件描述符确认归属，记录真实GL_RENDERER及哈希；环境变量本身不能证明硬件加速。当前实测已进入SAFE_TAKEOFF并解锁，但停止包络越过确认柱体下界约1.03mm而FAULT，未放宽健康、占据或停止包络门控。见[实际记录](ISSUE3_VALIDATION.md)。
+
+## 2026-10-28：地面接触保护续改
+
+新增 `GROUND_CONTACT → LIFTOFF_TRANSITION → AIRBORNE_STRICT` 内部阶段，顶层状态字符串保持。地面平面、误差与完整起落架点来自独立静态审计，不再由探索膨胀半径推导。支持证书只处理向下接触解释，原始协方差、停止包络和占据否决不变；只有真实停稳、离地与完整严格盒证据合格，50Hz执行器才回执新授权版本，任务层锁存交接。硬件默认关闭专用模式。
+
+补齐采样时间、解锁事件时限、会话/epoch/模型版本、异步结果失效、慢速过渡与失败降落证据。修复测试探索60秒误用整趟飞行预算的问题：共享 `explore_max_duration_s=300` 保留，新增 `explore_task_duration_s` 从首次 EXPLORE 开始；默认0，测试显式60。严格交接前需要结束任务时直接降落，不携带地面证书返航。
+
+原理、参数及坐标关系见 [TAKEOFF_GROUND_SUPPORT.md](TAKEOFF_GROUND_SUPPORT.md)。静态与软件通过不能替代实际飞行；当前实飞仍触发原跟踪保护，后续阶段没有通过，详见 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。

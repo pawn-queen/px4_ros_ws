@@ -3,8 +3,159 @@
 
 namespace powerplant {
 OffboardMissionNode::~OffboardMissionNode() { motion_.reset(); }
+
+std::string OffboardMissionNode::ground_support_parameter_reason(
+    const std::vector<rclcpp::Parameter> &overrides) const {
+  const auto value = [&](const std::string &name) {
+    for (auto it = overrides.rbegin(); it != overrides.rend(); ++it)
+      if (it->get_name() == name)
+        return *it;
+    return get_parameter(name);
+  };
+  try {
+    const auto domain = value("px4_timestamp_domain").as_string();
+    if (domain != "system" && domain != "ros")
+      return "PX4 timestamp domain must be system or ros";
+    const bool enabled = value("takeoff_ground_support_enabled").as_bool();
+    for (const char *name :
+         {"takeoff_ground_plane_z_m", "takeoff_ground_plane_error_m",
+          "takeoff_ground_land_max_age_s",
+          "takeoff_ground_transition_timeout_s", "takeoff_ground_max_rise_m"})
+      if (!std::isfinite(value(name).as_double()))
+        return std::string("nonfinite ground support parameter: ") + name;
+    if (value("takeoff_ground_plane_error_m").as_double() < 0 ||
+        value("takeoff_ground_land_max_age_s").as_double() <= 0 ||
+        value("takeoff_ground_transition_timeout_s").as_double() <= 0 ||
+        value("takeoff_ground_max_rise_m").as_double() <= 0)
+      return "ground support error must be nonnegative and limits positive";
+    const auto points =
+        value("takeoff_ground_contact_points_flu").as_double_array();
+    if (points.size() % 3 || points.size() > 3 * 64 ||
+        (enabled && points.size() < 9))
+      return "verified support needs three to 64 complete FLU contact points";
+    for (double coordinate : points)
+      if (!std::isfinite(coordinate))
+        return "ground support contact coordinates must be finite";
+    if (enabled && value("takeoff_ground_model_revision").as_int() <= 0)
+      return "ground support model has no verified revision";
+    if (enabled && (value("takeoff_ground_transition_timeout_s").as_double() <=
+                        d("motion_takeoff_bootstrap_duration_s") +
+                            d("motion_reaction_time_s") ||
+                    value("takeoff_ground_max_rise_m").as_double() <=
+                        d("motion_takeoff_bootstrap_height_m")))
+      return "ground transition bounds do not contain the configured bootstrap";
+  } catch (const std::exception &e) {
+    return std::string("invalid ground support parameter type: ") + e.what();
+  }
+  return {};
+}
+
+void OffboardMissionNode::reset_takeoff_safety() {
+  takeoff_safety_stage_ = b("takeoff_ground_support_enabled")
+                              ? MotionCertificateKind::GroundContact
+                              : MotionCertificateKind::AirborneStrict;
+  ++takeoff_authorization_revision_;
+  takeoff_ground_reference_ = home_.value_or(position_.value_or(Vec3::Zero()));
+  takeoff_ground_yaw_ = yaw_;
+  takeoff_armed_ros_ = takeoff_armed_steady_ = 0;
+  takeoff_strict_requested_ = false;
+  takeoff_handoff_reason_.clear();
+}
+
+double OffboardMissionNode::takeoff_ground_remaining_s() const {
+  if (!b("takeoff_ground_support_enabled") ||
+      takeoff_safety_stage_ == MotionCertificateKind::AirborneStrict)
+    return 0;
+  const double elapsed =
+      takeoff_armed_steady_ > 0
+          ? std::max((steady_ns() - takeoff_armed_steady_) * 1e-9,
+                     (ns() - takeoff_armed_ros_) * 1e-9)
+          : 0.;
+  return std::max(0., d("takeoff_ground_transition_timeout_s") - elapsed);
+}
+
+bool OffboardMissionNode::takeoff_strict_ready() const {
+  if (!b("takeoff_ground_support_enabled"))
+    return true;
+  if (!motion_ ||
+      takeoff_safety_stage_ != MotionCertificateKind::AirborneStrict)
+    return false;
+  const auto report = motion_->report();
+  return report.valid &&
+         report.certificate_kind == MotionCertificateKind::AirborneStrict &&
+         report.authorization_revision == takeoff_authorization_revision_;
+}
+
+void OffboardMissionNode::update_takeoff_safety() {
+  if (phase_ != Phase::Takeoff || !home_ ||
+      !b("takeoff_ground_support_enabled"))
+    return;
+  if (vehicle_.arming_state == Status::ARMING_STATE_ARMED &&
+      takeoff_safety_stage_ == MotionCertificateKind::GroundContact) {
+    if (!takeoff_armed_steady_) {
+      if (s("px4_timestamp_domain") != "ros") {
+        fault("arming has no fresh disarmed clock bound; explicit restart "
+              "required");
+        return;
+      }
+      // Bind the deadline to PX4's actual arming event, not a delayed receipt.
+      if (!vehicle_.armed_time || vehicle_.armed_time > vehicle_.timestamp ||
+          vehicle_.timestamp >
+              uint64_t(std::numeric_limits<int64_t>::max() / 1000)) {
+        fault("invalid PX4 arming timestamp; explicit restart required");
+        return;
+      }
+      const int64_t now = ns(), monotonic = steady_ns();
+      long double sample = static_cast<long double>(vehicle_.timestamp) * 1000;
+      if (sample <= 0 || sample > std::numeric_limits<int64_t>::max() ||
+          !stamp_reason(int64_t(sample), now, d("max_vehicle_status_age_s"),
+                        d("max_future_stamp_skew_s"))
+               .empty()) {
+        fault("invalid PX4 arming clock domain; explicit restart required");
+        return;
+      }
+      const long double measured_elapsed =
+          std::max<long double>(0, now - sample) +
+          static_cast<long double>(vehicle_.timestamp - vehicle_.armed_time) *
+              1000;
+      if (measured_elapsed >= std::min(now, monotonic)) {
+        fault("PX4 arming time precedes the local clock epoch; explicit "
+              "restart required");
+        return;
+      }
+      const int64_t elapsed = int64_t(measured_elapsed);
+      takeoff_armed_ros_ = now - elapsed;
+      takeoff_armed_steady_ = monotonic - elapsed;
+    }
+    takeoff_safety_stage_ = MotionCertificateKind::LiftoffTransition;
+    ++takeoff_authorization_revision_;
+    event("takeoff_liftoff_transition");
+  }
+  if (takeoff_safety_stage_ == MotionCertificateKind::AirborneStrict)
+    return;
+  const auto report = motion_ ? motion_->report() : MotionUpdate{};
+  if (takeoff_strict_requested_ && report.valid &&
+      report.certificate_kind == MotionCertificateKind::AirborneStrict &&
+      report.authorization_revision == takeoff_authorization_revision_ + 1) {
+    takeoff_safety_stage_ = MotionCertificateKind::AirborneStrict;
+    takeoff_authorization_revision_ = report.authorization_revision;
+    takeoff_strict_requested_ = false;
+    takeoff_handoff_reason_.clear();
+    event("takeoff_strict_handoff_complete");
+    return;
+  }
+  takeoff_handoff_reason_ = report.strict_promotion_reason;
+  takeoff_strict_requested_ = takeoff_armed_steady_ > 0 &&
+                              report.strict_promotion_ready && motion_stopped();
+  if (takeoff_armed_steady_ && takeoff_ground_remaining_s() <= 0 &&
+      motion_health_reason().empty())
+    enter_landing("ground support transition timeout before strict handoff");
+}
+
 void OffboardMissionNode::reset_p2_epoch() {
   takeoff_bootstrap_active_ = false;
+  land_sample_ = 0;
+  reset_takeoff_safety();
   position_covariance_enu_.setConstant(
       std::numeric_limits<double>::quiet_NaN());
   position_sigma_m_ = inf;
@@ -67,6 +218,11 @@ MotionLimits OffboardMissionNode::motion_limits() const {
   l.max_state_age_s = std::min(d("max_localization_age_s"),d("motion_input_timeout_s"));
   l.max_control_gap_s = d("motion_reaction_time_s");
   l.max_check_voxels = size_t(std::max(1, i("motion_max_check_voxels")));
+  if (phase_ == Phase::Takeoff &&
+      (takeoff_bootstrap_active_ ||
+       (b("takeoff_ground_support_enabled") &&
+        takeoff_safety_stage_ == MotionCertificateKind::LiftoffTransition)))
+    l.minimum_leg_duration_s = d("motion_takeoff_bootstrap_duration_s");
   return l;
 }
 MotionState OffboardMissionNode::motion_state() const {
@@ -82,6 +238,13 @@ MotionState OffboardMissionNode::motion_state() const {
   state.sample_stamp_ns = odom_sample_;
   state.receipt_steady_ns = odom_steady_;
   state.epoch = localization_epoch_;
+  state.orientation_enu = orientation_;
+  state.tilt_sigma_rad = std::isfinite(tilt_variance_)
+      ? std::sqrt(std::max(0., tilt_variance_)) : inf;
+  state.landed = land_.landed;
+  state.land_sample_stamp_ns = land_sample_;
+  state.land_receipt_steady_ns = land_steady_;
+  state.armed = vehicle_.arming_state == Status::ARMING_STATE_ARMED;
   state.healthy = motion_health_reason().empty() &&
                   tilt(orientation_) <= d("initial_scan_max_tilt_rad") &&
                   std::isfinite(velocity_sigma_mps_) &&
@@ -117,13 +280,37 @@ MotionSafetyDomain OffboardMissionNode::motion_domain() const {
     ConfirmedColumn c;
     c.center_enu = *home_;
     c.radius_m = d("takeoff_region_radius_m");
-    // The lower contact band matches P0's takeoff reference tolerance;
-    // commanded flight goals never descend into it. NAV_LAND owns final ground
-    // contact.
-    c.z_min_m = home_->z() - d("explore_clearance_radius_m");
+    // Surveyed AIR is above the calibrated support plane. Contact below this
+    // bound has its own typed evidence; exploration clearance is not a floor.
+    c.z_min_m = b("takeoff_ground_support_enabled")
+        ? d("takeoff_ground_plane_z_m") + d("takeoff_ground_plane_error_m")
+        : home_->z() - d("explore_clearance_radius_m");
     c.z_max_m = home_->z() + d("takeoff_region_height_m");
     c.confirmed = true;
     out.column = c;
+  }
+  out.authorization_revision = takeoff_authorization_revision_;
+  out.certificate_kind = takeoff_safety_stage_;
+  if (home_ && b("takeoff_ground_support_enabled") &&
+      takeoff_safety_stage_ != MotionCertificateKind::AirborneStrict) {
+    GroundSupportAuthorization support;
+    support.surveyed = ground_support_parameter_reason().empty();
+    support.survey_revision = uint64_t(get_parameter("takeoff_ground_model_revision").as_int());
+    support.session = uint64_t(mission_started_);
+    support.localization_epoch = localization_epoch_;
+    support.plane_z_m = d("takeoff_ground_plane_z_m");
+    support.plane_error_m = d("takeoff_ground_plane_error_m");
+    const auto points = get_parameter("takeoff_ground_contact_points_flu").as_double_array();
+    for (size_t j = 0; j + 2 < points.size(); j += 3)
+      support.contact_points_flu.emplace_back(points[j], points[j + 1], points[j + 2]);
+    support.ground_reference_enu = takeoff_ground_reference_;
+    support.max_land_age_s = d("takeoff_ground_land_max_age_s");
+    support.max_transition_s = d("takeoff_ground_transition_timeout_s");
+    support.max_rise_m = d("takeoff_ground_max_rise_m");
+    support.armed_ros_ns = takeoff_armed_ros_;
+    support.armed_steady_ns = takeoff_armed_steady_;
+    support.tilt_bound_rad = d("initial_scan_max_tilt_rad");
+    out.ground_support = std::move(support);
   }
   return out;
 }
@@ -160,6 +347,7 @@ void OffboardMissionNode::update_motion_input(const Vec3 &target,
               vehicle_.nav_state == Status::NAVIGATION_STATE_OFFBOARD;
   in.generation = motion_generation_;
   in.reason = reason;
+  in.request_strict_promotion = takeoff_strict_requested_;
   motion_->input(std::move(in));
 }
 void OffboardMissionNode::stop_motion(const std::string &reason) {
@@ -192,8 +380,10 @@ PlanningMap OffboardMissionNode::planning_domain_map() const {
   if (!home_ || !b("takeoff_region_confirmed"))
     return m;
   const double r = d("takeoff_region_radius_m"), res = m.resolution;
-  const Vec3 lo = *home_ + Vec3(-r, -r, 0),
-             hi = *home_ + Vec3(r, r, d("takeoff_region_height_m"));
+  Vec3 lo = *home_ + Vec3(-r, -r, 0);
+  const Vec3 hi = *home_ + Vec3(r, r, d("takeoff_region_height_m"));
+  if (b("takeoff_ground_support_enabled"))
+    lo.z() = d("takeoff_ground_plane_z_m") + d("takeoff_ground_plane_error_m");
   const auto min = key(lo, res), max = key(hi, res);
   const int64_t count = int64_t(max[0] - min[0] + 1) * (max[1] - min[1] + 1) *
                         (max[2] - min[2] + 1);

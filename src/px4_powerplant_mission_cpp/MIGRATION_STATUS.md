@@ -214,3 +214,7 @@ PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
 ```
 
 ROS 接口测试默认使用隔离的 `ROS_DOMAIN_ID=173`，一次仅启动一个原生节点，注入合成传感器/PX4 消息，不连接真实飞行器。
+
+### 2026-10-28 地面保护续改
+
+C++ 已接入三类起飞授权、实际支持模型、采样时间与解锁时间域检查、执行器严格交接、保守过渡及独立探索时限。SITL runner 支持临时接触监测、源/二进制/资源哈希、参数回读和故障后落地证据。原1.03mm案例在严格模式仍拒绝，合格地面证书可处理。实际主链仍因原跟踪保护未通过，Issue #3保持开启；尚未验收初扫、ROI接入或正常任务返航。详见 TAKEOFF_GROUND_SUPPORT.md 与 ISSUE3_VALIDATION.md。

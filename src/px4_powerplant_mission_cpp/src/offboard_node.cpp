@@ -13,7 +13,15 @@ void append_motion_evidence(JsonValue &fields, const MotionUpdate &motion) {
   fields["motion_stopped"] = motion.stopped;
   fields["motion_stop_time_s"] = motion.stop_time_s;
   fields["motion_stop_certificate_valid"] =
-      motion.valid && motion.stopping_envelope.has_value();
+      motion.valid && motion.stopping_envelope.has_value() &&
+      motion.certificate_kind == MotionCertificateKind::AirborneStrict;
+  fields["motion_contact_certificate_valid"] = motion.valid &&
+      (motion.certificate_kind == MotionCertificateKind::GroundContact ||
+       motion.certificate_kind == MotionCertificateKind::LiftoffTransition);
+  fields["motion_certificate_kind"] = motion_certificate_kind_name(motion.certificate_kind);
+  fields["motion_authorization_revision"] = integer(motion.authorization_revision);
+  fields["takeoff_strict_promotion_ready"] = motion.strict_promotion_ready;
+  fields["takeoff_strict_promotion_reason"] = motion.strict_promotion_reason;
   fields["motion_stop_margin_lower_bound_m"] =
       motion.stop_margin_lower_bound_m
           ? JsonValue(*motion.stop_margin_lower_bound_m) : JsonValue();
@@ -54,6 +62,9 @@ const char *phase_name(Phase p) {
 OffboardMissionNode::OffboardMissionNode()
     : ParameterNode("powerplant_offboard_mission") {
   declare_offboard_mission_parameters(*this);
+  const auto ground_error = ground_support_parameter_reason();
+  if (!ground_error.empty())
+    throw std::invalid_argument(ground_error);
   (void)task_roi();
   for (const auto *name : {"roi_access_max_duration_s", "roi_access_margin_m",
                            "roi_access_revisit_penalty_s"})
@@ -66,6 +77,23 @@ OffboardMissionNode::OffboardMissionNode()
       [this](const std::vector<rclcpp::Parameter> &parameters) {
         rcl_interfaces::msg::SetParametersResult result;
         result.successful = true;
+        bool ground_changed = false;
+        for (const auto &parameter : parameters)
+          if (parameter.get_name().rfind("takeoff_ground_", 0) == 0 ||
+              parameter.get_name() == "px4_timestamp_domain") {
+            ground_changed = true;
+            if (active_ || phase_ != Phase::Idle) {
+              result.successful = false;
+              result.reason = "ground support calibration may change only in IDLE";
+              return result;
+            }
+          }
+        if (ground_changed) {
+          result.reason = ground_support_parameter_reason(parameters);
+          result.successful = result.reason.empty();
+          if (!result.successful)
+            return result;
+        }
         const std::set<std::string> names = {
             "explore_min_x_m", "explore_max_x_m", "explore_min_y_m",
             "explore_max_y_m", "explore_min_z_m", "explore_max_z_m",
@@ -396,20 +424,72 @@ void OffboardMissionNode::on_vehicle(const Status &m) {
     if (m.arming_state != Status::ARMING_STATE_DISARMED)
       return;
     land_ = px4_msgs::msg::VehicleLandDetected{};
-    land_stamp_ = land_steady_ = 0;
+    land_stamp_ = land_steady_ = land_sample_ = 0;
   } else if (m.timestamp == vehicle_.timestamp)
     return;
+  if (phase_ == Phase::Takeoff && b("takeoff_ground_support_enabled") &&
+      s("px4_timestamp_domain") == "system" &&
+      takeoff_safety_stage_ == MotionCertificateKind::GroundContact &&
+      m.arming_state == Status::ARMING_STATE_ARMED &&
+      vehicle_.arming_state == Status::ARMING_STATE_DISARMED &&
+      vehicle_fresh() &&
+      vehicle_.timestamp <=
+          uint64_t(std::numeric_limits<int64_t>::max() / 1000)) {
+    // DDS adjusts timestamp but leaves armed_time in the PX4 boot domain.
+    // The last fresh DISARMED sample bounds arming from below in both clocks.
+    const auto now = ns(), monotonic = steady_ns();
+    long double previous_sample =
+        static_cast<long double>(vehicle_.timestamp) * 1000;
+    if (get_parameter("use_sim_time").as_bool())
+      previous_sample += static_cast<long double>(now) -
+                         rclcpp::Clock(RCL_SYSTEM_TIME).now().nanoseconds();
+    if (previous_sample > 0 &&
+        previous_sample <= std::numeric_limits<int64_t>::max() &&
+        stamp_reason(int64_t(previous_sample), now,
+                     d("max_vehicle_status_age_s"),
+                     d("max_future_stamp_skew_s"))
+            .empty()) {
+      const int64_t elapsed =
+          int64_t(std::max<long double>(0, now - previous_sample)) +
+          int64_t(d("max_future_stamp_skew_s") * 1e9);
+      takeoff_armed_ros_ = now - elapsed;
+      takeoff_armed_steady_ = monotonic - elapsed;
+    }
+  }
   vehicle_ = m;
   vehicle_stamp_ = ns();
   vehicle_steady_ = steady_ns();
+  // Bind the arming edge before odometry can publish an armed motion snapshot.
+  // The 10 Hz task timer may run after the next 50 Hz motion update.
+  update_takeoff_safety();
 }
 void OffboardMissionNode::on_land_detected(
     const px4_msgs::msg::VehicleLandDetected &m) {
-  if (!m.timestamp || m.timestamp <= land_.timestamp)
+  if (!m.timestamp || m.timestamp <= land_.timestamp ||
+      m.timestamp > uint64_t(std::numeric_limits<int64_t>::max() / 1000))
     return;
+  const int64_t received = ns();
+  long double converted = static_cast<long double>(m.timestamp) * 1000;
+  if (s("px4_timestamp_domain") == "system" &&
+      get_parameter("use_sim_time").as_bool())
+    converted += static_cast<long double>(received) -
+                 rclcpp::Clock(RCL_SYSTEM_TIME).now().nanoseconds();
+  if (converted <= 0 || converted > std::numeric_limits<int64_t>::max())
+    return;
+  const int64_t sample = static_cast<int64_t>(converted);
+  const double ingress_age = b("takeoff_ground_support_enabled")
+                                 ? std::max(d("max_land_detection_age_s"),
+                                            d("takeoff_ground_land_max_age_s"))
+                                 : d("max_land_detection_age_s");
+  if (!stamp_reason(sample, received, ingress_age, d("max_future_stamp_skew_s"))
+           .empty())
+    return;
+  // Invalid future/old packets must not advance the ordering baseline or
+  // receipt.
   land_ = m;
-  land_stamp_ = ns();
+  land_stamp_ = received;
   land_steady_ = steady_ns();
+  land_sample_ = sample;
 }
 void OffboardMissionNode::on_grid(const nav_msgs::msg::OccupancyGrid &m) {
   const int64_t sample = stamp_ns(m.header.stamp);
@@ -625,6 +705,11 @@ void OffboardMissionNode::on_detection(const std::string &text) {
   }
 }
 void OffboardMissionNode::event(const std::string &name, JsonValue fields) {
+  fields["event_stamp_ns"] = integer(ns());
+  fields["localization_epoch"] = integer(localization_epoch_);
+  fields["task_roi_revision"] = integer(task_roi_revision_);
+  fields["takeoff_safety_stage"] = b("takeoff_ground_support_enabled")
+      ? motion_certificate_kind_name(takeoff_safety_stage_) : "STRICT_ONLY";
   fields["event"] = name;
   fields["phase"] = phase_name(phase_);
   fields["selected_region_id"] = integer(selected_region_id_);
@@ -651,7 +736,16 @@ void OffboardMissionNode::publish_path() {
 void OffboardMissionNode::publish_status(std::optional<Vec3> target,
                                          std::optional<Vec3> setpoint_value) {
   auto p = object();
+  p["mission_status_stamp_ns"] = integer(ns());
   p["phase"] = phase_name(phase_);
+  p["takeoff_safety_stage"] = b("takeoff_ground_support_enabled")
+      ? motion_certificate_kind_name(takeoff_safety_stage_) : "STRICT_ONLY";
+  p["takeoff_ground_support_enabled"] = b("takeoff_ground_support_enabled");
+  p["takeoff_ground_model_revision"] = integer(get_parameter("takeoff_ground_model_revision").as_int());
+  p["takeoff_ground_remaining_s"] = takeoff_ground_remaining_s();
+  p["takeoff_strict_handoff_reason"] = takeoff_handoff_reason_;
+  p["takeoff_ground_evidence_age_s"] = land_sample_ > 0
+      ? number((ns() - land_sample_) * 1e-9, 4) : JsonValue();
   const auto roi = task_roi();
   p["task_roi_minimum_enu_m"] = vector_json(roi.minimum);
   p["task_roi_maximum_enu_m"] = vector_json(roi.maximum);
@@ -802,6 +896,9 @@ void OffboardMissionNode::publish_status(std::optional<Vec3> target,
     }
   }
   p["remaining_flight_s"] = number(remaining_flight(), 1);
+  p["explore_task_duration_s"] = d("explore_task_duration_s");
+  p["explore_task_elapsed_s"] = explore_task_started_ > 0
+      ? std::max(age(explore_task_started_), (steady_ns()-explore_task_steady_)*1e-9) : 0.;
   if (phase_ == Phase::Explore || phase_ == Phase::Return) {
     p["explore_wait_reason"] = explore_wait_;
     p["explore_failure_code"] = planning_failure_name(explore_failure_);

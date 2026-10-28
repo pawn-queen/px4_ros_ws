@@ -129,11 +129,70 @@ bool column_contains(const ConfirmedColumn &column, const Vec3 &minimum,
   return x * x + y * y <= column.radius_m * column.radius_m + 1e-12;
 }
 
+bool contact_kind(MotionCertificateKind kind) {
+  return kind == MotionCertificateKind::GroundContact ||
+         kind == MotionCertificateKind::LiftoffTransition;
+}
+
+bool ground_geometry_valid(const MotionSafetyDomain &domain) {
+  if (!contact_kind(domain.certificate_kind) || !domain.ground_support ||
+      !domain.column || !domain.column->confirmed || !domain.authorization_revision)
+    return false;
+  const auto &g = *domain.ground_support;
+  if (!g.surveyed || !g.survey_revision || !g.session || g.localization_epoch <= 0 ||
+      !std::isfinite(g.plane_z_m) || !std::isfinite(g.plane_error_m) || g.plane_error_m < 0 ||
+      !g.ground_reference_enu.allFinite() || g.contact_points_flu.empty() ||
+      g.contact_points_flu.size() > 64 || !std::isfinite(g.max_land_age_s) || g.max_land_age_s <= 0 ||
+      !std::isfinite(g.max_transition_s) || g.max_transition_s <= 0 ||
+      !std::isfinite(g.max_rise_m) || g.max_rise_m <= 0 ||
+      !std::isfinite(g.tilt_bound_rad) || g.tilt_bound_rad <= 0 || g.tilt_bound_rad >= pi/2 ||
+      domain.column->z_min_m > g.plane_z_m + g.plane_error_m + 1e-9)
+    return false;
+  return std::all_of(g.contact_points_flu.begin(), g.contact_points_flu.end(),
+                     [](const Vec3 &point) { return point.allFinite(); });
+}
+
+bool ground_contains(const MotionSafetyDomain &domain, const Vec3 &minimum,
+                     const Vec3 &maximum) {
+  if (!ground_geometry_valid(domain))
+    return false;
+  const double support_top = domain.ground_support->plane_z_m +
+                             domain.ground_support->plane_error_m;
+  Vec3 air_min = minimum, air_max = maximum;
+  air_min.z() = std::max(air_min.z(), support_top);
+  air_max.z() = std::max(air_max.z(), support_top);
+  // Only the downward contact part changes geometric interpretation. This is
+  // not a smaller raw box and never supplies observed-free map evidence.
+  return column_contains(*domain.column, air_min, air_max);
+}
+
+bool plan_authorization_matches(const MotionSafetyDomain &domain,
+                                 const MotionPlan &plan) {
+  return domain.certificate_kind == plan.certificate_kind &&
+         domain.authorization_revision == plan.authorization_revision &&
+         (domain.ground_support ? domain.ground_support->session : 0) == plan.authorization_session &&
+         (domain.ground_support ? domain.ground_support->survey_revision : 0) == plan.survey_revision;
+}
+
 bool authorize_box(const MotionSafetyDomain &domain, const MotionSafetyBox &box,
                    size_t &budget, std::string &reason) {
+  if (domain.certificate_kind == MotionCertificateKind::None) {
+    reason = "MOTION_AUTHORIZATION_REGRESSION";
+    return false;
+  }
+  if (contact_kind(domain.certificate_kind) && !ground_geometry_valid(domain)) {
+    reason = "GROUND_SUPPORT_MODEL_INVALID";
+    return false;
+  }
   if (!box.minimum.allFinite() || !box.maximum.allFinite() ||
       (box.minimum.array() > box.maximum.array()).any()) {
     reason = "INVALID_MOTION_ENVELOPE";
+    return false;
+  }
+  if (contact_kind(domain.certificate_kind) &&
+      box.maximum.z() < domain.ground_support->plane_z_m -
+                             domain.ground_support->plane_error_m) {
+    reason = "GROUND_SUPPORT_ENVELOPE_BELOW_SURFACE";
     return false;
   }
   const double resolution = domain.map ? domain.map->resolution : .25;
@@ -181,7 +240,9 @@ bool authorize_box(const MotionSafetyDomain &domain, const MotionSafetyBox &box,
             domain.map->free.count(k);
         const bool surveyed =
             domain.column && column_contains(*domain.column, minimum, maximum);
-        if (!observed && !surveyed) {
+        const bool supported = contact_kind(domain.certificate_kind) &&
+                               ground_contains(domain, minimum, maximum);
+        if (!observed && !surveyed && !supported) {
           reason = !domain.map_fresh && domain.map
                        ? "MOTION_MAP_STALE"
                        : "UNKNOWN_MOTION_ENVELOPE";
@@ -374,6 +435,131 @@ Vec3 motion_velocity_axis_sigma_mps(const MotionState &state) {
   return bounds;
 }
 
+const char *motion_certificate_kind_name(MotionCertificateKind kind) {
+  switch (kind) {
+  case MotionCertificateKind::GroundContact: return "GROUND_CONTACT";
+  case MotionCertificateKind::LiftoffTransition: return "LIFTOFF_TRANSITION";
+  case MotionCertificateKind::AirborneStrict: return "AIRBORNE_STRICT";
+  case MotionCertificateKind::None: return "NONE";
+  }
+  return "NONE";
+}
+
+bool same_ground_support(const std::optional<GroundSupportAuthorization> &a,
+                         const std::optional<GroundSupportAuthorization> &b) {
+  if (bool(a) != bool(b)) return false;
+  if (!a) return true;
+  if (a->surveyed != b->surveyed || a->survey_revision != b->survey_revision ||
+      a->session != b->session || a->localization_epoch != b->localization_epoch ||
+      a->plane_z_m != b->plane_z_m || a->plane_error_m != b->plane_error_m ||
+      (a->ground_reference_enu-b->ground_reference_enu).squaredNorm() != 0 ||
+      a->max_land_age_s != b->max_land_age_s || a->max_transition_s != b->max_transition_s ||
+      a->max_rise_m != b->max_rise_m || a->tilt_bound_rad != b->tilt_bound_rad ||
+      a->armed_ros_ns != b->armed_ros_ns || a->armed_steady_ns != b->armed_steady_ns ||
+      a->contact_points_flu.size() != b->contact_points_flu.size()) return false;
+  for (size_t i=0; i<a->contact_points_flu.size(); ++i)
+    if ((a->contact_points_flu[i]-b->contact_points_flu[i]).squaredNorm() != 0) return false;
+  return true;
+}
+
+bool same_motion_authorization(const MotionSafetyDomain &a,
+                                const MotionSafetyDomain &b) {
+  return a.certificate_kind == b.certificate_kind &&
+         a.authorization_revision == b.authorization_revision &&
+         same_ground_support(a.ground_support,b.ground_support);
+}
+
+std::string motion_ground_support_reason(
+    const MotionSafetyDomain &domain, const MotionState &state,
+    const MotionLimits &limits, int64_t ros_now, int64_t steady_now) {
+  if (domain.certificate_kind == MotionCertificateKind::AirborneStrict) return {};
+  if (domain.certificate_kind == MotionCertificateKind::None)
+    return "MOTION_AUTHORIZATION_REGRESSION";
+  if (!ground_geometry_valid(domain)) return "GROUND_SUPPORT_MODEL_INVALID";
+  const auto &g=*domain.ground_support;
+  if (g.localization_epoch != state.epoch) return "MOTION_COORDINATE_EPOCH_CHANGED";
+  if (!state.orientation_enu.coeffs().allFinite() ||
+      std::abs(state.orientation_enu.norm()-1.) > 1e-6 ||
+      !std::isfinite(state.tilt_sigma_rad) || state.tilt_sigma_rad<0)
+    return "GROUND_SUPPORT_ATTITUDE_INVALID";
+  const double tilt=std::acos(std::clamp(
+      (state.orientation_enu*Vec3::UnitZ()).z(),-1.,1.));
+  // The audited body/contact sweep bounds the complete admitted attitude,
+  // including uncertainty, rather than only the quaternion's mean tilt.
+  if (tilt+limits.sigma_multiplier*state.tilt_sigma_rad>g.tilt_bound_rad)
+    return "GROUND_SUPPORT_TILT_EXCEEDED";
+  if (state.land_sample_stamp_ns<=0 || state.land_receipt_steady_ns<=0 ||
+      ros_now<state.land_sample_stamp_ns || steady_now<state.land_receipt_steady_ns ||
+      (ros_now-state.land_sample_stamp_ns)*1e-9>g.max_land_age_s ||
+      (steady_now-state.land_receipt_steady_ns)*1e-9>g.max_land_age_s)
+    return "GROUND_SUPPORT_LANDING_EVIDENCE_STALE";
+  if (g.armed_ros_ns || g.armed_steady_ns || state.armed ||
+      domain.certificate_kind==MotionCertificateKind::LiftoffTransition) {
+    if (g.armed_ros_ns<=0 || g.armed_steady_ns<=0)
+      return "GROUND_SUPPORT_ARMING_EVIDENCE_MISSING";
+    if (ros_now<g.armed_ros_ns || steady_now<g.armed_steady_ns)
+      return "MOTION_CLOCK_REVERSED";
+    if ((ros_now-g.armed_ros_ns)*1e-9>g.max_transition_s ||
+        (steady_now-g.armed_steady_ns)*1e-9>g.max_transition_s)
+      return "GROUND_SUPPORT_TRANSITION_TIMEOUT";
+  }
+  if (state.position_enu.z()-g.ground_reference_enu.z()>g.max_rise_m+1e-9)
+    return "GROUND_SUPPORT_MAX_RISE_EXCEEDED";
+  double lowest=inf, lever=0;
+  for (const auto &p:g.contact_points_flu) {
+    lowest=std::min(lowest,(state.orientation_enu*p).z());
+    lever=std::max(lever,p.norm());
+  }
+  const double allowance=g.plane_error_m+limits.tracking_position_tolerance_m+
+      limits.sigma_multiplier*(motion_position_axis_sigma_m(state).z()+
+                               lever*state.tilt_sigma_rad);
+  if (domain.certificate_kind==MotionCertificateKind::GroundContact) {
+    if (!state.landed) return "GROUND_SUPPORT_NOT_LANDED";
+    if (state.velocity_enu.norm()>limits.stop_speed_mps ||
+        std::abs(state.yaw_rate_radps)>limits.stop_yaw_rate_radps)
+      return "GROUND_SUPPORT_GROUNDED_MOVING";
+    if (std::abs(state.position_enu.z()+lowest-g.plane_z_m)>allowance)
+      return "GROUND_SUPPORT_CONTACT_HEIGHT_INCONSISTENT";
+  } else if (state.position_enu.z()<g.ground_reference_enu.z()-allowance)
+    return "GROUND_SUPPORT_REFERENCE_BELOW_CONTACT";
+  return {};
+}
+
+namespace {
+MotionSafetyDomain strict_domain(const MotionSafetyDomain &domain) {
+  auto strict=domain;
+  if (domain.ground_support && strict.column)
+    strict.column->z_min_m=std::max(strict.column->z_min_m,
+        domain.ground_support->plane_z_m+domain.ground_support->plane_error_m);
+  strict.certificate_kind=MotionCertificateKind::AirborneStrict;
+  strict.authorization_revision=domain.authorization_revision+1;
+  strict.ground_support.reset();
+  return strict;
+}
+
+std::string strict_handoff_reason(const MotionState &state,
+                                  const MotionSafetyDomain &domain,
+                                  const MotionLimits &limits,
+                                  const MotionSafetyBox &box,
+                                  int64_t ros_now,int64_t steady_now) {
+  if (domain.certificate_kind!=MotionCertificateKind::LiftoffTransition ||
+      !domain.ground_support || !state.armed)
+    return "STRICT_HANDOFF_REQUIRES_LIFTOFF_STAGE";
+  auto error=motion_ground_support_reason(domain,state,limits,ros_now,steady_now);
+  if (!error.empty()) return error;
+  if (state.landed) return "STRICT_HANDOFF_WAITING_FOR_AIRBORNE_EVIDENCE";
+  const auto &g=*domain.ground_support;
+  if (box.minimum.z()<=g.plane_z_m+g.plane_error_m+limits.map_margin_m)
+    return "STRICT_HANDOFF_STOP_ENVELOPE_NEAR_GROUND";
+  if (domain.authorization_revision==std::numeric_limits<uint64_t>::max())
+    return "MOTION_AUTHORIZATION_REVISION_EXHAUSTED";
+  auto strict=strict_domain(domain);
+  if (!motion_box_is_authorized(strict,box,limits.max_check_voxels,&error))
+    return "STRICT_HANDOFF_UNAUTHORIZED: "+error;
+  return {};
+}
+} // namespace
+
 const char *motion_mode_name(MotionMode mode) {
   switch (mode) {
   case MotionMode::Hold: return "HOLD";
@@ -426,7 +612,7 @@ bool motion_box_is_authorized(const MotionSafetyDomain &domain,
 std::optional<double> motion_stop_margin_lower_bound(
     const MotionSafetyDomain &domain, const MotionSafetyBox &box,
     size_t maximum_voxels) {
-  if (!domain.map || !domain.map_fresh || maximum_voxels == 0 ||
+  if (contact_kind(domain.certificate_kind) || !domain.map || !domain.map_fresh || maximum_voxels == 0 ||
       !box.minimum.allFinite() || !box.maximum.allFinite() ||
       (box.minimum.array() > box.maximum.array()).any())
     return {};
@@ -484,7 +670,8 @@ bool motion_plan_is_authorized(const MotionSafetyDomain &domain,
     validate_limits(limits);
     check_cancel(cancel);
     if (!std::isfinite(elapsed_s) || elapsed_s < 0 ||
-        plan.epoch != domain.epoch || plan.safety_boxes.empty())
+        plan.epoch != domain.epoch || !plan_authorization_matches(domain,plan) ||
+        plan.safety_boxes.empty())
       error = "INVALID_MOTION_VALIDATION";
     else
       okay = validate_plan_boxes(domain, plan, limits, error,
@@ -511,6 +698,14 @@ MotionPlanResult build_motion_plan(const MotionSafetyDomain &domain,
       out.reason = "INVALID_MOTION_STATE";
       return out;
     }
+    if (contact_kind(domain.certificate_kind)) {
+      const auto &g=domain.ground_support;
+      if (!g) { out.reason="GROUND_SUPPORT_MODEL_INVALID"; return out; }
+      const auto error=motion_ground_support_reason(domain,state,limits,
+          std::max({state.sample_stamp_ns,state.land_sample_stamp_ns,g->armed_ros_ns}),
+          std::max({state.receipt_steady_ns,state.land_receipt_steady_ns,g->armed_steady_ns}));
+      if (!error.empty()) { out.reason=error; return out; }
+    }
     if (state.velocity_enu.norm() > limits.stop_speed_mps ||
         std::abs(state.yaw_rate_radps) > limits.stop_yaw_rate_radps) {
       out.reason = "MOTION_REQUIRES_STOPPED_START";
@@ -523,12 +718,35 @@ MotionPlanResult build_motion_plan(const MotionSafetyDomain &domain,
     Path requested{state.position_enu};
     requested.insert(requested.end(), path.begin(), path.end());
     requested = merge_collinear(requested);
+    if (contact_kind(domain.certificate_kind)) {
+      const auto &g=*domain.ground_support;
+      if (std::abs(wrap_pi(goal_yaw-state.yaw_rad))>1e-6) {
+        out.reason="GROUND_SUPPORT_YAW_MOTION_FORBIDDEN"; return out;
+      }
+      for (size_t index=0;index<requested.size();++index) {
+        if (requested[index].z()-g.ground_reference_enu.z()>g.max_rise_m+1e-9) {
+          out.reason="GROUND_SUPPORT_MAX_RISE_EXCEEDED"; return out;
+        }
+        if (index && ((requested[index]-requested[index-1]).head<2>().norm()>1e-6 ||
+                      requested[index].z()<requested[index-1].z()-1e-8)) {
+          out.reason="GROUND_SUPPORT_REQUIRES_VERTICAL_ASCENT"; return out;
+        }
+        if (index && (requested[index]-requested[index-1]).norm()>1e-8 &&
+            (domain.certificate_kind!=MotionCertificateKind::LiftoffTransition || !state.armed)) {
+          out.reason="GROUND_SUPPORT_REQUIRES_LIFTOFF_STAGE"; return out;
+        }
+      }
+    }
     MotionPlan plan;
     plan.route.push_back(state.position_enu);
     plan.goal_yaw_rad = wrap_pi(goal_yaw);
     plan.epoch = domain.epoch;
     plan.state_epoch = state.epoch;
     plan.revision = domain.revision;
+    plan.certificate_kind=domain.certificate_kind;
+    plan.authorization_revision=domain.authorization_revision;
+    plan.authorization_session=domain.ground_support ? domain.ground_support->session : 0;
+    plan.survey_revision=domain.ground_support ? domain.ground_support->survey_revision : 0;
     double heading = state.yaw_rad;
     if (requested.size() == 1)
       requested.push_back(requested.front());
@@ -562,6 +780,13 @@ MotionPlanResult build_motion_plan(const MotionSafetyDomain &domain,
         return out;
     }
     out.reason.clear();
+    if (contact_kind(domain.certificate_kind) && domain.ground_support->armed_ros_ns>0 &&
+        (std::max(state.sample_stamp_ns,domain.ground_support->armed_ros_ns)-
+         domain.ground_support->armed_ros_ns)*1e-9+plan.duration_s>
+            domain.ground_support->max_transition_s) {
+      out.reason="GROUND_SUPPORT_PLAN_EXCEEDS_TRANSITION_TIME";
+      return out;
+    }
     out.plan = std::move(plan);
   } catch (const PlanningCancelled &) {
     out.reason = "MOTION_CANCELLED";
@@ -644,6 +869,9 @@ void MotionExecutor::reset(const MotionState &state, const MotionLimits &limits)
   domain_epoch_ = 0;
   checked_revision_ = -1;
   checked_map_fresh_ = false;
+  certificate_kind_=MotionCertificateKind::AirborneStrict;
+  authorization_revision_=authorization_session_=0;
+  authorization_ground_.reset();
   validation_pending_since_ = 0;
   ++plan_serial_;
   brake_duration_s_ = 0;
@@ -670,7 +898,8 @@ bool MotionExecutor::accept(const MotionPlan &plan, const MotionState &state,
     if (last_ros_ns_ && ros_now < last_ros_ns_)
       return reject("MOTION_CLOCK_REVERSED");
     if (!finite_state(state) || plan.legs.empty() || plan.route.empty() ||
-        plan.epoch != domain.epoch || plan.state_epoch != state.epoch ||
+        plan.epoch != domain.epoch || !plan_authorization_matches(domain,plan) ||
+        plan.state_epoch != state.epoch ||
         (initialized_ && (state.epoch != epoch_ ||
                           (domain_epoch_ && domain.epoch != domain_epoch_))))
       return reject("MOTION_START_STATE_OR_EPOCH_CHANGED");
@@ -679,6 +908,8 @@ bool MotionExecutor::accept(const MotionPlan &plan, const MotionState &state,
         (ros_now - state.sample_stamp_ns) * 1e-9 > limits.max_state_age_s ||
         (steady_now - state.receipt_steady_ns) * 1e-9 > limits.max_state_age_s)
       return reject("MOTION_NAVIGATION_STALE");
+    const auto support_error=motion_ground_support_reason(domain,state,limits,ros_now,steady_now);
+    if (!support_error.empty()) return reject(support_error);
     if (mode_ == MotionMode::Tracking || mode_ == MotionMode::Braking ||
         (hold_started_ros_ns_ && state.sample_stamp_ns < hold_started_ros_ns_) ||
         state.velocity_enu.norm() > limits.stop_speed_mps ||
@@ -726,6 +957,10 @@ bool MotionExecutor::accept(const MotionPlan &plan, const MotionState &state,
     domain_epoch_ = domain.epoch;
     checked_revision_ = domain.revision;
     checked_map_fresh_ = domain.map_fresh;
+    certificate_kind_=domain.certificate_kind;
+    authorization_revision_=domain.authorization_revision;
+    authorization_session_=domain.ground_support ? domain.ground_support->session : 0;
+    authorization_ground_=domain.ground_support;
     validation_pending_since_ = 0;
     ++plan_serial_;
     sample_ = sample_motion_plan(*plan_, 0);
@@ -761,6 +996,7 @@ bool MotionExecutor::accept_prepared(
     if (!finite_state(state) || !finite_state(certified_state) ||
         plan.legs.empty() || plan.route.empty() ||
         plan.epoch != domain.epoch || plan.revision != domain.revision ||
+        !plan_authorization_matches(domain,plan) ||
         plan.state_epoch != state.epoch || certified_state.epoch != state.epoch ||
         state.epoch != epoch_ ||
         (domain_epoch_ && domain.epoch != domain_epoch_) ||
@@ -776,6 +1012,8 @@ bool MotionExecutor::accept_prepared(
         (ros_now - state.sample_stamp_ns) * 1e-9 > limits.max_state_age_s ||
         (steady_now - state.receipt_steady_ns) * 1e-9 > limits.max_state_age_s)
       return reject("MOTION_NAVIGATION_STALE");
+    const auto support_error=motion_ground_support_reason(domain,state,limits,ros_now,steady_now);
+    if (!support_error.empty()) return reject(support_error);
     if (!initialized_ || mode_ != MotionMode::Hold ||
         (hold_started_ros_ns_ && state.sample_stamp_ns < hold_started_ros_ns_) ||
         state.velocity_enu.norm() > limits.stop_speed_mps ||
@@ -818,6 +1056,10 @@ bool MotionExecutor::accept_prepared(
     domain_epoch_ = domain.epoch;
     checked_revision_ = domain.revision;
     checked_map_fresh_ = domain.map_fresh;
+    certificate_kind_=domain.certificate_kind;
+    authorization_revision_=domain.authorization_revision;
+    authorization_session_=domain.ground_support ? domain.ground_support->session : 0;
+    authorization_ground_=domain.ground_support;
     validation_pending_since_ = 0;
     ++plan_serial_;
     sample_ = sample_motion_plan(*plan_, 0);
@@ -854,7 +1096,7 @@ void MotionExecutor::complete_validation(uint64_t serial,
                                          const std::string &reason) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (mode_ != MotionMode::Tracking || !plan_ || serial != plan_serial_ ||
-      domain.epoch != domain_epoch_)
+      domain.epoch != domain_epoch_ || !plan_authorization_matches(domain,*plan_))
     return;
   if (authorized) {
     checked_revision_ = domain.revision;
@@ -910,7 +1152,37 @@ MotionUpdate MotionExecutor::result(const MotionState &state) const {
   out.stop_time_s = brake_duration_s_;
   out.stopping_envelope = stopping_envelope_;
   out.stop_margin_lower_bound_m = stop_margin_lower_bound_m_;
+  out.certificate_kind=out.valid ? certificate_kind_ : MotionCertificateKind::None;
+  out.authorization_revision=authorization_revision_;
   return out;
+}
+
+bool MotionExecutor::promote_to_strict(
+    const MotionState &state,const MotionSafetyDomain &domain,
+    int64_t ros_now,int64_t steady_now,std::string *reason) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto reject=[&](const std::string &error){if(reason)*reason=error;return false;};
+  const auto current=result(state);
+  if (!current.valid || !current.stopped || mode_!=MotionMode::Hold ||
+      !stopping_envelope_)
+    return reject("STRICT_HANDOFF_REQUIRES_SETTLED_HOLD");
+  if (domain.authorization_revision!=authorization_revision_ ||
+      domain.certificate_kind!=certificate_kind_)
+    return reject("STRICT_HANDOFF_AUTHORIZATION_CHANGED");
+  const auto error=strict_handoff_reason(state,domain,limits_,*stopping_envelope_,ros_now,steady_now);
+  if (!error.empty()) return reject(error);
+  const auto strict=strict_domain(domain);
+  certificate_kind_=strict.certificate_kind;
+  authorization_revision_=strict.authorization_revision;
+  authorization_ground_.reset();
+  checked_revision_=domain.revision;
+  checked_map_fresh_=domain.map_fresh;
+  validation_pending_since_=0;
+  ++plan_serial_;
+  // No reset, reanchoring, or reference-history edit: the stationary P/V/A
+  // sample remains exactly the one previously issued to PX4.
+  if(reason)reason->clear();
+  return true;
 }
 
 MotionUpdate MotionExecutor::update(const MotionState &state,
@@ -959,6 +1231,32 @@ MotionUpdate MotionExecutor::update(const MotionState &state,
   }
   last_ros_ns_ = ros_now;
   last_steady_ns_ = steady_now;
+  if (authorized_ && authorization_revision_==domain.authorization_revision &&
+      !same_ground_support(authorization_ground_,domain.ground_support)) {
+    fail("MOTION_AUTHORIZATION_MODEL_CHANGED_WITHOUT_REVISION");
+    return result(state);
+  }
+  if (authorized_ && authorization_session_ && domain.ground_support &&
+      authorization_session_!=domain.ground_support->session) {
+    fail("MOTION_AUTHORIZATION_SESSION_CHANGED");
+    return result(state);
+  }
+  if (authorized_ &&
+      (certificate_kind_!=domain.certificate_kind ||
+       authorization_revision_!=domain.authorization_revision)) {
+    if (authorization_revision_>domain.authorization_revision ||
+        (certificate_kind_==MotionCertificateKind::AirborneStrict &&
+         domain.certificate_kind!=MotionCertificateKind::AirborneStrict)) {
+      fail("MOTION_AUTHORIZATION_REGRESSION");
+      return result(state);
+    }
+    if (mode_!=MotionMode::Hold ||
+        (contact_kind(certificate_kind_) &&
+         domain.certificate_kind==MotionCertificateKind::AirborneStrict)) {
+      fail("MOTION_AUTHORIZATION_CHANGED_WITHOUT_HOLD_HANDOFF");
+      return result(state);
+    }
+  }
   if (mode_ == MotionMode::Tracking && plan_)
     sample_ = sample_motion_plan(*plan_, std::max(0.0, (ros_now - start_ros_ns_) * 1e-9));
   else if (mode_ == MotionMode::Braking)
@@ -972,6 +1270,25 @@ MotionUpdate MotionExecutor::update(const MotionState &state,
     // Measured velocity/uncertainty still enter the checks below unchanged.
     sample_.position_enu = state.position_enu;
     sample_.yaw_rad = state.yaw_rad;
+  }
+  const auto support_error=motion_ground_support_reason(domain,state,limits_,ros_now,steady_now);
+  if (!support_error.empty()) {
+    if (!authorized_ && mode_==MotionMode::Hold && support_error.rfind("GROUND_SUPPORT_",0)==0) {
+      reason_=support_error;
+      return result(state);
+    }
+    fail(support_error);
+    return result(state);
+  }
+  if (contact_kind(domain.certificate_kind)) {
+    const auto &g=*domain.ground_support;
+    if (sample_.position_enu.z()-g.ground_reference_enu.z()>g.max_rise_m+1e-9) {
+      fail("GROUND_SUPPORT_MAX_RISE_EXCEEDED");return result(state);
+    }
+    if (sample_.velocity_enu.z()<-1e-8 ||
+        sample_.velocity_enu.head<2>().norm()>1e-7 || std::abs(sample_.yaw_rate_radps)>1e-7) {
+      fail("GROUND_SUPPORT_REQUIRES_VERTICAL_ASCENT");return result(state);
+    }
   }
   prune_reference_history(ros_now);
   std::optional<MotionSample> sampled_reference;
@@ -1037,6 +1354,10 @@ MotionUpdate MotionExecutor::update(const MotionState &state,
   if (!authorized_ && mode_ == MotionMode::Hold)
     reason_.clear();
   authorized_ = true;
+  certificate_kind_=domain.certificate_kind;
+  authorization_revision_=domain.authorization_revision;
+  authorization_session_=domain.ground_support ? domain.ground_support->session : 0;
+  authorization_ground_=domain.ground_support;
   if (reference_history_.empty()) {
     begin_reference_phase(MotionMode::Hold, state.sample_stamp_ns, sample_);
     hold_started_ros_ns_ = state.sample_stamp_ns;
@@ -1134,7 +1455,14 @@ MotionUpdate MotionExecutor::update(const MotionState &state,
     hold_started_ros_ns_ = ros_now;
     begin_reference_phase(MotionMode::Hold, ros_now, sample_);
   }
-  return result(state);
+  auto out=result(state);
+  if (out.valid && contact_kind(domain.certificate_kind)) {
+    out.strict_promotion_reason=out.stopped && stopping_envelope_
+        ? strict_handoff_reason(state,domain,limits_,*stopping_envelope_,ros_now,steady_now)
+        : "STRICT_HANDOFF_REQUIRES_SETTLED_HOLD";
+    out.strict_promotion_ready=out.strict_promotion_reason.empty();
+  }
+  return out;
 }
 
 } // namespace powerplant

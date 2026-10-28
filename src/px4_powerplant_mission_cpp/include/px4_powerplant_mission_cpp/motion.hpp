@@ -8,6 +8,8 @@ namespace powerplant {
 
 enum class MotionMode { Hold, Tracking, Braking, Fault };
 const char *motion_mode_name(MotionMode);
+enum class MotionCertificateKind { None, GroundContact, LiftoffTransition, AirborneStrict };
+const char *motion_certificate_kind_name(MotionCertificateKind);
 
 struct MotionState {
   Vec3 position_enu = Vec3::Zero(), velocity_enu = Vec3::Zero();
@@ -30,6 +32,10 @@ struct MotionState {
   double position_sigma_m = 0, velocity_sigma_mps = 0;
   int64_t sample_stamp_ns = 0, receipt_steady_ns = 0, epoch = 0;
   bool healthy = false;
+  Eigen::Quaterniond orientation_enu = Eigen::Quaterniond::Identity();
+  double tilt_sigma_rad = 0;
+  bool landed = false, armed = false;
+  int64_t land_sample_stamp_ns = 0, land_receipt_steady_ns = 0;
 };
 
 struct MotionLimits {
@@ -62,11 +68,29 @@ struct ConfirmedColumn {
   bool confirmed = false;
 };
 
+// Independently surveyed physical support, never an observed-free map cell.
+// Dynamic landing/navigation observations remain in MotionState and retain
+// their original sample/receipt times. Zero armed times denote pre-arm only.
+struct GroundSupportAuthorization {
+  bool surveyed = false;
+  uint64_t survey_revision = 0, session = 0;
+  int64_t localization_epoch = 0;
+  double plane_z_m = 0, plane_error_m = .01;
+  std::vector<Vec3> contact_points_flu;
+  Vec3 ground_reference_enu = Vec3::Zero();
+  double max_land_age_s = 2, max_transition_s = 12, max_rise_m = .75;
+  double tilt_bound_rad = .35;
+  int64_t armed_ros_ns = 0, armed_steady_ns = 0;
+};
+
 struct MotionSafetyDomain {
   std::shared_ptr<const PlanningMap> map;
   std::optional<ConfirmedColumn> column;
   bool map_fresh = false;
   int64_t epoch = 0, revision = 0;
+  MotionCertificateKind certificate_kind = MotionCertificateKind::AirborneStrict;
+  uint64_t authorization_revision = 0;
+  std::optional<GroundSupportAuthorization> ground_support;
 };
 
 struct MotionSample {
@@ -91,6 +115,8 @@ struct MotionPlan {
   Path route;
   double goal_yaw_rad = 0, duration_s = 0;
   int64_t epoch = 0, revision = 0, state_epoch = 0;
+  MotionCertificateKind certificate_kind = MotionCertificateKind::AirborneStrict;
+  uint64_t authorization_revision = 0, authorization_session = 0, survey_revision = 0;
 };
 
 struct MotionPlanResult {
@@ -114,6 +140,10 @@ struct MotionUpdate {
   // Additional L-infinity clearance beyond that envelope, conservatively
   // capped at one voxel. Absence means unavailable, not zero or authorized.
   std::optional<double> stop_margin_lower_bound_m;
+  MotionCertificateKind certificate_kind = MotionCertificateKind::None;
+  uint64_t authorization_revision = 0;
+  bool strict_promotion_ready = false;
+  std::string strict_promotion_reason;
 };
 
 // Pure functions shared by candidate timing, worker planning and tests.
@@ -122,6 +152,12 @@ struct MotionUpdate {
 // measurement matrix. Invalid/inconsistent matrices retain the scalar bound.
 Vec3 motion_position_axis_sigma_m(const MotionState &);
 Vec3 motion_velocity_axis_sigma_mps(const MotionState &);
+bool same_ground_support(const std::optional<GroundSupportAuthorization> &,
+                         const std::optional<GroundSupportAuthorization> &);
+bool same_motion_authorization(const MotionSafetyDomain &, const MotionSafetyDomain &);
+std::string motion_ground_support_reason(const MotionSafetyDomain &, const MotionState &,
+                                         const MotionLimits &, int64_t ros_now_ns,
+                                         int64_t steady_now_ns);
 double motion_path_time_s(const Path &, double initial_yaw_rad,
                           double goal_yaw_rad, const MotionLimits &);
 MotionSample sample_motion_plan(const MotionPlan &, double elapsed_s);
@@ -166,6 +202,11 @@ public:
       const MotionSafetyDomain &) const;
   void complete_validation(uint64_t serial, const MotionSafetyDomain &,
                            bool authorized, const std::string &reason);
+  // Validates and promotes an already stopped HOLD without resetting its
+  // reference history. Runtime adds the continuous settle dwell and ACK latch.
+  bool promote_to_strict(const MotionState &, const MotionSafetyDomain &,
+                         int64_t ros_now_ns, int64_t steady_now_ns,
+                         std::string *reason = nullptr);
 
 private:
   friend class MotionRuntime;
@@ -184,6 +225,9 @@ private:
   int64_t last_steady_ns_ = 0, clock_progress_steady_ns_ = 0;
   int64_t epoch_ = 0, domain_epoch_ = 0, checked_revision_ = -1;
   bool async_validation_ = false, checked_map_fresh_ = false;
+  MotionCertificateKind certificate_kind_ = MotionCertificateKind::AirborneStrict;
+  uint64_t authorization_revision_ = 0, authorization_session_ = 0;
+  std::optional<GroundSupportAuthorization> authorization_ground_;
   uint64_t plan_serial_ = 0;
   int64_t validation_pending_since_ = 0;
   double brake_duration_s_ = 0;

@@ -96,6 +96,7 @@ private:
   friend struct P1MissionTestAccess;
   friend struct P2MissionTestAccess;
   friend struct RoiMissionTestAccess;
+  friend struct GroundMissionTestAccess;
   void subscribe_vehicle();
   void subscribe_map();
   void subscribe_camera();
@@ -130,6 +131,7 @@ private:
   px4_msgs::msg::VehicleLandDetected land_;
   int64_t vehicle_stamp_ = 0, vehicle_steady_ = 0, land_stamp_ = 0,
           land_steady_ = 0, landed_since_ = 0;
+  int64_t land_sample_ = 0;
   bool flight_armed_ = false, flight_offboard_ = false,
        landing_timeout_reported_ = false;
   px4_msgs::msg::FailsafeFlags failsafe_;
@@ -186,6 +188,7 @@ private:
   Vec3 latest_depth_observation_position_ = Vec3::Zero();
   double latest_depth_observation_yaw_ = 0;
   int64_t explore_revision_ = -1, return_revision_ = -1, target_revision_ = -1;
+  int64_t explore_task_started_ = 0, explore_task_steady_ = 0;
   int64_t explore_plan_stamp_ = 0, return_plan_stamp_ = 0,
           target_plan_stamp_ = 0;
   bool planning_ = false;
@@ -258,6 +261,19 @@ private:
 
   bool motion_brake_requested_ = false;
   bool takeoff_bootstrap_active_ = false;
+  MotionCertificateKind takeoff_safety_stage_ = MotionCertificateKind::AirborneStrict;
+  uint64_t takeoff_authorization_revision_ = 1;
+  Vec3 takeoff_ground_reference_ = Vec3::Zero();
+  double takeoff_ground_yaw_ = 0;
+  int64_t takeoff_armed_ros_ = 0, takeoff_armed_steady_ = 0;
+  bool takeoff_strict_requested_ = false;
+  std::string takeoff_handoff_reason_;
+  std::string ground_support_parameter_reason(
+      const std::vector<rclcpp::Parameter> &overrides = {}) const;
+  void reset_takeoff_safety();
+  void update_takeoff_safety();
+  bool takeoff_strict_ready() const;
+  double takeoff_ground_remaining_s() const;
   int64_t warmup_started_ = 0;
   bool photo_pending_ = false;
   int photo_goal_ = 0;
@@ -353,6 +369,7 @@ private:
   const PlanningMap &planning_map() const;
   void cancel_jobs();
   void enter_explore();
+  bool exploration_task_budget_exhausted() const;
   void enter_target();
   void enter_return(const std::string &);
   void enter_landing(const std::string &);

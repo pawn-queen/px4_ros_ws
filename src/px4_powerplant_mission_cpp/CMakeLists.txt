@@ -40,8 +40,8 @@ endforeach()
 install(TARGETS powerplant_core powerplant_mission voxel_mapper_node offboard_mission_node
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
-install(FILES README.md MIGRATION_STATUS.md research.md P0_VALIDATION.md P1_IMPLEMENTATION.md P2_IMPLEMENTATION.md P2_VALIDATION.md ISSUE3_IMPLEMENTATION.md ISSUE3_VALIDATION.md DESTINATION share/${PROJECT_NAME})
-install(FILES research_sources/sitl_body_envelope.md research_sources/sitl_body_envelope.json research_sources/gz_lidar_ray_convention.md DESTINATION share/${PROJECT_NAME}/research_sources)
+install(FILES README.md MIGRATION_STATUS.md research.md P0_VALIDATION.md P1_IMPLEMENTATION.md P2_IMPLEMENTATION.md P2_VALIDATION.md ISSUE3_IMPLEMENTATION.md ISSUE3_VALIDATION.md TAKEOFF_GROUND_SUPPORT.md DESTINATION share/${PROJECT_NAME})
+install(FILES research_sources/sitl_body_envelope.md research_sources/sitl_body_envelope.json research_sources/gz_lidar_ray_convention.md research_sources/ground_support_model.md DESTINATION share/${PROJECT_NAME}/research_sources)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -99,6 +99,10 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_roi_mission ${ros_dependencies})
   target_compile_options(test_roi_mission PRIVATE -O1)
   target_link_libraries(test_roi_mission powerplant_mission)
+  ament_add_gtest(test_ground_mission test/test_ground_mission.cpp)
+  ament_target_dependencies(test_ground_mission ${ros_dependencies})
+  target_compile_options(test_ground_mission PRIVATE -O1)
+  target_link_libraries(test_ground_mission powerplant_mission)
   ament_add_pytest_test(reference_parity test/test_reference_parity.py
     TIMEOUT 180 APPEND_ENV
     "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/../px4_powerplant_mission"
@@ -119,6 +123,11 @@ if(BUILD_TESTING)
     TIMEOUT 120 ENV "PYTHONDONTWRITEBYTECODE=1" "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
   ament_add_pytest_test(powerplant_probes test/test_powerplant_probes.py
     TIMEOUT 120 ENV "PYTHONDONTWRITEBYTECODE=1" "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
-  set_tests_properties(test_native test_input_validation test_map_health test_mapper_health test_planning_index test_p1_mapping test_p1_mission test_p1_planner test_p2_motion test_p2_topology test_p2_inspection test_p2_mission test_p2_map_worker test_roi_mission reference_parity ros_contract powerplant_assets gcs_startup powerplant_sensors powerplant_probes PROPERTIES RUN_SERIAL TRUE)
+  ament_add_pytest_test(ground_support_audit test/test_ground_support_audit.py
+    TIMEOUT 120 ENV "PYTHONDONTWRITEBYTECODE=1" "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
+  ament_add_pytest_test(sitl_takeoff_harness test/test_sitl_takeoff_harness.py
+    TIMEOUT 120 ENV "PYTHONDONTWRITEBYTECODE=1" "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
+  set_tests_properties(test_ground_mission PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=173")
+  set_tests_properties(test_native test_input_validation test_map_health test_mapper_health test_planning_index test_p1_mapping test_p1_mission test_p1_planner test_p2_motion test_p2_topology test_p2_inspection test_p2_mission test_p2_map_worker test_roi_mission test_ground_mission reference_parity ros_contract powerplant_assets gcs_startup powerplant_sensors powerplant_probes ground_support_audit sitl_takeoff_harness PROPERTIES RUN_SERIAL TRUE)
 endif()
 ament_package()

@@ -1455,3 +1455,258 @@ TEST(P2MotionMargin, ExecutorReportsLiveEnvelopeAndClearsFaultedOrResetEvidence)
   EXPECT_FALSE(waiting.stopping_envelope);
   EXPECT_FALSE(waiting.stop_margin_lower_bound_m);
 }
+
+namespace {
+MotionLimits ground_limits() {
+  MotionLimits l;
+  l.body_radius_m=.5; l.body_z_min_m=-.06; l.body_z_max_m=.5;
+  l.tracking_position_tolerance_m=.03;
+  return l;
+}
+MotionState ground_state() {
+  auto s=state_at(Vec3(.039642,.009336,-.026169));
+  s.velocity_enu=Vec3(.018756,.013451,-.017083);
+  s.position_covariance_enu_m2=Eigen::Matrix3d::Identity()*.0336*.0336;
+  s.position_sigma_m=.035;
+  s.linear_velocity_covariance_enu_m2ps2=
+      Vec3(.0456*.0456,.0466*.0466,.0376*.0376).asDiagonal();
+  s.velocity_sigma_mps=.05;
+  s.sample_stamp_ns=start_ros-40000000;
+  s.receipt_steady_ns=start_steady-40000000;
+  s.landed=true;s.land_sample_stamp_ns=start_ros;
+  s.land_receipt_steady_ns=start_steady;
+  return s;
+}
+MotionSafetyDomain ground_domain(const MotionState &s) {
+  MotionSafetyDomain d;
+  d.epoch=11;d.revision=1;d.authorization_revision=1;
+  d.certificate_kind=MotionCertificateKind::GroundContact;
+  d.column=ConfirmedColumn{Vec3(0,0,-.008242),1.5,-.358242,6.191758,true};
+  GroundSupportAuthorization g;
+  g.surveyed=true;g.survey_revision=123;g.session=42;g.localization_epoch=s.epoch;
+  g.plane_z_m=0;g.plane_error_m=.01;
+  g.ground_reference_enu=Vec3(0,0,-.008242);
+  g.contact_points_flu={Vec3(-.1,-.1,.013),Vec3(-.1,.1,.013),
+                        Vec3(.1,-.1,.013),Vec3(.1,.1,.013)};
+  d.ground_support=g;
+  return d;
+}
+void refresh_ground(MotionState &s,double t) {
+  set_time(s,t);s.land_sample_stamp_ns=s.sample_stamp_ns;
+  s.land_receipt_steady_ns=s.receipt_steady_ns;
+}
+void liftoff_domain(MotionSafetyDomain &d,MotionState &s) {
+  s.armed=true;d.certificate_kind=MotionCertificateKind::LiftoffTransition;
+  ++d.authorization_revision;
+  d.ground_support->armed_ros_ns=start_ros;
+  d.ground_support->armed_steady_ns=start_steady;
+}
+} // namespace
+
+TEST(P2GroundMotion, OriginalOneMillimetreUndershootHasDistinctTypedAuthorization) {
+  const MotionSafetyBox raw{Vec3(-.813199,-.827977,-.359272),Vec3(.893541,.858850,.753148)};
+  auto state=ground_state();auto domain=ground_domain(state);
+  auto strict=domain;strict.certificate_kind=MotionCertificateKind::AirborneStrict;
+  strict.ground_support.reset();
+  std::string reason;
+  EXPECT_FALSE(motion_box_is_authorized(strict,raw,20000,&reason));
+  EXPECT_EQ(reason,"UNKNOWN_MOTION_ENVELOPE");
+  EXPECT_TRUE(motion_box_is_authorized(domain,raw,20000,&reason))<<reason;
+  EXPECT_DOUBLE_EQ(raw.minimum.z(),-.359272);
+  MotionExecutor executor;executor.reset(state,ground_limits());
+  const auto update=executor.update(state,domain,start_ros,start_steady);
+  ASSERT_TRUE(update.valid)<<update.reason;
+  EXPECT_EQ(update.certificate_kind,MotionCertificateKind::GroundContact);
+  ASSERT_TRUE(update.stopping_envelope);
+  EXPECT_NEAR(update.stopping_envelope->minimum.z(),-.359272,2e-6);
+  EXPECT_FALSE(update.strict_promotion_ready);
+}
+
+TEST(P2GroundMotion, GroundPermissionCannotWaiveOccupiedSideOrTop) {
+  auto state=ground_state();auto d=ground_domain(state);
+  const MotionSafetyBox box{Vec3(-.8,-.8,-.36),Vec3(.8,.8,.76)};
+  std::string reason;
+  auto map=std::make_shared<PlanningMap>();map->resolution=.25;
+  map->bounds=Bounds{Key{-20,-20,-20},Key{20,20,30}};
+  map->occupied.insert({0,0,-1});d.map=map;
+  EXPECT_FALSE(motion_box_is_authorized(d,box,20000,&reason));
+  EXPECT_EQ(reason,"OCCUPIED_MOTION_ENVELOPE");
+  d.map.reset();auto side=box;side.maximum.x()=1.6;
+  EXPECT_FALSE(motion_box_is_authorized(d,side,20000,&reason));
+  auto top=box;top.maximum.z()=6.3;
+  EXPECT_FALSE(motion_box_is_authorized(d,top,20000,&reason));
+  auto below=box;below.maximum.z()=-.1;
+  EXPECT_FALSE(motion_box_is_authorized(d,below,20000,&reason));
+  EXPECT_EQ(reason,"GROUND_SUPPORT_ENVELOPE_BELOW_SURFACE");
+}
+
+TEST(P2GroundMotion, SupportNeedsActualLandingTimeEpochAndContactGeometry) {
+  auto s=ground_state();auto d=ground_domain(s);const auto l=ground_limits();
+  EXPECT_TRUE(motion_ground_support_reason(d,s,l,start_ros,start_steady).empty());
+  auto stale=s;stale.land_receipt_steady_ns-=3000000000LL;
+  EXPECT_EQ(motion_ground_support_reason(d,stale,l,start_ros,start_steady),
+            "GROUND_SUPPORT_LANDING_EVIDENCE_STALE");
+  auto high=d;high.ground_support->plane_z_m=.5;
+  EXPECT_EQ(motion_ground_support_reason(high,s,l,start_ros,start_steady),
+            "GROUND_SUPPORT_CONTACT_HEIGHT_INCONSISTENT");
+  auto other=d;++other.ground_support->localization_epoch;
+  EXPECT_EQ(motion_ground_support_reason(other,s,l,start_ros,start_steady),
+            "MOTION_COORDINATE_EPOCH_CHANGED");
+  auto missing=d;missing.ground_support->surveyed=false;
+  EXPECT_EQ(motion_ground_support_reason(missing,s,l,start_ros,start_steady),
+            "GROUND_SUPPORT_MODEL_INVALID");
+  auto uncertain=s;
+  uncertain.tilt_sigma_rad=d.ground_support->tilt_bound_rad/l.sigma_multiplier+.001;
+  EXPECT_EQ(motion_ground_support_reason(d,uncertain,l,start_ros,start_steady),
+            "GROUND_SUPPORT_TILT_EXCEEDED");
+  s.landed=false;
+  EXPECT_EQ(motion_ground_support_reason(d,s,l,start_ros,start_steady),
+            "GROUND_SUPPORT_NOT_LANDED");
+}
+
+TEST(P2GroundMotion, LandedMayRemainTrueDuringBoundedMicroAscent) {
+  auto s=ground_state();s.position_enu.z()=.2;s.velocity_enu.setZero();refresh_ground(s,0);
+  auto d=ground_domain(s);liftoff_domain(d,s);
+  auto l=ground_limits();l.minimum_leg_duration_s=4.5;
+  auto plan=build_motion_plan(d,s,{s.position_enu,s.position_enu+Vec3(0,0,.02)},0,l);
+  ASSERT_TRUE(plan.plan)<<plan.reason;
+  EXPECT_GE(plan.plan->duration_s,4.5);
+  EXPECT_EQ(plan.plan->certificate_kind,MotionCertificateKind::LiftoffTransition);
+  EXPECT_GT(plan.plan->safety_boxes.back().maximum.z(),d.ground_support->max_rise_m);
+  EXPECT_FALSE(build_motion_plan(d,s,{s.position_enu,s.position_enu+Vec3(.1,0,.02)},0,l).plan);
+  EXPECT_FALSE(build_motion_plan(d,s,{s.position_enu,s.position_enu-Vec3(0,0,.01)},0,l).plan);
+  EXPECT_FALSE(build_motion_plan(d,s,{s.position_enu,s.position_enu+Vec3(0,0,.02)},.1,l).plan);
+  const Vec3 high=s.position_enu+Vec3(0,0,.8);
+  EXPECT_FALSE(build_motion_plan(d,s,{s.position_enu,high},0,l).plan);
+}
+
+TEST(P2GroundMotion, ExpiredTransitionCannotBeRenewedByFreshNavigation) {
+  auto s=ground_state();s.velocity_enu.setZero();refresh_ground(s,0);
+  auto d=ground_domain(s);liftoff_domain(d,s);d.ground_support->max_transition_s=.1;
+  MotionExecutor e;e.reset(s,ground_limits());
+  ASSERT_TRUE(e.update(s,d,start_ros,start_steady).valid);
+  MotionUpdate result;
+  for(int i=1;i<=6;++i) {
+    refresh_ground(s,i*.02);
+    result=e.update(s,d,s.sample_stamp_ns,s.receipt_steady_ns);
+  }
+  EXPECT_EQ(result.mode,MotionMode::Fault);
+  EXPECT_EQ(result.reason,"GROUND_SUPPORT_TRANSITION_TIMEOUT");
+}
+
+TEST(P2GroundMotion, StrictPromotionWaitsForRealAirborneFullBoxAndPreservesReference) {
+  auto s=ground_state();s.velocity_enu.setZero();s.position_enu.z()=.5;
+  refresh_ground(s,0);auto d=ground_domain(s);liftoff_domain(d,s);
+  MotionExecutor e;e.reset(s,ground_limits());
+  auto initial=e.update(s,d,start_ros,start_steady);
+  ASSERT_TRUE(initial.valid)<<initial.reason;
+  EXPECT_FALSE(initial.strict_promotion_ready); // landed still true
+  std::string error;
+  EXPECT_FALSE(e.promote_to_strict(s,d,start_ros,start_steady,&error));
+  EXPECT_EQ(e.mode(),MotionMode::Hold);
+  s.landed=false;refresh_ground(s,.02);
+  const auto ready=e.update(s,d,s.sample_stamp_ns,s.receipt_steady_ns);
+  ASSERT_TRUE(ready.strict_promotion_ready)<<ready.strict_promotion_reason;
+  ASSERT_TRUE(e.promote_to_strict(s,d,s.sample_stamp_ns,s.receipt_steady_ns,&error))<<error;
+  auto strict=d;strict.certificate_kind=MotionCertificateKind::AirborneStrict;
+  ++strict.authorization_revision;strict.ground_support.reset();strict.column->z_min_m=.01;
+  refresh_ground(s,.04);const auto accepted=e.update(s,strict,s.sample_stamp_ns,s.receipt_steady_ns);
+  ASSERT_TRUE(accepted.valid)<<accepted.reason;
+  EXPECT_EQ(accepted.certificate_kind,MotionCertificateKind::AirborneStrict);
+  EXPECT_TRUE(accepted.sample.position_enu.isApprox(ready.sample.position_enu,1e-14));
+  EXPECT_TRUE(accepted.sample.velocity_enu.isApprox(ready.sample.velocity_enu,1e-14));
+  EXPECT_TRUE(accepted.sample.acceleration_enu.isApprox(ready.sample.acceleration_enu,1e-14));
+  refresh_ground(s,.06);const auto rollback=e.update(s,d,s.sample_stamp_ns,s.receipt_steady_ns);
+  EXPECT_EQ(rollback.mode,MotionMode::Fault);
+  EXPECT_EQ(rollback.reason,"MOTION_AUTHORIZATION_REGRESSION");
+}
+
+TEST(P2GroundMotion, AuthorizationRevisionAndSurveyIdentityBindEveryPlan) {
+  auto s=ground_state();s.velocity_enu.setZero();refresh_ground(s,0);
+  auto d=ground_domain(s);liftoff_domain(d,s);auto l=ground_limits();
+  auto result=build_motion_plan(d,s,{s.position_enu,s.position_enu+Vec3(0,0,.02)},0,l);
+  ASSERT_TRUE(result.plan)<<result.reason;
+  auto later=d;++later.authorization_revision;
+  EXPECT_FALSE(motion_plan_is_authorized(later,*result.plan,0,l));
+  later=d;++later.ground_support->survey_revision;
+  EXPECT_FALSE(motion_plan_is_authorized(later,*result.plan,0,l));
+  later=d;later.certificate_kind=MotionCertificateKind::AirborneStrict;later.ground_support.reset();
+  EXPECT_FALSE(motion_plan_is_authorized(later,*result.plan,0,l));
+}
+
+TEST(P2GroundRuntime, StrictAckLatchesUntilTaskAcknowledgesAndNeverRegresses) {
+  std::atomic<int> publications{0};
+  MotionRuntime runtime([]{return monotonic_now();},[&](const MotionSample &,int64_t){++publications;});
+  MotionRuntimeInput input;input.state=ground_state();input.state.position_enu.z()=.5;
+  input.state.velocity_enu.setZero();input.state.armed=true;input.state.landed=false;
+  input.domain=ground_domain(input.state);input.domain.certificate_kind=MotionCertificateKind::LiftoffTransition;
+  input.domain.authorization_revision=2;input.domain.ground_support->armed_ros_ns=monotonic_now();
+  input.domain.ground_support->armed_steady_ns=input.domain.ground_support->armed_ros_ns;
+  input.session=42;input.enabled=true;input.permit=false;input.request_strict_promotion=true;
+  input.limits=ground_limits();input.settle_dwell_s=.05;input.target=input.state.position_enu;
+  auto feed=[&]{const auto now=monotonic_now();input.state.sample_stamp_ns=now;
+    input.state.receipt_steady_ns=now;input.state.land_sample_stamp_ns=now;
+    input.state.land_receipt_steady_ns=now;runtime.input(input);};
+  ASSERT_TRUE(eventually([&]{feed();return runtime.report().certificate_kind==MotionCertificateKind::AirborneStrict;}));
+  EXPECT_EQ(runtime.report().authorization_revision,3u);
+  for(int i=0;i<6;++i){feed();std::this_thread::sleep_for(std::chrono::milliseconds(20));}
+  EXPECT_EQ(runtime.report().certificate_kind,MotionCertificateKind::AirborneStrict);
+  EXPECT_GT(publications,0);
+  input.domain.authorization_revision=9; // a new ground policy is not an old ACK
+  ASSERT_TRUE(eventually([&]{feed();return runtime.report().mode==MotionMode::Fault;}));
+  EXPECT_EQ(runtime.report().reason,"MOTION_AUTHORIZATION_REGRESSION");
+}
+
+TEST(P2GroundRuntime, PreparedGroundPlanCannotCrossAuthorizationRevision) {
+  std::atomic<int> attempts{0};
+  MotionRuntime runtime([]{return monotonic_now();},[](const MotionSample &,int64_t){},
+    [&](const MotionSafetyDomain &domain,const MotionState &state,const Path &path,
+        double yaw,const MotionLimits &limits,const Cancel &cancel){
+      ++attempts;auto obsolete=domain;--obsolete.authorization_revision;
+      return build_motion_plan(obsolete,state,path,yaw,limits,cancel);
+    });
+  MotionRuntimeInput input;input.state=ground_state();input.state.velocity_enu.setZero();
+  input.domain=ground_domain(input.state);liftoff_domain(input.domain,input.state);
+  input.domain.ground_support->armed_ros_ns=monotonic_now();
+  input.domain.ground_support->armed_steady_ns=input.domain.ground_support->armed_ros_ns;
+  input.domain.authorization_revision=3;input.session=42;input.enabled=input.permit=true;
+  input.target=input.state.position_enu+Vec3(0,0,.02);input.limits=ground_limits();input.settle_dwell_s=0;
+  ASSERT_TRUE(eventually([&]{const auto now=monotonic_now();input.state.sample_stamp_ns=now;
+    input.state.receipt_steady_ns=now;input.state.land_sample_stamp_ns=now;
+    input.state.land_receipt_steady_ns=now;runtime.input(input);
+    return runtime.report().reason.rfind("MOTION_PLAN_UNAVAILABLE:",0)==0;}));
+  EXPECT_GT(attempts,0);EXPECT_EQ(runtime.report().mode,MotionMode::Hold);
+  EXPECT_TRUE(runtime.report().sample.position_enu.isApprox(input.state.position_enu,1e-12));
+}
+
+TEST(P2GroundRuntime, ProvenReserveAbsorbsAxisBinJitterWithoutRestartingBootstrap) {
+  std::atomic<int> preparations{0};
+  std::atomic<double> proved_z{0.};
+  MotionRuntime runtime([]{return monotonic_now();},[](const MotionSample &,int64_t){},
+    [&](const MotionSafetyDomain &domain,const MotionState &state,const Path &path,
+        double yaw,const MotionLimits &limits,const Cancel &cancel){
+      ++preparations;
+      proved_z=motion_position_axis_sigma_m(state).z();
+      return build_motion_plan(domain,state,path,yaw,limits,cancel);
+    });
+  MotionRuntimeInput input;input.state=ground_state();input.state.velocity_enu.setZero();
+  input.state.armed=true;input.domain=ground_domain(input.state);
+  input.domain.certificate_kind=MotionCertificateKind::LiftoffTransition;
+  input.domain.ground_support->armed_ros_ns=monotonic_now();
+  input.domain.ground_support->armed_steady_ns=input.domain.ground_support->armed_ros_ns;
+  input.session=42;input.enabled=input.permit=true;input.generation=1;
+  input.limits=ground_limits();input.limits.minimum_leg_duration_s=4.5;
+  input.settle_dwell_s=.02;input.target=input.state.position_enu+Vec3(0,0,.02);
+  auto feed=[&]{const auto now=monotonic_now();input.state.sample_stamp_ns=now;
+    input.state.receipt_steady_ns=now;input.state.land_sample_stamp_ns=now;
+    input.state.land_receipt_steady_ns=now;runtime.input(input);};
+  ASSERT_TRUE(eventually([&]{feed();return runtime.report().mode==MotionMode::Tracking;}));
+  EXPECT_GE(proved_z.load(),.04);
+  const int accepted_preparations=preparations.load();
+  input.state.position_covariance_enu_m2(2,2)=.0348*.0348;
+  input.state.position_sigma_m=.036;
+  for (int i=0;i<12;++i) {feed();std::this_thread::sleep_for(std::chrono::milliseconds(20));}
+  EXPECT_EQ(runtime.report().mode,MotionMode::Tracking)<<runtime.report().reason;
+  EXPECT_EQ(preparations.load(),accepted_preparations);
+  EXPECT_DOUBLE_EQ(input.state.position_covariance_enu_m2(2,2),.0348*.0348);
+}

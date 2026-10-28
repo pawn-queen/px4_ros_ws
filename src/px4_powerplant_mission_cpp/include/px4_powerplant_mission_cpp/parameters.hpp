@@ -101,6 +101,15 @@ inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<double>("motion_settle_dwell_s", .3);
   n.declare_parameter<double>("motion_takeoff_bootstrap_height_m", 0.0);
   n.declare_parameter<double>("motion_takeoff_bootstrap_duration_s", 0.0);
+  n.declare_parameter<bool>("takeoff_ground_support_enabled", false);
+  n.declare_parameter<std::string>("px4_timestamp_domain", "system");
+  n.declare_parameter<double>("takeoff_ground_plane_z_m", 0.0);
+  n.declare_parameter<double>("takeoff_ground_plane_error_m", .01);
+  n.declare_parameter<std::vector<double>>("takeoff_ground_contact_points_flu", std::vector<double>{});
+  n.declare_parameter<int64_t>("takeoff_ground_model_revision", 0);
+  n.declare_parameter<double>("takeoff_ground_land_max_age_s", 2.0);
+  n.declare_parameter<double>("takeoff_ground_transition_timeout_s", 12.0);
+  n.declare_parameter<double>("takeoff_ground_max_rise_m", .75);
   n.declare_parameter<double>("motion_input_timeout_s", .3);
   n.declare_parameter<double>("motion_landing_reserve_s", 10.);
   n.declare_parameter<double>("offboard_warmup_min_s", 2.);
@@ -234,6 +243,7 @@ inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<double>("target_memory_s", 8.0);
   n.declare_parameter<bool>("lock_target_after_acquisition", true);
   n.declare_parameter<double>("explore_max_duration_s", 300.0);
+  n.declare_parameter<double>("explore_task_duration_s", 0.0);
   n.declare_parameter<double>("explore_min_replan_interval_s", 1.0);
   n.declare_parameter<double>("explore_max_map_age_s", 3.0);
   n.declare_parameter<double>("explore_min_x_m", -24.0);

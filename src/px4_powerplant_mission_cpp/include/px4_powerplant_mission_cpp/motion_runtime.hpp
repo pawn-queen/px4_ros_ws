@@ -13,6 +13,7 @@ struct MotionRuntimeInput {
   Vec3 target = Vec3::Zero();
   double target_yaw = 0;
   bool enabled = false, permit = false;
+  bool request_strict_promotion = false;
   uint64_t generation = 0;
   uint64_t session = 0;
   double settle_dwell_s = .3;
@@ -49,10 +50,21 @@ private:
     int64_t state_epoch = 0, map_epoch = 0;
     MotionLimits limits;
     std::optional<ConfirmedColumn> column;
+    MotionCertificateKind certificate_kind = MotionCertificateKind::AirborneStrict;
+    uint64_t authorization_revision = 0;
+    std::optional<GroundSupportAuthorization> ground_support;
     double position_sigma = 0, velocity_sigma = 0;
     Vec3 position_axes = Vec3::Zero(), velocity_axes = Vec3::Zero();
   };
   std::optional<PlanningBudget> planning_budget_;
+  struct StrictPromotion {
+    uint64_t session = 0, source_revision = 0, target_revision = 0;
+    int64_t state_epoch = 0;
+    std::optional<ConfirmedColumn> column;
+    std::optional<ConfirmedColumn> source_column;
+    std::optional<GroundSupportAuthorization> source_ground;
+  };
+  std::optional<StrictPromotion> strict_promotion_;
   static bool same_planning_context(const PlanningBudget &, const MotionRuntimeInput &);
   MotionExecutor executor_;
   std::atomic_bool running_{true};

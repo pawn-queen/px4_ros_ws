@@ -9,6 +9,7 @@ powerplant_voxel_mapper:
     lidar_rotation_rpy_rad: [0.0, 0.0, 0.0]
 powerplant_offboard_mission:
   ros__parameters:
+    px4_timestamp_domain: ros
     motion_model_configured: true
     # A consistent micro-ascent spans the current PX4 spool + takeoff ramp.
     # The SITL harness verifies these against actual read-only PX4 parameters.

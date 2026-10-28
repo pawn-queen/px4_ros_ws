@@ -400,7 +400,7 @@ struct MissionTestAccess {
     EXPECT_TRUE(n.landing_timeout_reported_);
     n.set_parameter(rclcpp::Parameter("landing_confirm_dwell_s", 0.0));
     px4_msgs::msg::VehicleStatus vehicle;
-    vehicle.timestamp = n.vehicle_.timestamp + 1;
+    vehicle.timestamp = uint64_t(n.ns() / 1000);
     vehicle.arming_state = px4_msgs::msg::VehicleStatus::ARMING_STATE_DISARMED;
     n.on_vehicle(vehicle);
     px4_msgs::msg::VehicleLandDetected land;
@@ -553,7 +553,7 @@ struct MissionTestAccess {
     EXPECT_EQ(n.phase_, Phase::Landing);
     EXPECT_TRUE(n.landing_timeout_reported_);
     px4_msgs::msg::VehicleLandDetected land;
-    land.timestamp = n.vehicle_.timestamp + 1;
+    land.timestamp = uint64_t(n.ns() / 1000);
     land.landed = true;
     n.on_land_detected(land);
     n.update_landing();

@@ -62,7 +62,8 @@ bool same_column(const std::optional<ConfirmedColumn> &a,
 
 bool same_domain(const MotionSafetyDomain &a, const MotionSafetyDomain &b) {
   return a.map == b.map && a.epoch == b.epoch && a.revision == b.revision &&
-         a.map_fresh == b.map_fresh && same_column(a.column, b.column);
+         a.map_fresh == b.map_fresh && same_column(a.column, b.column) &&
+         same_motion_authorization(a,b);
 }
 
 bool publication_context_matches(const MotionRuntimeInput &source,
@@ -71,6 +72,7 @@ bool publication_context_matches(const MotionRuntimeInput &source,
     return latest.enabled;
   const bool same_context = latest.enabled && latest.session == source.session &&
       latest.generation == source.generation && latest.permit == source.permit &&
+      latest.request_strict_promotion == source.request_strict_promotion &&
       latest.state.epoch == source.state.epoch &&
       same_domain(latest.domain, source.domain) &&
       same_limits(latest.limits, source.limits);
@@ -104,10 +106,29 @@ MotionRuntime::~MotionRuntime() {
 }
 
 void MotionRuntime::input(MotionRuntimeInput value) {
-  auto input = std::make_shared<const MotionRuntimeInput>(std::move(value));
   std::shared_ptr<const MotionRuntimeInput> previous;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (strict_promotion_ && (strict_promotion_->session!=value.session ||
+                             strict_promotion_->state_epoch!=value.state.epoch))
+      strict_promotion_.reset();
+    if (strict_promotion_) {
+      const auto &promotion=*strict_promotion_;
+      if (value.domain.certificate_kind!=MotionCertificateKind::AirborneStrict) {
+        const bool old_ack_input=value.domain.authorization_revision==promotion.source_revision &&
+            same_ground_support(value.domain.ground_support,promotion.source_ground) &&
+            same_column(value.domain.column,promotion.source_column);
+        value.domain.certificate_kind=old_ack_input ? MotionCertificateKind::AirborneStrict
+                                                  : MotionCertificateKind::None;
+        value.domain.authorization_revision=promotion.target_revision;
+        value.domain.ground_support.reset();
+        value.domain.column=promotion.column;
+        value.request_strict_promotion=false;
+      } else if (value.domain.authorization_revision<promotion.target_revision) {
+        value.domain.certificate_kind=MotionCertificateKind::None;
+      }
+    }
+    auto input = std::make_shared<const MotionRuntimeInput>(std::move(value));
     previous = std::move(input_);
     input_ = std::move(input);
     if (planning_budget_ &&
@@ -124,6 +145,7 @@ void MotionRuntime::disable() {
     previous = std::move(input_);
     report_ = {};
     planning_budget_.reset();
+    strict_promotion_.reset();
     ++reset_serial_;
   }
   retire_input(previous);
@@ -143,7 +165,10 @@ bool MotionRuntime::same_planning_context(
          budget.state_epoch == input.state.epoch &&
          budget.map_epoch == input.domain.epoch &&
          same_limits(physical_limits, input.limits) &&
-         same_column(budget.column, input.domain.column);
+         same_column(budget.column, input.domain.column) &&
+         budget.certificate_kind==input.domain.certificate_kind &&
+         budget.authorization_revision==input.domain.authorization_revision &&
+         same_ground_support(budget.ground_support,input.domain.ground_support);
 }
 
 MotionState MotionRuntime::planning_state(const MotionState &current,
@@ -314,6 +339,9 @@ void MotionRuntime::run() {
     try {
       const auto now = clock_(), steady = steady_ns();
       const MotionState checked_state = certificate_state(in->state);
+      if (in->domain.ground_support &&
+          in->domain.ground_support->session!=in->session)
+        throw std::invalid_argument("MOTION_AUTHORIZATION_SESSION_MISMATCH");
       if (!initialized || session != in->session ||
           reset_serial != observed_reset) {
         cancel_work();
@@ -371,12 +399,14 @@ void MotionRuntime::run() {
       if (accepted_context &&
           (!same_limits(accepted_context->limits, in->limits) ||
            !same_column(accepted_context->domain.column, in->domain.column) ||
+           !same_motion_authorization(accepted_context->domain,in->domain) ||
            accepted_context->state.epoch != in->state.epoch ||
            accepted_context->domain.epoch != in->domain.epoch)) {
         auto timing_adjusted = accepted_context->limits;
         timing_adjusted.minimum_leg_duration_s = in->limits.minimum_leg_duration_s;
         const bool timing_only = same_limits(timing_adjusted, in->limits) &&
             same_column(accepted_context->domain.column, in->domain.column) &&
+            same_motion_authorization(accepted_context->domain,in->domain) &&
             accepted_context->state.epoch == in->state.epoch &&
             accepted_context->domain.epoch == in->domain.epoch;
         executor_.request_stop("motion configuration changed");
@@ -441,6 +471,9 @@ void MotionRuntime::run() {
         budget.map_epoch = in->domain.epoch;
         budget.limits = in->limits;
         budget.column = in->domain.column;
+        budget.certificate_kind=in->domain.certificate_kind;
+        budget.authorization_revision=in->domain.authorization_revision;
+        budget.ground_support=in->domain.ground_support;
         budget.position_sigma = observed_position_sigma;
         budget.velocity_sigma = observed_velocity_sigma;
         budget.position_axes = observed_position_axes;
@@ -464,6 +497,62 @@ void MotionRuntime::run() {
         stopped_since = 0;
       const bool settled = stopped_since &&
           (steady - stopped_since) * 1e-9 >= in->settle_dwell_s;
+      if (in->request_strict_promotion && update.valid && update.stopped && settled &&
+          update.strict_promotion_ready && in->domain.ground_support) {
+        std::shared_ptr<const MotionRuntimeInput> replaced;
+        bool promoted=false;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (input_ && publication_context_matches(*in,*input_) &&
+              reset_serial_==observed_reset) {
+            std::string rejection;
+            if (executor_.promote_to_strict(checked_state,in->domain,now,steady,&rejection)) {
+              StrictPromotion latch;
+              latch.session=in->session;
+              latch.state_epoch=in->state.epoch;
+              latch.source_revision=in->domain.authorization_revision;
+              latch.target_revision=latch.source_revision+1;
+              latch.column=in->domain.column;
+              latch.source_column=in->domain.column;
+              latch.source_ground=in->domain.ground_support;
+              if (latch.column)
+                latch.column->z_min_m=std::max(latch.column->z_min_m,
+                    latch.source_ground->plane_z_m+latch.source_ground->plane_error_m);
+              strict_promotion_=latch;
+              auto make_strict=[&](const MotionRuntimeInput &source) {
+                auto copy=std::make_shared<MotionRuntimeInput>(source);
+                copy->domain.certificate_kind=MotionCertificateKind::AirborneStrict;
+                copy->domain.authorization_revision=latch.target_revision;
+                if (copy->domain.column)
+                  copy->domain.column->z_min_m=std::max(copy->domain.column->z_min_m,
+                      latch.source_ground->plane_z_m+latch.source_ground->plane_error_m);
+                copy->domain.ground_support.reset();
+                copy->request_strict_promotion=false;
+                return copy;
+              };
+              replaced=std::move(input_);
+              input_=make_strict(*replaced);
+              auto strict_input=make_strict(*in);
+              in=std::move(strict_input);
+              planning_budget_.reset();
+              promoted=true;
+            } else update.strict_promotion_reason=rejection;
+          }
+        }
+        retire_input(replaced);
+        if (promoted) {
+          cancel_work();outstanding=0;retire_work(active_work);
+          retire_input(accepted_context);retire_input(failed_context);
+          if (result) { retire_input(result->work.input);result.reset(); }
+          accepted=std::numeric_limits<uint64_t>::max();
+          accepted_position_sigma=accepted_velocity_sigma=inf;
+          accepted_position_axes.setConstant(inf);accepted_velocity_axes.setConstant(inf);
+          observed_position_sigma=observed_velocity_sigma=0;
+          observed_position_axes.setZero();observed_velocity_axes.setZero();observed_context.reset();
+          update=executor_.update(checked_state,in->domain,now,steady);
+          update.strict_promotion_reason="STRICT_PROMOTION_ACK";
+        }
+      }
       if (result && result->work.kind == WorkKind::Prepare && in->permit &&
           update.valid && update.stopped && settled &&
           accepted != in->generation) {
@@ -533,6 +622,22 @@ void MotionRuntime::run() {
                   work.anchor.position_axis_sigma_bound_m.cwiseMax(accepted_position_axes);
               work.anchor.velocity_axis_sigma_bound_mps =
                   work.anchor.velocity_axis_sigma_bound_mps.cwiseMax(accepted_velocity_axes);
+            }
+            if (in->domain.certificate_kind == MotionCertificateKind::GroundContact ||
+                in->domain.certificate_kind == MotionCertificateKind::LiftoffTransition) {
+              // Prove a conservative uncertainty reserve for the entire slow
+              // spool-up segment. Millimetre axis-bin crossings must not keep
+              // restarting its minimum duration. This enlarges only the worker
+              // proof; live covariance, tracking and stop checks stay intact.
+              const auto reserve = [](double sigma) { return std::ceil(sigma * 100.) / 100.; };
+              work.anchor.position_sigma_m = reserve(work.anchor.position_sigma_m);
+              work.anchor.velocity_sigma_mps = reserve(work.anchor.velocity_sigma_mps);
+              work.anchor.position_axis_sigma_bound_m =
+                  work.anchor.position_axis_sigma_bound_m.cwiseMax(
+                      Vec3::Constant(work.anchor.position_sigma_m));
+              work.anchor.velocity_axis_sigma_bound_mps =
+                  work.anchor.velocity_axis_sigma_bound_mps.cwiseMax(
+                      Vec3::Constant(work.anchor.velocity_sigma_mps));
             }
             auto proof_input = std::make_shared<MotionRuntimeInput>(*in);
             proof_input->state = work.anchor;

@@ -167,3 +167,5 @@ contract tests start only one native process at a time, inject synthetic sensor
 and PX4 messages, and verify parameter defaults, publications and services;
 localization/EV tests also start separate Python processes for both profiles.
 These tests do not replace a full PX4/Gazebo flight validation.
+
+起飞地面接触保护的三阶段、独立地面模型、时间域和严格证书交接见 [TAKEOFF_GROUND_SUPPORT.md](TAKEOFF_GROUND_SUPPORT.md)。硬件默认严格模式；当前实际电厂主链仍未通过跟踪验收，结果以 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 为准。失败后落地上锁不能替代自主任务完成。

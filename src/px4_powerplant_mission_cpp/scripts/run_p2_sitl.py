@@ -45,8 +45,22 @@ def json_dumps(value, **kwargs):
 
 PACKAGE = Path(__file__).resolve().parents[1]
 WORKSPACE = PACKAGE.parents[1]
+_contact_spec=importlib.util.spec_from_file_location("powerplant_contact_monitor", Path(__file__).with_name("powerplant_contact_monitor.py"))
+contact_support=importlib.util.module_from_spec(_contact_spec)
+_contact_spec.loader.exec_module(contact_support)
+
 EXPECTED_PHASES = ["START", "SAFE_TAKEOFF", "HOVER_SCAN", "EXPLORE",
                    "TARGETING_CYCLE", "RETURN_HOME", "LANDING", "COMPLETE"]
+
+def controller_profile_evidence(args, observed):
+    requested = {name:value for name,value in (
+        ("MPC_THR_HOVER", getattr(args,"px4_hover_thrust",None)),
+        ("MPC_Z_VEL_I_ACC", getattr(args,"px4_z_velocity_integral",None))) if value is not None}
+    actual = {name:observed.get(name,{}).get("value") for name in requested}
+    matched = all(isinstance(actual[name],(int,float)) and math.isfinite(actual[name])
+                  and abs(actual[name]-value)<=1e-5 for name,value in requested.items())
+    return {"passed":matched,"requested":requested,"actual_read_only_values":actual,
+            "scope":"explicit isolated SITL controller calibration; safety thresholds and shared hardware config unchanged"}
 
 
 def takeoff_startup_evidence(parameters, observed_px4_parameters):
@@ -105,6 +119,49 @@ def scenario_world(args):
     if args.scenario == "powerplant":
         return args.px4_root / "Tools/simulation/gz/worlds/powerplant.sdf"
     return PACKAGE / "test/worlds" / f"p2_{args.scenario}.sdf"
+
+
+def capture_runtime_identity(args,config_path,local_models,asset_audit):
+    """Pin actual executable/code/resource bytes, including uncommitted work."""
+    def git(*arguments):
+        return subprocess.run(['git','-C',str(WORKSPACE),*arguments],capture_output=True,check=True).stdout
+    identity={'repository_head':git('rev-parse','HEAD').decode().strip(),
+              'tracked_diff_binary_sha256':hashlib.sha256(git('diff','--binary','HEAD')).hexdigest(),
+              'dirty_paths':git('status','--porcelain=v1','-z').decode().split('\0')}
+    identity['dirty_paths']=[p for p in identity['dirty_paths'] if p]
+    source_paths=[]
+    for folder in (PACKAGE/'src',PACKAGE/'include',PACKAGE/'scripts',
+                   WORKSPACE/'src/px4_powerplant_mission/px4_powerplant_mission',
+                   WORKSPACE/'src/px4_powerplant_mission/launch',
+                   WORKSPACE/'src/px4_powerplant_mission/config'):
+        source_paths.extend(p for p in folder.rglob('*') if p.is_file()
+                            and p.suffix in ('.cpp','.hpp','.py','.yaml'))
+    source_paths.extend((PACKAGE/'CMakeLists.txt',Path(config_path)))
+    try:
+        from ament_index_python.packages import get_package_prefix
+        prefix=Path(get_package_prefix('px4_powerplant_mission_cpp'))
+        identity['cpp_package_resolution']='ament_index'
+    except (ImportError,LookupError):
+        prefix=WORKSPACE/'install/px4_powerplant_mission_cpp'
+        identity['cpp_package_resolution']='workspace_fallback_unconfirmed'
+    binaries=[prefix/'lib/px4_powerplant_mission_cpp'/name
+              for name in ('offboard_mission_node','voxel_mapper_node')]
+    identity['actual_cpp_executables']=contact_support.file_lock(binaries)
+    identity['code_file_lock']=contact_support.file_lock(source_paths+binaries)
+    resource_paths=[scenario_world(args),args.powerplant_asset_lock]
+    if asset_audit:
+        resource_paths.extend(Path(asset_audit['asset_root'])/r['path'] for r in asset_audit['verified_files'])
+    else:
+        resource_paths.remove(args.powerplant_asset_lock)
+    if local_models:
+        resource_paths.extend(p for p in Path(local_models).rglob('*') if p.is_file())
+    for model in ('x500_depth','x500','x500_base','OakD-Lite'):
+        resource_paths.extend(p for p in (args.px4_root/'Tools/simulation/gz/models'/model).rglob('*')
+                              if p.is_file())
+    resource_paths.append(args.px4_root/'build/px4_sitl_default/bin/px4')
+    identity['resource_file_lock']=contact_support.file_lock(resource_paths)
+    identity['scope']='actual source, resolved executables, isolated configuration and resources; logs/documents excluded from stability lock'
+    return identity
 
 
 def acceptance_scope(args):
@@ -402,6 +459,12 @@ def parse_args():
                    help="yolo only: validate genuine inference/source-image linkage without requesting START")
     p.add_argument("--output-dir", type=Path)
     p.add_argument("--timeout", type=float, default=300)
+    p.add_argument("--explore-duration", type=float, default=60.0,
+                   help="isolated exploration budget, independent from overall acceptance timeout")
+    p.add_argument("--px4-hover-thrust", type=float, default=None,
+                   help="explicit isolated MPC_THR_HOVER calibration; default retains the airframe value")
+    p.add_argument("--px4-z-velocity-integral", type=float, default=None,
+                   help="explicit isolated MPC_Z_VEL_I_ACC calibration; default retains the airframe value")
     p.add_argument("--startup-timeout", type=float, default=90)
     p.add_argument("--ros-domain", type=int, default=25)
     p.add_argument("--agent-port", type=int, default=8889)
@@ -419,7 +482,8 @@ def parse_args():
         p.error("choose a ROS domain in [0,232] and an unprivileged UDP port")
     if args.agent_port in (14550, 18570):
         p.error("the Agent port must not overlap the isolated SITL MAVLink/GCS ports")
-    if args.timeout <= 0 or args.startup_timeout <= 0:
+    if (args.timeout <= 0 or args.startup_timeout <= 0
+            or not math.isfinite(args.explore_duration) or args.explore_duration<=0):
         p.error("timeouts must be positive")
     if not math.isfinite(args.cpu_camera_rate_hz) or args.cpu_camera_rate_hz<=0:
         p.error("--cpu-camera-rate-hz must be a finite positive number")
@@ -431,6 +495,10 @@ def parse_args():
         p.error("a nondefault --cpu-lidar-rate-hz requires --sensor-profile cpu")
     if args.image_chain_only and args.detection_mode != "yolo":
         p.error("--image-chain-only requires --detection-mode yolo")
+    if args.px4_hover_thrust is not None and not (math.isfinite(args.px4_hover_thrust) and 0<args.px4_hover_thrust<1):
+        p.error("hover thrust must be finite and between zero and one")
+    if args.px4_z_velocity_integral is not None and not (math.isfinite(args.px4_z_velocity_integral) and args.px4_z_velocity_integral>=0):
+        p.error("vertical velocity integral must be finite and nonnegative")
     if args.image_chain_only and args.inject_obstacle:
         p.error("--image-chain-only does not execute a flight or inject obstacles")
     if args.output_dir is None:
@@ -608,7 +676,8 @@ def prepare(args):
         "return_home_height_m": 5.0 if args.scenario=="powerplant" else 3.0,
         "inspection_altitude_m": 5.0 if args.scenario=="powerplant" else 3.0,
         "inspection_photo_dir": str(output / "photos"),
-        "explore_max_duration_s": args.timeout, "initial_scan_timeout_s": 100.0,
+        "explore_task_duration_s": args.explore_duration, "initial_scan_timeout_s": 100.0,
+        "px4_timestamp_domain": "ros",
     })
     if args.scenario != "powerplant":
         mission.update({"explore_min_x_m": -5.5,
@@ -629,6 +698,8 @@ def prepare(args):
                        "grid_min_y_m": -6.0, "grid_max_y_m": 6.0,
                        "grid_z_min_m": 1.0, "grid_z_max_m": 6.0})
     takeoff_audit = None
+    ground_support_model = None
+    contact_instrumentation = None
     takeoff_audit_path = output / "takeoff_domain_audit.json"
     if args.scenario=="powerplant":
         spec=importlib.util.spec_from_file_location("powerplant_takeoff_audit",
@@ -643,6 +714,27 @@ def prepare(args):
         # The boolean is granted only after the actual source/collision scene
         # has a sufficient separation proof for this operating column.
         mission["takeoff_region_confirmed"]=True
+        ground_support_model=takeoff_module.generate_ground_support_model(world,
+            args.px4_root/"Tools/simulation/gz/models",PACKAGE/"research_sources/sitl_body_envelope.json",
+            {**mission,**profile},home=(0,0,.1),floor_uncertainty_m=.01)
+        (output/"ground_support_model.json").write_text(json_dumps(ground_support_model,indent=2,allow_nan=False))
+        if not (ground_support_model.get("passed") and ground_support_model.get("verified")):
+            raise RuntimeError("actual world/body ground support model is unproven")
+        mission.update(ground_support_model["ground_support_parameters"])
+        if not args.image_chain_only:
+            local_models=local_models or runtime/"models"
+            contact_instrumentation=contact_support.instrument_vehicle_contacts(
+                args.px4_root/"Tools/simulation/gz/models",local_models,output,world,
+                ground_support_model["support_collision_names"],
+                support_surfaces=ground_support_model["support_surfaces"],
+                support_region=ground_support_model["support_region"])
+            effective_camera=local_models/"OakD-Lite/model.sdf"
+            effective_vehicle=local_models/"x500_depth/model.sdf"
+            sensor_metadata.update(parameter_source=str(effective_camera),
+                copied_model_directory=str(effective_camera.parent),
+                effective_model_sdf_sha256=hashlib.sha256(effective_camera.read_bytes()).hexdigest())
+            sensor_metadata["vehicle_model"].update(effective_directory=str(effective_vehicle.parent),
+                effective_model_sdf_sha256=hashlib.sha256(effective_vehicle.read_bytes()).hexdigest())
     config_path = runtime / "powerplant_p2_sitl.yaml"
     config_path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False))
     if takeoff_audit is not None:
@@ -664,6 +756,7 @@ def prepare(args):
         "PX4_GZ_MODEL_POSE": "0,0,0.1,0,0,0", "PX4_GZ_NO_FOLLOW": "1",
         "PX4_GZ_MODELS": str(local_models if local_models else args.px4_root / "Tools/simulation/gz/models"),
         "HEADLESS": "1", "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
+        "POWERPLANT_SITL_EFFECTIVE_CONFIG": str(config_path),
         "PX4_PARAM_UXRCE_DDS_PRT": str(args.agent_port),
         "PX4_PARAM_UXRCE_DDS_SYNCT": "0",
         "PX4_UXRCE_DDS_PORT": str(args.agent_port),
@@ -686,6 +779,9 @@ def prepare(args):
     gz = ["gz", "sim", "-r", "-s"]
     if render_context=="egl": gz.append("--headless-rendering")
     gz.append(str(world))
+    for name,value in (("MPC_THR_HOVER",args.px4_hover_thrust),
+                       ("MPC_Z_VEL_I_ACC",args.px4_z_velocity_integral)):
+        if value is not None: env["PX4_PARAM_"+name]=str(value)
     commands = [
         ("agent", ["MicroXRCEAgent", "udp4", "-p", str(args.agent_port)], runtime),
         ("gazebo", gz, runtime),
@@ -747,6 +843,11 @@ def prepare(args):
                      "heartbeat_evidence_file": str(output / "gcs_heartbeats.jsonl")},
         "gz_partition": env["GZ_PARTITION"], "missing_dependencies": missing,
         "commands": [{"name": name, "argv": argv, "cwd": str(cwd)} for name, argv, cwd in commands],
+        "ground_support_model":ground_support_model,
+        "contact_instrumentation":contact_instrumentation,
+        "isolated_exploration_budget_s":args.explore_duration,
+        "isolated_controller_profile":controller_profile_evidence(args,{}),
+        "runtime_identity":capture_runtime_identity(args,config_path,local_models,asset_audit),
         "test_only_confirmation": {"radius_m": mission["takeoff_region_radius_m"],
             "height_m":mission["takeoff_region_height_m"],"relative_takeoff_m":mission["takeoff_height_m"]},
         "takeoff_startup_configuration": takeoff_startup_evidence({**mission, **profile}, {}),
@@ -867,6 +968,8 @@ def monitor(args, processes):
     import rclpy
     from gz.transport13 import Node as GzNode
     from gz.msgs10.pose_v_pb2 import Pose_V
+    from gz.msgs10.contacts_pb2 import Contacts
+    from gz.msgs10.world_stats_pb2 import WorldStatistics
     from nav_msgs.msg import Odometry
     from px4_msgs.msg import TrajectorySetpoint, VehicleStatus, VehicleLandDetected
     from rosgraph_msgs.msg import Clock
@@ -889,6 +992,29 @@ def monitor(args, processes):
         def __init__(self):
             super().__init__("powerplant_p2_sitl_acceptance")
             self.latest, self.events, self.phases = {}, [], []
+            self.status_history=[]
+            self.contact_lock=threading.Lock()
+            self.contact_pending=deque()
+            self.contact_pending_dropped=0
+            self.contact_callback_counts={}
+            self.world_step_rows=[]
+            self.contact_file=(args.output_dir/"contacts.jsonl").open("w")
+            instrumentation_path=args.output_dir/"contact_instrumentation.json"
+            self.contact_evidence=None
+            self.ground_support_model=None
+            self.contact_subscriptions=[]
+            if instrumentation_path.exists():
+                instrumentation=json.loads(instrumentation_path.read_text())
+                support_model=json.loads((args.output_dir/"ground_support_model.json").read_text())
+                self.ground_support_model=support_model
+                self.contact_evidence=contact_support.ContactEvidence(instrumentation,
+                    float(support_model["plane_z_enu_m"]),float(support_model["plane_uncertainty_m"]))
+                manifest=json.loads((args.output_dir/"manifest.json").read_text())
+                self.contact_evidence.advertised=set(manifest.get("discovered_gazebo_topics",[]))
+            self.pending_explore_pairs=deque()
+            self.exploration_pairs=[]
+            self.exploration_pair_drops=0
+            self.explore_depth_baselines={}
             self.poses, self.images = deque(maxlen=120), deque(maxlen=3)
             self.rgb_info = self.depth_info = None
             self.sensor_observations = {}
@@ -917,7 +1043,9 @@ def monitor(args, processes):
             profile_path = WORKSPACE / "src/px4_powerplant_mission/config/p2_simulation.yaml"
             profile = yaml.safe_load(profile_path.read_text())["powerplant_offboard_mission"]["ros__parameters"]
             shared = yaml.safe_load((WORKSPACE / "src/px4_powerplant_mission/config/powerplant.yaml").read_text())["powerplant_offboard_mission"]["ros__parameters"]
-            self.motion_parameters = {**shared,**profile}
+            effective_config=processes.env.get("POWERPLANT_SITL_EFFECTIVE_CONFIG")
+            effective=yaml.safe_load(Path(effective_config).read_text())["powerplant_offboard_mission"]["ros__parameters"] if effective_config else shared
+            self.motion_parameters = {**effective,**profile}
             self.position_tolerance = float(self.motion_parameters["motion_tracking_position_tolerance_m"])
             self.velocity_tolerance = float(self.motion_parameters["motion_tracking_velocity_tolerance_mps"])
             self.sigma_multiplier = float(self.motion_parameters["motion_sigma_multiplier"])
@@ -942,6 +1070,7 @@ def monitor(args, processes):
             self.stage_land_future = None
             self.stage_landing_accepted = False
             self.raw_vehicle_status = self.raw_landed = None
+            self.raw_landed_history=[]
             self.start_future = None
             self.started = False
             self.last_start_try = 0.0
@@ -1004,11 +1133,68 @@ def monitor(args, processes):
             self.gz_truth_node = GzNode()
             if not self.gz_truth_node.subscribe(Pose_V, "/world/powerplant/dynamic_pose/info", self.truth):
                 raise RuntimeError("cannot subscribe to isolated Gazebo model truth")
+            if self.contact_evidence:
+                if not self.gz_truth_node.subscribe(WorldStatistics,"/world/powerplant/stats",self.world_statistics_sample):
+                    raise RuntimeError("cannot subscribe to actual world iteration evidence")
+                for sensor in self.contact_evidence.instrumentation["sensors"]:
+                    topic=sensor["topic"]
+                    if not self.gz_truth_node.subscribe(Contacts,topic,partial(self.contact_sample,topic)):
+                        raise RuntimeError("cannot subscribe to evaluation contact sensor: "+topic)
+                    self.contact_subscriptions.append(topic)
+                    self.contact_evidence.subscribed.add(topic)
             if args.detection_mode == "replay":
                 self.source_pub = self.create_publisher(Image, "/powerplant/perception/yolo_source_image", reliable)
                 self.detection_pub = self.create_publisher(String, "/powerplant/perception/yolo_detections", reliable)
             self.start_client = self.create_client(Trigger, "/start_powerplant_mission")
             self.land_client = self.create_client(Trigger, "/land_powerplant_mission")
+
+        def world_statistics_sample(self,message):
+            row={"sample_ns":int(message.sim_time.sec)*1_000_000_000+int(message.sim_time.nsec),
+                 "iterations":int(message.iterations),"paused":bool(message.paused),"receipt_wall":time.monotonic()}
+            with self.contact_lock:self.world_step_rows.append(row)
+
+        def contact_sample(self,topic,message):
+            rows=contact_support.contact_packet(message,topic,time.monotonic(),self.clock_ns)
+            if self.clock_ns is None and not self.started:
+                for row in rows:row["before_monitor_clock"]=True
+            with self.contact_lock:
+                self.contact_callback_counts[topic]=self.contact_callback_counts.get(topic,0)+1
+                for row in rows:
+                    if len(self.contact_pending)>=65536:self.contact_pending_dropped+=1
+                    else:self.contact_pending.append(row)
+
+        def consume_contacts(self):
+            with self.contact_lock:
+                pending=list(self.contact_pending);self.contact_pending.clear()
+                counts=dict(self.contact_callback_counts)
+                steps=list(self.world_step_rows)
+            if self.contact_evidence:
+                self.contact_evidence.observe(pending)
+                self.contact_evidence.callback_counts=counts
+                self.contact_evidence.world_steps=steps
+            for row in pending:self.contact_file.write(json_dumps(row)+"\n")
+            if pending:self.contact_file.flush()
+
+        def consume_exploration_pairs(self):
+            # A delayed truth sample is allowed to arrive before judging the
+            # pair. Neither a new phase nor a new epoch may lend it progress.
+            remaining=deque()
+            for row in self.pending_explore_pairs:
+                truth=self.pose_at(row["sample_ns"],self.truth_poses)
+                if truth is None:
+                    if self.truth_poses and row["sample_ns"]<self.truth_poses[0][0]:
+                        self.exploration_pair_drops+=1
+                    else:remaining.append(row)
+                    continue
+                if (row["covariance_valid"] and row.get("clock_sample_age_s") is not None
+                        and -.05<=row["clock_sample_age_s"]<=self.reaction_budget
+                        and row.get("clock_receipt_age_wall_s") is not None
+                        and 0<=row["clock_receipt_age_wall_s"]<=self.reaction_budget):
+                    self.exploration_pairs.append({"sample_ns":row["sample_ns"],
+                        "navigation":row["position"],"truth":truth[0].tolist(),
+                        "identity":row["task_identity"],"depth_base":row["explore_depth_base"]})
+                else:self.exploration_pair_drops+=1
+            self.pending_explore_pairs=remaining
 
         def sensor_image(self, kind, msg):
             now,sample=time.monotonic(),stamp(msg)
@@ -1162,6 +1348,10 @@ def monitor(args, processes):
             except ValueError: return
             now = time.monotonic()
             self.latest = state
+            self.status_history.append(state)
+            identity=(state.get("localization_epoch"),state.get("task_roi_revision"))
+            if state.get("phase")=="EXPLORE" and identity not in self.explore_depth_baselines:
+                self.explore_depth_baselines[identity]=state.get("map_fusion_depth_count",0)
             self.update_start_readiness()
             self.state_file.write(json_dumps({"wall": now, **state}) + "\n")
             motion_snapshot = {"receipt_wall":now,"receipt_ros_ns":self.clock_ns,
@@ -1269,7 +1459,13 @@ def monitor(args, processes):
                      "execution_active":bool(self.execution_active()),"phase":self.latest.get("phase"),
                      "clock_sample_age_s":(self.clock_ns-stamp(msg))*1e-9 if self.clock_ns is not None else None,
                      "clock_receipt_age_wall_s":wall-self.clock_wall if self.clock_wall is not None else None}
+                row["task_identity"]=(self.latest.get("localization_epoch"),self.latest.get("task_roi_revision"))
+                row["explore_depth_base"]=self.explore_depth_baselines.get(tuple(row["task_identity"]),0)
                 self.navigation_rows.append(row)
+                if row["execution_active"] and row["phase"]=="EXPLORE":
+                    if len(self.pending_explore_pairs)>=360:
+                        self.pending_explore_pairs.popleft();self.exploration_pair_drops+=1
+                    self.pending_explore_pairs.append(row)
                 # Preserve invalid numeric evidence as JSON null, accompanied
                 # by covariance_valid=false, rather than emitting NaN/Infinity.
                 self.pose_file.write(json_dumps(clean_json(row),allow_nan=False)+"\n")
@@ -1442,7 +1638,8 @@ def monitor(args, processes):
                 gcs = self.gcs_evidence()
                 startup = takeoff_startup_evidence(self.motion_parameters, gcs.get("read_only_px4_parameters", {}))
                 if not (gcs.get("link_healthy") and gcs["evidence_fresh_at_report"]
-                        and gcs["px4_datalink_policy_verified"] and startup["passed"]):
+                        and gcs["px4_datalink_policy_verified"] and startup["passed"]
+                        and controller_profile_evidence(args,gcs.get("read_only_px4_parameters",{}))["passed"]):
                     return
                 self.event_file.write(json_dumps({"event":"test_start_readiness_dwell","wall":now,
                     "localization_epoch":self.start_ready_epoch,
@@ -1514,6 +1711,7 @@ def monitor(args, processes):
             sample=int(message.timestamp)*1000
             if sample>0 and (self.raw_landed is None or sample>self.raw_landed["sample_ns"]):
                 self.raw_landed={"sample_ns":sample,"receipt_wall":time.monotonic(),"landed":bool(message.landed)}
+                self.raw_landed_history.append(self.raw_landed)
 
         def truth(self, msg):
             # This callback runs on Gazebo Transport's thread. Only copy the
@@ -1546,6 +1744,7 @@ def monitor(args, processes):
                     self.truth_entity_id=row["entity_id"]
                     self.truth_poses.append((row["sample_ns"],point,quat/np.linalg.norm(quat)))
             if pending: self.truth_file.flush()
+            self.consume_exploration_pairs()
 
         def pose_at(self, sample, history=None):
             points = list(self.poses if history is None else history)
@@ -1811,6 +2010,22 @@ def monitor(args, processes):
             return summary
 
         def result(self, reason):
+            self.consume_contacts()
+            self.consume_exploration_pairs()
+            contacts=self.contact_evidence.result(self.status_history,self.events) if self.contact_evidence else None
+            handoff=None
+            if contacts is not None:
+                contacts["pending_queue_overflow"]=self.contact_pending_dropped
+                contacts["passed"]=bool(contacts["passed"] and self.contact_pending_dropped==0)
+                (args.output_dir/"world_steps.json").write_text(json_dumps(self.contact_evidence.world_steps,indent=2,allow_nan=False))
+                (args.output_dir/"physical_contacts.json").write_text(json_dumps(contacts,indent=2,allow_nan=False))
+                handoff=contact_support.takeoff_handoff_evidence(self.status_history,self.events,
+                    self.raw_landed_history,self.setpoints,self.ground_support_model,self.motion_parameters)
+                (args.output_dir/"takeoff_ground_handoff.json").write_text(json_dumps(handoff,indent=2,allow_nan=False))
+            progress=contact_support.exploration_progress_evidence(self.exploration_pairs,self.events,
+                (self.latest.get("localization_epoch"),self.latest.get("task_roi_revision")))
+            progress["unpaired_or_invalid_samples"]=self.exploration_pair_drops
+            (args.output_dir/"exploration_progress.json").write_text(json_dumps(progress,indent=2,allow_nan=False))
             chain=self.yolo_chain_evidence() if args.detection_mode=="yolo" else None
             gcs = self.gcs_evidence()
             startup = takeoff_startup_evidence(self.motion_parameters, gcs.get("read_only_px4_parameters", {}))
@@ -1874,6 +2089,11 @@ def monitor(args, processes):
                 "no_mission_fault": "FAULT" not in self.phases,
                 "topology_built": self.max_regions>=1,
             }
+            if args.scenario=="powerplant":
+                checks["actual_physical_contacts_verified"]=bool(contacts and contacts["passed"])
+                checks["ground_to_strict_runtime_handoff_verified"]=bool(handoff and handoff["passed"])
+                if not limited:
+                    checks["actual_autonomous_viewpoint_and_movement"]=progress["passed"]
             if limited:
                 checks["requested_stage_observed"] = bool(self.limited_stage_reached and self.limited_stage_evidence and self.limited_stage_evidence["passed"])
                 checks["stage_landing_service_accepted"] = self.stage_landing_accepted
@@ -1898,6 +2118,10 @@ def monitor(args, processes):
                     "acceptance_scope":acceptance_scope(args),"flight_acceptance_executed":self.started,
                     "full_mission_acceptance":bool(not limited and all(checks.values())),
                     "full_scene_exploration_acceptance":False,
+                    "inspection_acceptance_executed":bool(args.detection_mode!="none" and not limited),
+                    "physical_contact_evidence":contacts,
+                    "takeoff_ground_handoff_evidence":handoff,
+                    "exploration_progress_evidence":progress,
                     "limited_stage_evidence":self.limited_stage_evidence if limited else None,
                     "landing_evidence":landing,
                     "evaluation_geometry":{"world":str(scenario_world(args)),
@@ -1951,6 +2175,10 @@ def monitor(args, processes):
                     self.obstacle_process.kill()
                 self.obstacle_process.communicate(timeout=1)
                 self.obstacle_process = None
+            for topic in self.contact_subscriptions:self.gz_truth_node.unsubscribe(topic)
+            if self.contact_evidence:self.gz_truth_node.unsubscribe("/world/powerplant/stats")
+            self.consume_contacts()
+            self.contact_file.close()
             self.gz_truth_node.unsubscribe("/world/powerplant/dynamic_pose/info")
             self.consume_truth()
             self.truth_file.close()
@@ -1962,12 +2190,16 @@ def monitor(args, processes):
     node = Monitor()
     started = time.monotonic()
     reason = "timeout"
+    fault_recovery_started = None
+    fault_land_future = None
+    fault_land_accepted = False
     try:
         while time.monotonic()-started < args.timeout+args.startup_timeout:
             failures = processes.failed()
             if failures: raise RuntimeError("; ".join(failures))
             rclpy.spin_once(node, timeout_sec=.02)
             node.consume_truth()
+            node.consume_contacts()
             if not args.image_chain_only: node.calibrate()
             node.start_if_ready()
             node.stop_at_requested_stage()
@@ -1975,13 +2207,31 @@ def monitor(args, processes):
             node.replay()
             if args.image_chain_only and node.yolo_success_count>=3:
                 reason="yolo_image_chain_complete"; break
+            if fault_land_future is not None and fault_land_future.done():
+                response = fault_land_future.result()
+                fault_land_accepted = bool(response and response.success)
+            if (fault_recovery_started is not None and time.monotonic()-fault_recovery_started > 60
+                    and node.latest.get("phase") != "COMPLETE"):
+                reason = "mission_fault_landing_unconfirmed"; break
             if not args.image_chain_only and node.latest.get("phase") == "FAULT":
-                reason = "mission_fault"; break
+                if fault_recovery_started is None:
+                    fault_recovery_started = time.monotonic()
+                    reason = "mission_fault"
+                if fault_land_future is None and node.land_client.service_is_ready():
+                    fault_land_future = node.land_client.call_async(Trigger.Request())
+                elif fault_land_future is not None and fault_land_future.done() and not fault_land_accepted:
+                    break
             if not args.image_chain_only and node.latest.get("phase") == "COMPLETE":
-                reason = "complete"; break
+                reason = "mission_fault_recovered_land" if fault_recovery_started is not None else "complete"
+                break
             if not args.image_chain_only and not node.started and time.monotonic()-started > args.startup_timeout:
                 reason = "startup_or_health_timeout"; break
         report = node.result(reason)
+        report["failure_recovery"] = {"requested":fault_recovery_started is not None,
+            "landing_service_accepted":fault_land_accepted,
+            "landed_and_disarmed":bool(fault_recovery_started is not None and
+                report.get("landing_evidence",{}).get("passed")),
+            "main_mission_pass_restored":False}
     except BaseException as error:
         report = node.result(type(error).__name__ + ": " + str(error))
         report["passed"] = False
@@ -2041,7 +2291,8 @@ def main():
                     images=[t.strip() for t in topics if "/sensor/IMX214/image" in t or t.strip()=="/camera"]
                     infos=[t.strip() for t in topics if "/sensor/IMX214/camera_info" in t or t.strip()=="/camera/camera_info"]
                     depth_infos=[t.strip() for t in topics if "/sensor/StereoOV7251/camera_info" in t or t.strip() in ("/depth_camera/camera_info","/camera_info")]
-                    if images and infos and depth_infos:
+                    expected_contacts={x["topic"] for x in (manifest.get("contact_instrumentation") or {}).get("sensors",[])}
+                    if images and infos and depth_infos and expected_contacts<=set(topics):
                         argv=argv+[f"rgb_gz_topic:={images[0]}",f"rgb_info_gz_topic:={infos[0]}",
                                    f"depth_info_gz_topic:={depth_infos[0]}"]
                         manifest["resolved_sensor_topics"]={"rgb":images[0],"rgb_info":infos[0],
@@ -2063,6 +2314,18 @@ def main():
         actual_renderer = renderer_capture.finish(server.pid if server is not None else None)
         manifest["render_context"].update(actual_renderer)
         processes.close()
+        identity=manifest['runtime_identity']
+        code_stability=contact_support.verify_file_lock(identity['code_file_lock'])
+        resource_stability=contact_support.verify_file_lock(identity['resource_file_lock'])
+        report['runtime_identity_validation']={'code':code_stability,'resources':resource_stability,
+            'actual_cpp_executables':identity['actual_cpp_executables'],'repository_head':identity['repository_head'],
+            'tracked_diff_binary_sha256':identity['tracked_diff_binary_sha256']}
+        identity_valid=(code_stability['passed'] and resource_stability['passed']
+                        and identity['cpp_package_resolution']=='ament_index')
+        report.setdefault('checks',{})['code_and_resources_unchanged_during_run']=identity_valid
+        report['passed']=bool(report['passed'] and identity_valid)
+        if 'full_mission_acceptance' in report:
+            report['full_mission_acceptance']=bool(report['full_mission_acceptance'] and identity_valid)
         report["sensor_profile"]=args.sensor_profile
         report["acceptance_scope"]=acceptance_scope(args)
         report["render_context"]=manifest["render_context"]
@@ -2073,6 +2336,12 @@ def main():
         if "full_mission_acceptance" in report:
             report["full_mission_acceptance"]=bool(report["full_mission_acceptance"] and profile_evidence["passed"])
         report["requested_performance_scope"]=manifest["sensor_profile"]["performance_scope"]
+        controller=controller_profile_evidence(args,report.get("gcs_evidence",{}).get("read_only_px4_parameters",{}))
+        report["isolated_controller_profile"]=controller
+        report["checks"]["actual_controller_profile_matches_requested"]=controller["passed"]
+        report["passed"]=bool(report["passed"] and controller["passed"])
+        if "full_mission_acceptance" in report:
+            report["full_mission_acceptance"]=bool(report["full_mission_acceptance"] and controller["passed"])
         report["performance_scope"]=(report["requested_performance_scope"]
             if profile_evidence["passed"] else "unverified_sensor_load")
         manifest["sensor_profile"]["observed_sensors"]=report.get("observed_sensors",{})

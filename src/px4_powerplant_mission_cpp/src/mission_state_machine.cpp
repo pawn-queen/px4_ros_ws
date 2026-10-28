@@ -33,6 +33,7 @@ void OffboardMissionNode::start(Trigger::Response &response) {
   }
   cancel_jobs();
   reset_roi_task();
+  explore_task_started_ = explore_task_steady_ = 0;
   active_ = true;
   phase_ = Phase::Start;
   if (motion_)
@@ -77,6 +78,7 @@ void OffboardMissionNode::start(Trigger::Response &response) {
   reset_scan();
   mission_started_ = ns();
   mission_steady_ = steady_ns();
+  reset_takeoff_safety();
   response.success = true;
   response.message = "mission requested: START";
   publish_status();
@@ -93,6 +95,7 @@ void OffboardMissionNode::initialize() {
   phase_ = Phase::Takeoff;
   mission_started_ = ns();
   mission_steady_ = steady_ns();
+  reset_takeoff_safety();
   search_started_ = 0;
   explore_revision_ = return_revision_ = -1;
   explore_plan_stamp_ = return_plan_stamp_ = 0;
@@ -138,7 +141,20 @@ void OffboardMissionNode::tick() {
     stop_motion(explore_wait_);
     event("motion_plan_rejected");
   }
+  update_takeoff_safety();
+  if (phase_ == Phase::Landing) {
+    publish_status();
+    return;
+  }
   if (motion_ && motion_->report().mode == MotionMode::Fault) {
+    if (phase_ == Phase::Takeoff && b("takeoff_ground_support_enabled") &&
+        takeoff_safety_stage_ != MotionCertificateKind::AirborneStrict &&
+        motion_->report().reason.find("GROUND_SUPPORT_") != std::string::npos &&
+        motion_health_reason().empty()) {
+      enter_landing("takeoff support unavailable: " + motion_->report().reason);
+      publish_status();
+      return;
+    }
     fault("motion executor: " + motion_->report().reason);
     publish_status();
     return;
@@ -194,6 +210,8 @@ void OffboardMissionNode::tick() {
     else
       enter_return("global return reserve reached");
   }
+  if (phase_ == Phase::Explore && exploration_task_budget_exhausted())
+    enter_return("local exploration task budget reached; ROI coverage incomplete");
   if (phase_ == Phase::Explore)
     prepare_explore();
   else if (phase_ == Phase::Return)
@@ -260,6 +278,10 @@ void OffboardMissionNode::reset_scan() {
   step_lidar_base_.reset();
 }
 void OffboardMissionNode::enter_scan(const Vec3 &target) {
+  if (!takeoff_strict_ready()) {
+    fault("initial scan requires acknowledged strict airborne certificate");
+    return;
+  }
   phase_ = Phase::Scan;
   scan_anchor_ = target;
   scan_original_anchor_ = target;
@@ -504,6 +526,10 @@ void OffboardMissionNode::enter_explore() {
   update_roi_access_budget();
   cancel_jobs();
   phase_ = Phase::Explore;
+  if (!explore_task_started_) {
+    explore_task_started_ = ns();
+    explore_task_steady_ = steady_ns();
+  }
   set_roi_mode(TaskRoiMode::Work);
   explore_global_search_ = false;
   explore_failure_ = PlanningFailure::None;
@@ -548,7 +574,18 @@ void OffboardMissionNode::enter_target() {
   p["inspection_strategy"] = "reachable_surface_gain";
   event("target_acquired", p);
 }
+bool OffboardMissionNode::exploration_task_budget_exhausted() const {
+  const double budget = d("explore_task_duration_s");
+  return budget > 0 && explore_task_started_ > 0 &&
+      std::max(age(explore_task_started_),
+               (steady_ns() - explore_task_steady_) * 1e-9) >= budget;
+}
 void OffboardMissionNode::enter_return(const std::string &reason) {
+  if (b("takeoff_ground_support_enabled") &&
+      takeoff_safety_stage_ != MotionCertificateKind::AirborneStrict) {
+    enter_landing(reason + "; landing before strict airborne handoff");
+    return;
+  }
   cancel_jobs();
   stop_motion("return takeover: " + reason);
   phase_ = Phase::Return;
@@ -592,7 +629,10 @@ void OffboardMissionNode::update_landing() {
   const bool confirmed =
       vehicle_fresh() &&
       receipt_fresh(land_stamp_, land_steady_, d("max_land_detection_age_s")) &&
+      stamp_reason(land_sample_, ns(), d("max_land_detection_age_s"),
+                   d("max_future_stamp_skew_s")).empty() &&
       vehicle_stamp_ >= landing_started_ && land_stamp_ >= landing_started_ &&
+      land_sample_ >= landing_started_ &&
       vehicle_.arming_state == Status::ARMING_STATE_DISARMED && land_.landed;
   if (confirmed) {
     if (!landed_since_)
@@ -700,8 +740,12 @@ std::pair<Vec3, double> OffboardMissionNode::select_target() {
         return {*position_, motion_target_yaw_};
       }
     }
-    return {waypoints_[std::min(waypoint_, waypoints_.size() - 1)],
-            motion_target_yaw_};
+    Vec3 goal = waypoints_[std::min(waypoint_, waypoints_.size() - 1)];
+    if (b("takeoff_ground_support_enabled") &&
+        takeoff_safety_stage_ != MotionCertificateKind::AirborneStrict)
+      goal.z() = std::min(goal.z(), takeoff_ground_reference_.z() +
+                                   d("takeoff_ground_max_rise_m"));
+    return {goal, motion_target_yaw_};
   }
   if (phase_ == Phase::Scan) {
     if (!scan_anchor_)
@@ -750,6 +794,19 @@ void OffboardMissionNode::update_phase(const Vec3 &target, double heading) {
       return;
     if (reached(target, std::min(.1, d("target_acceptance_m")))) {
       takeoff_bootstrap_active_ = false;
+      if (b("takeoff_ground_support_enabled") &&
+          takeoff_safety_stage_ != MotionCertificateKind::AirborneStrict) {
+        if (motion.strict_promotion_ready || takeoff_strict_requested_) {
+          takeoff_strict_requested_ = true;
+          return; // Runtime must acknowledge the strict HOLD without reanchoring.
+        }
+        if (target.z() >= takeoff_ground_reference_.z() +
+                              d("takeoff_ground_max_rise_m") - 1e-6) {
+          enter_landing("strict handoff unavailable at bounded takeoff height: " +
+                        motion.strict_promotion_reason);
+          return;
+        }
+      }
       if (waypoint_ + 1 < waypoints_.size())
         ++waypoint_;
       else {
@@ -814,6 +871,7 @@ void OffboardMissionNode::update_phase(const Vec3 &target, double heading) {
       fields["goal_key"] = key_json(goal_key);
       fields["yaw_bin"] = bin;
       fields["actual_depth_sample_id"] = integer(latest_depth_observation_id_);
+      fields["actual_depth_sample_stamp_ns"] = integer(latest_depth_observation_sample_);
       fields["roi_mode"] = task_roi_mode_name(roi_mode_);
       fields["change_history_complete"] =
           maps_.changes_since(viewpoint_revision_, changed);

@@ -69,6 +69,9 @@ std::string OffboardMissionNode::takeoff_space_reason() const {
     return "takeoff position unavailable";
   if (!b("takeoff_region_confirmed"))
     return "safe takeoff column has not been explicitly confirmed";
+  const auto support_error = ground_support_parameter_reason();
+  if (!support_error.empty())
+    return support_error;
   const double radius = d("takeoff_region_radius_m"),
                height = d("takeoff_region_height_m"),
                takeoff = d("takeoff_height_m"),
@@ -88,7 +91,7 @@ std::string OffboardMissionNode::takeoff_space_reason() const {
     return "confirmed takeoff region does not contain the configured ascent";
   const Vec3 origin = home_.value_or(*position_);
   if ((position_->head<2>() - origin.head<2>()).norm() + clearance > radius ||
-      position_->z() < origin.z() - clearance ||
+      (!b("takeoff_ground_support_enabled") && position_->z() < origin.z() - clearance) ||
       position_->z() + clearance > origin.z() + height)
     return "vehicle left the confirmed takeoff column";
   // Unknown space is covered only by the explicit, physically verified column.
@@ -175,6 +178,14 @@ void OffboardMissionNode::engage() {
     warmup_started_ = 0;
     motion_publication_base_ = publications;
     command_wait_ = "waiting for a valid stationary motion certificate";
+    return;
+  }
+  if (b("takeoff_ground_support_enabled") &&
+      ((phase_ != Phase::Takeoff && motion.certificate_kind != MotionCertificateKind::AirborneStrict) ||
+       (phase_ == Phase::Takeoff &&
+        motion.certificate_kind != takeoff_safety_stage_ &&
+        !(takeoff_strict_requested_ && motion.certificate_kind == MotionCertificateKind::AirborneStrict)))) {
+    command_wait_ = "waiting for a certificate matching the takeoff stage";
     return;
   }
   if (!warmup_started_) {
