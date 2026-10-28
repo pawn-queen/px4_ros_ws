@@ -11,6 +11,36 @@ public:
 auto mapper_environment =
     ::testing::AddGlobalTestEnvironment(new MapperRosEnvironment);
 struct MapperTestAccess {
+  static void projection_follows_aircraft_outside_local_crop() {
+    VoxelMapperNode n;
+    n.position_ = Vec3(50,60,2);
+    n.have_pose_ = true;
+    n.set_parameter(rclcpp::Parameter("use_fixed_grid_bounds",true));
+    n.set_parameter(rclcpp::Parameter("grid_min_x_m",-1.0));
+    n.set_parameter(rclcpp::Parameter("grid_max_x_m",1.0));
+    n.set_parameter(rclcpp::Parameter("grid_min_y_m",-1.0));
+    n.set_parameter(rclcpp::Parameter("grid_max_y_m",1.0));
+    n.set_parameter(rclcpp::Parameter("grid_z_min_m",4.0));
+    n.set_parameter(rclcpp::Parameter("grid_z_max_m",6.0));
+    n.set_parameter(rclcpp::Parameter("use_flight_height_grid_band",true));
+    n.grid_.insert_rays({Vec3(50.125,60.125,2.125)},
+                         {Vec3(51.125,60.125,2.125)});
+    auto grid = n.projection_grid();
+    ASSERT_TRUE(grid);
+    const int x=int((50.125-grid->x)/grid->resolution),
+              y=int((60.125-grid->y)/grid->resolution);
+    ASSERT_GE(x,0); ASSERT_GE(y,0);
+    ASSERT_LT(x,grid->width); ASSERT_LT(y,grid->height);
+    EXPECT_EQ(grid->data[y*grid->width+x],0);
+    const int absent_x=int((10.125-grid->x)/grid->resolution),
+              absent_y=int((10.125-grid->y)/grid->resolution);
+    EXPECT_EQ(grid->data[absent_y*grid->width+absent_x],-1);
+    n.set_parameter(rclcpp::Parameter("use_flight_height_grid_band",false));
+    const auto wrong_height = n.projection_grid();
+    ASSERT_TRUE(wrong_height);
+    EXPECT_TRUE(std::all_of(wrong_height->data.begin(), wrong_height->data.end(),
+                           [](int8_t value) { return value == -1; }));
+  }
   static Odom pose(int64_t sample) {
     Odom msg;
     msg.header.stamp = rclcpp::Time(sample);
@@ -148,5 +178,8 @@ TEST(MapperHealth, ExplicitEstimatorResetChangesEpochButStartupGateDoesNot) {
 }
 TEST(MapperHealth, DepthBeforeCameraInfoWaitsWithoutFusingNominalIntrinsics) {
   MapperTestAccess::calibration_arrives_after_depth();
+}
+TEST(MapperHealth, ProjectionIncludesAircraftAndLowScanBandOutsideTaskCrop) {
+  MapperTestAccess::projection_follows_aircraft_outside_local_crop();
 }
 } // namespace powerplant

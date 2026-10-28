@@ -23,6 +23,7 @@
   <test_depend>rclpy</test_depend>
   <test_depend>sensor_msgs_py</test_depend>
   <test_depend>python3-numpy</test_depend>
+  <test_depend>python3-scipy</test_depend>
   <test_depend>rmw_cyclonedds_cpp</test_depend>
   <test_depend>iceoryx_posh</test_depend>
   <test_depend>iceoryx_hoofs</test_depend>

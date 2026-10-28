@@ -51,6 +51,33 @@ void validate(const PlanningMap &m, const ExplorationConfig &c) {
           "camera frustum must face forward with finite angles");
   if (left >= right || bottom >= top)
     throw std::invalid_argument("camera frustum has no angular extent");
+  if ((c.task_roi && !c.task_roi->valid()) ||
+      (c.access_region && !c.access_region->valid()) ||
+      !std::isfinite(c.roi_access_margin_m) || c.roi_access_margin_m < 0 ||
+      !std::isfinite(c.roi_revisit_penalty_s) || c.roi_revisit_penalty_s < 0)
+    throw std::invalid_argument("invalid task ROI configuration");
+}
+size_t roi_unknown_count(const PlanningMap &map, const TaskRoi &roi) {
+  const auto low = key(roi.minimum, map.resolution);
+  Key high;
+  long double total = 1;
+  for (int axis = 0; axis < 3; ++axis) {
+    const double last = std::ceil(roi.maximum[axis] / map.resolution) - 1;
+    if (last < std::numeric_limits<int>::min() + 1024.0 ||
+        last > std::numeric_limits<int>::max() - 1024.0)
+      throw std::invalid_argument("task ROI exceeds voxel coordinate range");
+    high[axis] = int(last);
+    total *= std::max<int64_t>(0, int64_t(high[axis]) - low[axis] + 1);
+  }
+  const Bounds bounds{low, high};
+  size_t known = 0;
+  for (const auto &k : map.free)
+    if (inside(k, bounds)) ++known;
+  for (const auto &k : map.occupied)
+    if (inside(k, bounds) && !map.free.count(k)) ++known;
+  const long double remaining = std::max(0.0L, total - known);
+  return remaining >= std::numeric_limits<size_t>::max()
+             ? std::numeric_limits<size_t>::max() : size_t(remaining);
 }
 std::vector<Key> offsets(double radius, double r) {
   int n = int(std::ceil(radius / r));
@@ -441,6 +468,8 @@ const char *planning_failure_name(PlanningFailure failure) {
     REASON(Cancelled, "CANCELLED");
     REASON(InvalidInput, "INVALID_INPUT");
     REASON(CalibrationUnavailable, "CALIBRATION_UNAVAILABLE");
+    REASON(RoiNotReachable, "ROI_NOT_REACHABLE");
+    REASON(RoiUnknownRemaining, "ROI_UNKNOWN_REMAINING");
 #undef REASON
   }
   return "INVALID_INPUT";
@@ -453,6 +482,7 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
                        const std::function<double(const Key &)> &variance_at,
                        const Keys &visited, const Cancel &cancel) {
   FrontierDecision decision;
+  decision.roi_mode = c.roi_mode;
   auto fail = [&](PlanningFailure reason, const std::string &detail) {
     decision.failure = reason;
     decision.detail = detail;
@@ -464,6 +494,22 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
     if (!current.allFinite() || !home.allFinite() || !std::isfinite(remaining))
       return fail(PlanningFailure::InvalidInput,
                   "non-finite pose or flight budget");
+    const bool roi_access = c.task_roi && c.roi_mode == TaskRoiMode::Access;
+    std::optional<TaskRoi> access_region = c.access_region;
+    if (roi_access && !access_region) {
+      TaskRoi combined = *c.task_roi;
+      combined.minimum = combined.minimum.cwiseMin(current).cwiseMin(home);
+      combined.maximum = combined.maximum.cwiseMax(current).cwiseMax(home);
+      access_region = combined.expanded(c.roi_access_margin_m);
+    }
+    auto eligible_unknown = [&](const Key &k) {
+      if (!c.task_roi) return true;
+      return roi_access ? access_region->intersects_cell(k, m.resolution)
+                        : c.task_roi->intersects_cell(k, m.resolution);
+    };
+    if (c.task_roi) {
+      decision.roi_unknown_remaining = roi_unknown_count(m, *c.task_roi);
+    }
     if (!std::isfinite(variance) || variance < 0 ||
         variance > c.max_position_variance_m2)
       return fail(PlanningFailure::LocalizationPoor,
@@ -471,15 +517,33 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
     if (remaining <= c.reserve_s)
       return fail(PlanningFailure::ReturnReserveLow,
                   "remaining time does not contain return reserve");
+    if (c.task_roi && !decision.roi_unknown_remaining)
+      return fail(PlanningFailure::FrontierExhausted,
+                  "task ROI contains no remaining unknown voxels");
     auto free = filtered_free(m);
     if (free.empty())
       return fail(PlanningFailure::WaitingForMap,
                   "no known-free voxels in permitted bounds");
     auto frontiers = extract_frontiers(m);
+    if (c.task_roi)
+      for (auto entry = frontiers.begin(); entry != frontiers.end();) {
+        auto &cells = entry->second;
+        for (auto cell = cells.begin(); cell != cells.end();)
+          if (!eligible_unknown(*cell)) cell = cells.erase(cell);
+          else ++cell;
+        if (cells.empty()) entry = frontiers.erase(entry);
+        else ++entry;
+      }
     decision.frontier_count = frontiers.size();
-    if (frontiers.empty())
+    if (frontiers.empty()) {
+      if (c.task_roi)
+        return fail(roi_access ? PlanningFailure::RoiNotReachable
+                               : PlanningFailure::RoiUnknownRemaining,
+                    "task ROI still contains unknown voxels; no eligible "
+                    "observed-free/unknown boundary is available");
       return fail(PlanningFailure::FrontierExhausted,
                   "no free/unknown boundary in the permitted map");
+    }
     auto safe = cached_safe(m, free, c, cancel);
     auto sk = snap(current, safe, m.resolution, c.start_snap_radius_m),
          hk = snap(home, safe, m.resolution, c.goal_snap_radius_m);
@@ -492,7 +556,9 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
     // Global guidance must actually reach remote rooms; applying a bonus after
     // the old local-radius/nearest-target truncation would never expose them.
     auto outward = dijkstra(safe, *sk, m.resolution,
-                            use_topology ? inf : c.max_search_radius_m, cancel);
+                            (use_topology || roi_access) ? inf
+                                                        : c.max_search_radius_m,
+                            cancel);
     auto homeward = dijkstra(safe, *hk, m.resolution, inf, cancel);
     if (!homeward.distance.count(*sk))
       return fail(PlanningFailure::Blocked,
@@ -526,10 +592,32 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
         if (points.size() == 1) return 0;
         return c.path_time_s(points, c.current_yaw_rad, c.current_yaw_rad, true);
       };
-      for (const auto &priority : rank_topology_regions(
-               *c.topology_guide, remaining, time_to_region)) {
-        region_order.push_back(priority.region_id);
-        region_scores[priority.region_id] = priority.score;
+      if (roi_access) {
+        std::vector<std::pair<double, uint64_t>> costs;
+        for (const auto &[region, anchor] : anchors) {
+          const auto time = time_to_region(region);
+          if (!time) continue;
+          const auto revisits = c.topology_guide->recent_observations.find(region);
+          const double cost = *time +
+              c.task_roi->distance_m(center(anchor, m.resolution)) /
+                  c.cruise_speed_mps +
+              c.roi_revisit_penalty_s *
+                  (revisits == c.topology_guide->recent_observations.end()
+                       ? 0.0 : double(revisits->second));
+          costs.emplace_back(cost, region);
+        }
+        std::sort(costs.begin(), costs.end());
+        for (const auto &[cost, region] : costs) {
+          region_order.push_back(region);
+          region_scores[region] = -cost;
+        }
+      } else {
+        for (const auto &priority : rank_topology_regions(
+                 *c.topology_guide, remaining, time_to_region,
+                 eligible_unknown)) {
+          region_order.push_back(priority.region_id);
+          region_scores[priority.region_id] = priority.score;
+        }
       }
       // A stale/advisory graph may have no frontier aggregate for a new region.
       // Keep reachable labels available; guidance never authorizes flight.
@@ -547,6 +635,21 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
       const auto &snapshot = *c.topology_guide->snapshot;
       return frontier ? snapshot.frontier_region(k) : snapshot.region_at(k);
     };
+    auto target_priority = [&](const Key &k) {
+      const Vec3 point = center(k, m.resolution);
+      return (point - current).norm() +
+             (roi_access ? c.task_roi->distance_m(point) : 0.0);
+    };
+    auto revisit_cost = [&](const Key &k) {
+      const auto found = c.roi_recent_observations.find(k);
+      return found == c.roi_recent_observations.end()
+                 ? 0.0 : double(found->second) * c.roi_revisit_penalty_s;
+    };
+    KeyMap<double> task_surfaces;
+    if (!roi_access)
+      for (const auto &[k, value] : surfaces)
+        if (!c.task_roi || c.task_roi->intersects_cell(k, m.resolution))
+          task_surfaces.emplace(k, value);
     using Group = std::map<uint64_t, std::vector<std::pair<double, Key>>>;
     // Round-robin starts with the preferred region but gives remote regions
     // actual target/candidate slots before spending extra slots locally.
@@ -591,10 +694,10 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
       for (const auto &[region, keys] : grouped)
         for (const auto &k : keys)
           target_groups[region].emplace_back(
-              (center(k, m.resolution) - current).norm(), k);
+              target_priority(k), k);
     } else
       for (const auto &k : unknown)
-        target_groups[0].emplace_back((center(k, m.resolution) - current).norm(), k);
+        target_groups[0].emplace_back(target_priority(k), k);
     std::vector<Key> targets;
     for (const auto &[distance, k] : quota(std::move(target_groups),
              size_t(c.max_frontier_targets), decision.region_target_count)) {
@@ -621,6 +724,8 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
       if (visited.count(k))
         continue;
       const Vec3 p = center(k, m.resolution);
+      if (roi_access && !access_region->contains(p))
+        continue;
       if ((p - current).norm() < c.min_goal_distance_m)
         continue;
       ++spatial_eligible;
@@ -649,7 +754,7 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
           ++potential;
       if (!potential)
         continue;
-      for (const auto &[t, gain] : surfaces)
+      for (const auto &[t, gain] : task_surfaces)
         if (std::isfinite(gain) && gain > 0 &&
             (center(t, m.resolution) - p).norm() <= range)
           surface += gain;
@@ -660,6 +765,9 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
                         c.surface_weight * std::log1p(surface) +
                         c.travel_time_weight * (out + back) +
                         c.localization_weight * std::max(variance, quality);
+      if (roi_access)
+        priority = out + c.task_roi->distance_m(p) / c.cruise_speed_mps +
+                   revisit_cost(k);
       const auto regional_bucket = std::pair(region_for(k, false), bucket);
       auto found = buckets.find(regional_bucket);
       if (found == buckets.end() || priority < found->second.first)
@@ -707,7 +815,7 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
         ++poor_quality;
         continue;
       }
-      for (const auto &view : views(p, targets, surfaces, unknown, free,
+      for (const auto &view : views(p, targets, task_surfaces, unknown, free,
                                     m.resolution, c, k, cancel)) {
         ++observable_views;
         const double turn_out =
@@ -733,19 +841,34 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
           ++low_budget;
           continue;
         }
-        const double score =
+        double score =
             c.information_weight * std::log1p(view.count) +
             c.surface_weight * std::log1p(view.surface) -
             c.travel_time_weight * (out + back) + c.clearance_weight * clear -
             c.localization_weight * quality * (1 + out + back) +
             c.reserve_weight * margin / std::max(remaining, 1.0);
+        const double access_cost = roi_access
+            ? out + c.task_roi->distance_m(p) / c.cruise_speed_mps + revisit_cost(k)
+            : 0.0;
+        if (roi_access) score = -access_cost;
         const uint64_t region_id = region_for(k, false);
-        const size_t rank = use_topology && region_ranks.count(region_id)
+        const size_t rank = !roi_access && use_topology && region_ranks.count(region_id)
                                 ? region_ranks.at(region_id) : 0;
-        if (decision.plan &&
-            (rank > selected_region_rank ||
-             (rank == selected_region_rank && score <= decision.plan->score)))
-          continue;
+        if (decision.plan) {
+          if (roi_access) {
+            const auto &selected = *decision.plan;
+            if (access_cost > selected.roi_access_cost_s + 1e-9 ||
+                (std::abs(access_cost - selected.roi_access_cost_s) <= 1e-9 &&
+                 (view.count < selected.access_visible_unknown_count ||
+                  (view.count == selected.access_visible_unknown_count &&
+                   std::pair(k, view.yaw) >=
+                       std::pair(key(selected.goal_xyz, m.resolution),
+                                 selected.goal_yaw_rad)))))
+              continue;
+          } else if (rank > selected_region_rank ||
+                     (rank == selected_region_rank && score <= decision.plan->score))
+            continue;
+        }
         auto local = local_segment(full, c.max_local_path_m);
         if (local.size() < 2 || (local.back() - local.front()).norm() < 1e-6 ||
             !path_is_known_free(m, local, c))
@@ -756,7 +879,12 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
         plan.local_path_xyz = std::move(local);
         plan.frontier_key = *view.frontier;
         plan.score = score;
-        plan.visible_unknown_count = view.count;
+        plan.visible_unknown_count = roi_access ? 0 : view.count;
+        plan.visible_roi_unknown_count = c.task_roi && !roi_access ? view.count : 0;
+        plan.access_visible_unknown_count = roi_access ? view.count : 0;
+        plan.roi_access_cost_s = access_cost;
+        plan.roi_unknown_remaining = decision.roi_unknown_remaining;
+        plan.roi_mode = c.roi_mode;
         plan.surface_gain = view.surface;
         plan.outbound_time_s = out;
         plan.return_time_s = back;
@@ -791,7 +919,9 @@ plan_frontier_detailed(const PlanningMap &m, const Vec3 &current,
         poor_quality >= spatial_eligible && low_budget == 0)
       return fail(PlanningFailure::LocalizationPoor,
                   "reachable candidate/path localization exceeds limit");
-    return fail(PlanningFailure::NoLocalCandidate,
+    return fail(c.task_roi ? (roi_access ? PlanningFailure::RoiNotReachable
+                                        : PlanningFailure::RoiUnknownRemaining)
+                           : PlanningFailure::NoLocalCandidate,
                 "frontiers remain; bounded reachability/view policy found no "
                 "plan (budget_rejections=" +
                     std::to_string(low_budget) + ", quality_rejections=" +

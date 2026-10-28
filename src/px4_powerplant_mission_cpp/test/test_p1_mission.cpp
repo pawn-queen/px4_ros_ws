@@ -487,6 +487,8 @@ struct P1MissionTestAccess {
     result.camera_revision = n.camera_revision_;
     result.configuration = n.config();
     result.bounds = n.planning_map().bounds;
+    result.navigation_domain_revision = n.navigation_domain_revision_;
+    result.task_roi_revision = n.task_roi_revision_;
     result.variance = n.xy_variance_;
     result.variance_growth = n.d("explore_localization_variance_growth_m2_per_m");
     result.source_start = *n.position_;
@@ -538,6 +540,8 @@ struct P1MissionTestAccess {
     result.revision = n.maps_.observation_revision;
     result.configuration = n.config();
     result.bounds = n.planning_map().bounds;
+    result.navigation_domain_revision = n.navigation_domain_revision_;
+    result.task_roi_revision = n.task_roi_revision_;
     result.variance = n.xy_variance_;
     result.variance_growth = .01;
     result.source_start = *n.position_;

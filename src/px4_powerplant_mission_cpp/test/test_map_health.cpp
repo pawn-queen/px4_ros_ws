@@ -115,4 +115,37 @@ TEST(MapHealth, IncreasingCountsRequireNewSamplesWithinEpoch) {
                std::invalid_argument);
   EXPECT_FALSE(r.complete);
 }
+TEST(MapHealth, NavigationExtentUsesValidatedPayloadIncludingUncertainCells) {
+  MapSnapshotReceiver r;
+  const int64_t stamp = 1000000000;
+  auto p = health_status(1,1,stamp);
+  std_msgs::msg::Header h;
+  h.stamp = rclcpp::Time(stamp);
+  h.frame_id = "map";
+  const auto cloud = cloud_message(h, {{.125f,.125f,5.125f,0},
+      {.375f,.125f,5.125f,1},{50.125f,60.125f,2.125f,-1}});
+  p["observed_voxel_count"] = 3;
+  p["observed_voxels_point_count"] = 3;
+  p["uncertain_voxel_count"] = 1;
+  p["observed_cloud_fingerprint"] = cloud_fingerprint(cloud);
+  r.update_status(serialize(p),stamp,5000000000LL);
+  EXPECT_FALSE(r.observed_bounds);
+  r.cloud = std::make_shared<Cloud>(cloud);
+  ASSERT_TRUE(r.commit("map",stamp,5000000000LL));
+  ASSERT_TRUE(r.observed_bounds);
+  EXPECT_EQ((*r.observed_bounds)[0],(Key{0,0,8}));
+  EXPECT_EQ((*r.observed_bounds)[1],(Key{200,240,20}));
+  EXPECT_FALSE(r.map.free.count(Key{200,240,8}));
+  const auto committed_extent = r.observed_bounds;
+  auto unpaired = p;
+  unpaired["status_sequence"] = 2;
+  unpaired["observed_bounds_key"] = array();
+  for (int value : {-999,-999,-999,999,999,999})
+    unpaired["observed_bounds_key"].append(value);
+  r.update_status(serialize(unpaired),stamp,5100000000LL);
+  EXPECT_EQ(r.observed_bounds,committed_extent);
+  auto reset = health_status(2,1,stamp);
+  EXPECT_TRUE(r.update_status(serialize(reset),stamp,5200000000LL));
+  EXPECT_FALSE(r.observed_bounds);
+}
 } // namespace powerplant

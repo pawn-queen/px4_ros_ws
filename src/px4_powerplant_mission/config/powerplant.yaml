@@ -319,14 +319,18 @@ powerplant_offboard_mission:
     min_target_confidence: 0.35
     target_memory_s: 8.0
     lock_target_after_acquisition: true
-    # These limits define the permitted 3D flight volume; no inspection
-    # waypoint coordinates are supplied to the autonomous explorer.
+    # Local task ROI: only this region contributes exploration/inspection gain.
+    # Safe takeoff, scan, access, external viewpoints and return use the complete
+    # observed navigation domain, not this task crop. No waypoints are supplied.
     explore_min_x_m: -24.0
     explore_max_x_m: 34.0
     explore_min_y_m: -9.0
     explore_max_y_m: 49.0
     explore_min_z_m: 3.5
     explore_max_z_m: 7.0
+    roi_access_max_duration_s: 60.0
+    roi_access_margin_m: 10.0
+    roi_access_revisit_penalty_s: 5.0
     explore_max_duration_s: 300.0
     explore_min_replan_interval_s: 1.0
     explore_max_map_age_s: 3.0

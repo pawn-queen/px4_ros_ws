@@ -86,6 +86,69 @@ PhotoQualityInput quality_input() {
 }
 } // namespace
 
+TEST(TaskRoiInspection, RejectsExteriorSurfaceEvenWhenCentroidClaimsInside) {
+  InspectionConfig config;
+  config.task_roi = TaskRoi{Vec3(3, -.2, .8), Vec3(3.1, .2, 1.7)};
+  InspectionSession session(config);
+  session.reset(17, 99);
+  auto observation = plane(1, 5);
+  observation.center = Vec3(3.05, 0, 1.2);
+  EXPECT_FALSE(session.observation_in_task_roi(observation));
+  EXPECT_FALSE(session.observe(observation));
+  EXPECT_FALSE(session.confirmed());
+  EXPECT_EQ(session.latest_sample_ns(), 0);
+  EXPECT_TRUE(session.patches().empty());
+}
+
+TEST(TaskRoiInspection, SurfaceIntersectionAdmitsTargetWithExteriorCentroid) {
+  InspectionConfig config;
+  config.task_roi = TaskRoi{Vec3(3, .02, .8), Vec3(3.1, .20, 1.7)};
+  InspectionSession session(config);
+  session.reset(17, 99);
+  for (int sample : {1, 2, 3}) {
+    const auto observation = plane(sample, .4);
+    ASSERT_FALSE(config.task_roi->contains(observation.center));
+    ASSERT_TRUE(session.observation_in_task_roi(observation));
+    ASSERT_TRUE(session.observe(observation));
+  }
+  EXPECT_TRUE(session.confirmed());
+  EXPECT_GT(session.coverage_report().modeled_area_m2, 0);
+  EXPECT_LT(session.coverage_report().modeled_area_m2,
+            confirmed_session().coverage_report().modeled_area_m2);
+}
+
+TEST(TaskRoiInspection, ClipsBoundaryPatchAreaAndKeepsTaskDenominator) {
+  InspectionConfig config;
+  // A 5 cm wide strip cuts the nominal 10 cm surfel squares in half.
+  config.task_roi = TaskRoi{Vec3(3, .02, .81), Vec3(3.1, .07, 1.61)};
+  InspectionSession session(config);
+  session.reset(17, 99);
+  for (int sample : {1, 2, 3}) ASSERT_TRUE(session.observe(plane(sample)));
+  ASSERT_TRUE(session.confirmed());
+  const auto ids = stable_ids(session);
+  ASSERT_FALSE(ids.empty());
+  for (const auto &patch : session.patches())
+    EXPECT_LE(patch.area_m2, .005 + 1e-10);
+  session.admit_required(ids);
+  const auto required = session.coverage_report().required_area_m2;
+  EXPECT_GT(required, 0);
+  const auto token = session.photo_token(plane(3).rgb_stamp_ns, ids);
+  const auto committed = session.commit_photo(token, true, true);
+  ASSERT_TRUE(committed.accepted);
+  EXPECT_NEAR(committed.new_area_m2, required, 1e-10);
+  EXPECT_TRUE(session.coverage_report().complete);
+  EXPECT_FALSE(session.observe(plane(4, 5)));
+  session.classify_views({});
+  EXPECT_DOUBLE_EQ(session.coverage_report().required_area_m2, required);
+  EXPECT_DOUBLE_EQ(session.coverage_report().covered_area_m2, required);
+}
+
+TEST(TaskRoiInspection, RejectsInvalidTaskGeometryAtSessionConstruction) {
+  InspectionConfig config;
+  config.task_roi = TaskRoi{Vec3::Zero(), Vec3(0, 1, 1)};
+  EXPECT_THROW(InspectionSession session(config), std::invalid_argument);
+}
+
 TEST(P2Inspection, RegistersDifferentCameraFieldsOfViewUsingIntrinsics) {
   auto in = registration_input();
   std::string reason;

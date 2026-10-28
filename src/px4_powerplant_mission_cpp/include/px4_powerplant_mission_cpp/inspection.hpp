@@ -45,6 +45,7 @@ register_target_observation(const RegistrationInput &,
                             std::string *reason = nullptr);
 
 struct InspectionConfig {
+  std::optional<TaskRoi> task_roi;
   int confirmation_frames = 3, patch_support_frames = 2, max_view_attempts = 3;
   double confirmation_window_s = 2, association_distance_m = .6,
          min_confidence = .35, patch_resolution_m = .1, normal_radius_m = .2,
@@ -94,6 +95,8 @@ public:
   explicit InspectionSession(InspectionConfig = {});
   void reset(int64_t epoch, uint64_t target_id);
   bool observe(const RegisteredTargetObservation &);
+  // Uses measured surface support, not the detector box or object centroid.
+  bool observation_in_task_roi(const RegisteredTargetObservation &) const;
   bool confirmed() const {
     return confirmations_ >= config_.confirmation_frames;
   }

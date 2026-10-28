@@ -242,6 +242,9 @@ inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<double>("explore_max_y_m", 49.0);
   n.declare_parameter<double>("explore_min_z_m", 3.5);
   n.declare_parameter<double>("explore_max_z_m", 7.0);
+  n.declare_parameter<double>("roi_access_max_duration_s", 60.0);
+  n.declare_parameter<double>("roi_access_margin_m", 10.0);
+  n.declare_parameter<double>("roi_access_revisit_penalty_s", 5.0);
   n.declare_parameter<double>("explore_clearance_radius_m", 0.35);
   n.declare_parameter<double>("explore_max_search_radius_m", 10.0);
   n.declare_parameter<double>("explore_sensor_range_m", 8.0);

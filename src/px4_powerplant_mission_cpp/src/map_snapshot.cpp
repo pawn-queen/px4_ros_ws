@@ -51,6 +51,7 @@ bool MapSnapshotReceiver::update_status(const std::string &text, int64_t now,
     // the decoder for destruction, including the potentially large delta log.
     auto retired = std::make_shared<MapSnapshotReceiver>();
     std::swap(retired->map, map);
+    std::swap(retired->observed_bounds, observed_bounds);
     std::swap(retired->deltas_, deltas_);
     map.resolution = retired->map.resolution;
     retired_geometry_.push_back(std::move(retired));
@@ -139,6 +140,7 @@ bool MapSnapshotReceiver::commit(const std::string &frame, int64_t now,
   if (int64_t(rows.size()) != expected)
     return false;
   Keys observed, free, occupied;
+  std::optional<Bounds> decoded_bounds;
   for (const auto &row : rows) {
     Vec3 v(row[0], row[1], row[2]);
     float state = row[3];
@@ -147,6 +149,13 @@ bool MapSnapshotReceiver::commit(const std::string &frame, int64_t now,
     auto k = key(v, resolution);
     if (!observed.insert(k).second)
       return false;
+    if (!decoded_bounds)
+      decoded_bounds = Bounds{k, k};
+    else
+      for (int axis = 0; axis < 3; ++axis) {
+        (*decoded_bounds)[0][axis] = std::min((*decoded_bounds)[0][axis], k[axis]);
+        (*decoded_bounds)[1][axis] = std::max((*decoded_bounds)[1][axis], k[axis]);
+      }
     if (state == 0)
       free.insert(k);
     else if (state == 1)
@@ -199,6 +208,7 @@ bool MapSnapshotReceiver::commit(const std::string &frame, int64_t now,
   map.occupied = std::move(occupied);
   map.resolution = resolution;
   map.index = std::move(index);
+  observed_bounds = decoded_bounds;
   revision = rev;
   stamp = ts;
   received = now;
@@ -297,6 +307,7 @@ bool MapSnapshotReceiver::adopt_geometry(MapSnapshotReceiver &decoded,
                  !(*status)["localization_healthy"].asBool()))
     return false;
   std::swap(map, decoded.map);
+  std::swap(observed_bounds, decoded.observed_bounds);
   std::swap(deltas_, decoded.deltas_);
   std::swap(delta_cells_, decoded.delta_cells_);
   std::swap(delta_floor_, decoded.delta_floor_);

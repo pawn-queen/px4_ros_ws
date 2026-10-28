@@ -1,6 +1,23 @@
 # C++ 迁移进度与验证记录
 
-更新：2026-10-26。此文件用于后续继续任务时保持范围与验证结论一致。
+更新：2026-10-28。此文件用于后续继续任务时保持范围与验证结论一致。
+
+## 2026-10-28：Issue #3 碰撞资产与局部任务 ROI
+
+最新实测：真实GPU渲染和明确5Hz降载已进入SAFE_TAKEOFF，但停止包络下界越界约1.03mm触发FAULT，尚无初扫/ROI接入/返航通过证据。版本绑定的实际GPU雷达方向、深度一致性已通过；名义角度与在线mapper误差单独保留。详细状态及不重复计数的软件结果以 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 为准，Issue #3继续开启。
+
+本次修正电厂碰撞资产，并将局部任务区域从全阶段导航安全域中分离。实现、版本与验收入口分别见 [ISSUE3_IMPLEMENTATION.md](ISSUE3_IMPLEMENTATION.md)、[ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)；下方 316 项软件回归和 CPU17 飞行失败保留为 2026-10-26 的历史证据。
+
+- 原视觉 STL 保持不变；实心碰撞盒改为保留凹结构的独立静态简化 mesh。最终 **501262 面**，较原 605740 面减少约 **17.25%**。全部顶点和三角形质心的独立双向复验最大距离约 **19.08 mm**；这是有限验证集结果，不是连续 Hausdorff 证明。
+- 资产已形成模型仓库的本地可检出提交 `69f6511d0b11e2189b204ce6b10f12cbef24f119`，未推送，不含已有 `x500_depth` 修改。主仓库 `config/powerplant_assets.json` 固定资产提交及递归文件哈希；实际电厂准备阶段发现版本或资源不匹配时拒绝沿用旧验收。
+- `explore_min/max_*` 现在定义局部任务 ROI（默认 x=[-24,34]、y=[-9,49]、z=[3.5,7] m），用于收益、任务表面和完成范围。起飞、初扫、已知安全接入/绕障/取景和返航使用完整导航证据域；新增 bounds 不生成空闲体素，占据仍否决确认柱体。
+- `EXPLORE` 内增加 `ROI_WORK / ROI_ACCESS`。没有可用 ROI 工作视点时，在 home 与 ROI 联合 AABB 外扩 10 m 的范围内自主探测入口；接入时间按 steady clock 累计，默认 60 s，跨模式不清零，重访代价默认 5 s。接入失败、超时或返航余量不足不报告 ROI 完成。
+- 二维初扫投影包含当前位姿及当前飞行高度带；原始融合、新鲜度、姿态和安全首段条件保留。ROI/接入参数只在 IDLE 接受有效原子修改，独立 revision 阻止旧结果采用；一般机体/制动参数仍不是受支持的飞行中热改接口。
+- 注册后的真实目标表面须与任务 ROI 相关；外部面片不进入覆盖分母。新的覆盖 scope 为 `reachable_modeled_surface_in_task_roi`，与图像中的目标 ROI、落地 COMPLETE 及全电厂完成分开。
+
+本轮已记录的验证：两包 Release 串行构建通过；C++/对照/跨进程 ROS 等 `colcon` 汇总 **235 项通过**（含 17 个 CTest 外层结果，不重复计数）；共享 Python **127 项通过**。完整和简化 mesh 的动态双侧接触、阳性接触对照及 3 条起飞区自由路径已有通过证据。对应运行目录为 `log/issue3_powerplant/20261027_204849/`。
+
+正式场景入口为 `run_p2_sitl.py --scenario powerplant`；`room/two_rooms` 继续作回归。`--stop-after scan`、`--roi-access-test --stop-after roi-access` 与 `--stop-after mission` 分别标记起飞初扫、接入进展和局部任务范围；真实电厂没有已核验标注 fixture 时，拒绝复用小房间圆柱检测重放。本轮417个直接软件用例通过；正确绑定资源后的六组原始传感器负载成本对照通过5%退化检查，旧未绑定对照作废。**SITL仍未通过，完整巡检未验收**，具体范围以 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 为准。
 
 ## 2026-10-26：P2 软件逻辑核查与回归完成
 

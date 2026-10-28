@@ -54,8 +54,60 @@ const char *phase_name(Phase p) {
 OffboardMissionNode::OffboardMissionNode()
     : ParameterNode("powerplant_offboard_mission") {
   declare_offboard_mission_parameters(*this);
+  (void)task_roi();
+  for (const auto *name : {"roi_access_max_duration_s", "roi_access_margin_m",
+                           "roi_access_revisit_penalty_s"})
+    if (!std::isfinite(d(name)) || d(name) < 0 ||
+        (std::string(name) == "roi_access_max_duration_s" && d(name) == 0))
+      throw std::invalid_argument(std::string("invalid ROI parameter: ") + name);
   active_ = b("auto_start");
   phase_ = active_ ? Phase::Start : Phase::Idle;
+  roi_parameter_callback_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> &parameters) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        const std::set<std::string> names = {
+            "explore_min_x_m", "explore_max_x_m", "explore_min_y_m",
+            "explore_max_y_m", "explore_min_z_m", "explore_max_z_m",
+            "roi_access_max_duration_s", "roi_access_margin_m",
+            "roi_access_revisit_penalty_s"};
+        std::map<std::string, double> values;
+        bool changed = false;
+        for (const auto &parameter : parameters)
+          if (names.count(parameter.get_name())) {
+            changed = true;
+            if (active_ || phase_ != Phase::Idle) {
+              result.successful = false;
+              result.reason = "task ROI and access policy may change only in IDLE";
+              return result;
+            }
+            if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE ||
+                !std::isfinite(parameter.as_double())) {
+              result.successful = false;
+              result.reason = "ROI parameters require finite doubles";
+              return result;
+            }
+            values[parameter.get_name()] = parameter.as_double();
+          }
+        if (!changed)
+          return result;
+        for (const auto &name : names)
+          if (!values.count(name))
+            values[name] = d(name);
+        for (const std::string axis : {"x", "y", "z"})
+          if (values["explore_min_" + axis + "_m"] >=
+              values["explore_max_" + axis + "_m"]) {
+            result.successful = false;
+            result.reason = "task ROI minimum must be below maximum";
+          }
+        if (values["roi_access_max_duration_s"] <= 0 ||
+            values["roi_access_margin_m"] < 0 ||
+            values["roi_access_revisit_penalty_s"] < 0) {
+          result.successful = false;
+          result.reason = "invalid ROI access duration, margin or revisit cost";
+        }
+        return result;
+      });
   avoidance_gate_ = !b("avoidance_startup_gate_enabled");
   heartbeat_pub_ = create_publisher<px4_msgs::msg::OffboardControlMode>(
       s("offboard_control_mode_topic"), px4_qos());
@@ -600,6 +652,17 @@ void OffboardMissionNode::publish_status(std::optional<Vec3> target,
                                          std::optional<Vec3> setpoint_value) {
   auto p = object();
   p["phase"] = phase_name(phase_);
+  const auto roi = task_roi();
+  p["task_roi_minimum_enu_m"] = vector_json(roi.minimum);
+  p["task_roi_maximum_enu_m"] = vector_json(roi.maximum);
+  p["task_roi_revision"] = integer(task_roi_revision_);
+  p["navigation_domain_revision"] = integer(navigation_domain_revision_);
+  p["explore_roi_mode"] = task_roi_mode_name(roi_mode_);
+  p["roi_access_elapsed_s"] = roi_access_elapsed_s_;
+  p["roi_access_remaining_s"] = std::max(0., d("roi_access_max_duration_s") - roi_access_elapsed_s_);
+  p["roi_unknown_remaining"] = roi_count_revision_ == task_roi_revision_
+      ? integer(roi_unknown_remaining_) : JsonValue();
+  p["exploration_completion_scope"] = "local_task_roi";
   p["takeoff_bootstrap_active"] = takeoff_bootstrap_active_;
   p["takeoff_bootstrap_minimum_duration_s"] = takeoff_bootstrap_active_
       ? d("motion_takeoff_bootstrap_duration_s") : 0;
@@ -622,7 +685,7 @@ void OffboardMissionNode::publish_status(std::optional<Vec3> target,
   p["inspection_result"] = inspection_result_;
   p["inspection_wait_reason"] = inspection_wait_;
   p["inspection_target_id"] = integer(inspection_.target_id());
-  p["inspection_coverage_scope"] = "reachable_modeled_surface";
+  p["inspection_coverage_scope"] = "reachable_modeled_surface_in_task_roi";
   p["inspection_coverage_fraction"] = cov.fraction;
   p["inspection_modeled_area_m2"] = cov.modeled_area_m2;
   p["inspection_required_area_m2"] = cov.required_area_m2;

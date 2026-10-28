@@ -2,6 +2,58 @@
 #include "px4_powerplant_mission_cpp/mission_motion_proof.hpp"
 #include "px4_powerplant_mission_cpp/offboard.hpp"
 namespace powerplant {
+TaskRoi OffboardMissionNode::task_roi() const {
+  TaskRoi roi;
+  const std::array<std::string, 3> axes = {"x", "y", "z"};
+  for (int axis = 0; axis < 3; ++axis) {
+    roi.minimum[axis] = d("explore_min_" + axes[axis] + "_m");
+    roi.maximum[axis] = d("explore_max_" + axes[axis] + "_m");
+  }
+  if (!roi.valid())
+    throw std::invalid_argument("task ROI must have finite, increasing bounds");
+  const std::array<double, 3> policy = {d("roi_access_max_duration_s"),
+      d("roi_access_margin_m"), d("roi_access_revisit_penalty_s")};
+  if (!std::isfinite(policy[0]) || !std::isfinite(policy[1]) ||
+      !std::isfinite(policy[2]) || policy[0] <= 0 || policy[1] < 0 || policy[2] < 0)
+    throw std::invalid_argument("invalid task ROI access policy");
+  if (!configured_task_roi_ || *configured_task_roi_ != roi ||
+      configured_roi_access_policy_ != policy) {
+    configured_task_roi_ = roi;
+    configured_roi_access_policy_ = policy;
+    ++task_roi_revision_;
+  }
+  return roi;
+}
+TaskRoi OffboardMissionNode::roi_access_region() const {
+  auto region = task_roi();
+  const auto origin = home_ ? home_ : position_;
+  if (origin) {
+    region.minimum = region.minimum.cwiseMin(*origin);
+    region.maximum = region.maximum.cwiseMax(*origin);
+  }
+  return region.expanded(d("roi_access_margin_m"));
+}
+void OffboardMissionNode::update_roi_access_budget() {
+  const auto now = steady_ns();
+  if (roi_access_last_steady_ > 0 && now >= roi_access_last_steady_)
+    roi_access_elapsed_s_ += (now - roi_access_last_steady_) * 1e-9;
+  roi_access_last_steady_ = active_ && phase_ == Phase::Explore &&
+                                   roi_mode_ == TaskRoiMode::Access ? now : 0;
+}
+void OffboardMissionNode::set_roi_mode(TaskRoiMode mode) {
+  update_roi_access_budget();
+  roi_mode_ = mode;
+  roi_access_last_steady_ = active_ && phase_ == Phase::Explore &&
+                                   mode == TaskRoiMode::Access ? steady_ns() : 0;
+}
+void OffboardMissionNode::reset_roi_task() {
+  roi_mode_ = TaskRoiMode::Work;
+  roi_access_elapsed_s_ = 0;
+  roi_access_last_steady_ = 0;
+  roi_unknown_remaining_ = 0;
+  roi_count_revision_ = 0;
+  roi_recent_observations_.clear();
+}
 ExplorationConfig OffboardMissionNode::config() const {
   ExplorationConfig c;
   c.clearance_radius_m = d("explore_clearance_radius_m");
@@ -27,6 +79,14 @@ ExplorationConfig OffboardMissionNode::config() const {
   c.clearance_weight = d("explore_clearance_weight");
   c.localization_weight = d("explore_localization_weight");
   c.reserve_weight = d("explore_reserve_weight");
+  c.task_roi = task_roi();
+  // Each decision first seeks useful ROI work; Access is an explicit fallback
+  // in the same immutable worker snapshot, not a permanent global search mode.
+  c.roi_mode = TaskRoiMode::Work;
+  c.access_region = roi_access_region();
+  c.roi_access_margin_m = d("roi_access_margin_m");
+  c.roi_revisit_penalty_s = d("roi_access_revisit_penalty_s");
+  c.roi_recent_observations = roi_recent_observations_;
   c.camera_translation_flu = v("camera_translation_flu");
   c.camera_rotation_rpy_rad = v("camera_rotation_rpy_rad");
   c.cruise_speed_mps =
@@ -131,15 +191,60 @@ ExplorationConfig OffboardMissionNode::config() const {
   return c;
 }
 const PlanningMap &OffboardMissionNode::planning_map() const {
-  const PlanningMap &m = maps_.map;
-  const std::array<std::string, 3> axes = {"x", "y", "z"};
-  for (int j = 0; j < 3; ++j) {
-    m.bounds[0][j] =
-        int(std::ceil(d("explore_min_" + axes[j] + "_m") / m.resolution - .5));
-    m.bounds[1][j] =
-        int(std::floor(d("explore_max_" + axes[j] + "_m") / m.resolution - .5));
+  std::optional<Bounds> column;
+  std::vector<double> signature;
+  const double resolution = maps_.map.resolution;
+  if (home_ && b("takeoff_region_confirmed")) {
+    const double radius = d("takeoff_region_radius_m"),
+                 height = d("takeoff_region_height_m"),
+                 contact = d("explore_clearance_radius_m");
+    if (!std::isfinite(radius) || !std::isfinite(height) || radius <= 0 || height <= 0)
+      throw std::invalid_argument("invalid confirmed column dimensions");
+    column = Bounds{key(*home_ - Vec3(radius, radius, contact), resolution),
+                    key(*home_ + Vec3(radius, radius, height), resolution)};
+    signature = {home_->x(), home_->y(), home_->z(), radius, height, contact};
   }
-  return m;
+  if (navigation_map_ && navigation_map_observation_ == maps_.observation_revision &&
+      navigation_map_epoch_ == maps_.map_epoch &&
+      navigation_map_free_count_ == maps_.map.free.size() &&
+      navigation_map_occupied_count_ == maps_.map.occupied.size() &&
+      navigation_map_->resolution == resolution &&
+      navigation_observed_bounds_ == maps_.observed_bounds &&
+      navigation_column_signature_ == signature)
+    return *navigation_map_;
+  auto view = std::make_shared<PlanningMap>(maps_.map);
+  auto evidence_extent = maps_.observed_bounds;
+  if (column) {
+    if (!evidence_extent)
+      evidence_extent = column;
+    else
+      for (int axis = 0; axis < 3; ++axis) {
+        (*evidence_extent)[0][axis] = std::min((*evidence_extent)[0][axis], (*column)[0][axis]);
+        (*evidence_extent)[1][axis] = std::max((*evidence_extent)[1][axis], (*column)[1][axis]);
+      }
+  }
+  const auto bounds = observed_navigation_bounds(*view, evidence_extent, 1);
+  if (bounds)
+    view->bounds = *bounds;
+  else {
+    const auto origin = position_.value_or(Vec3::Zero());
+    view->bounds = {key(origin - Vec3::Ones() * resolution, resolution),
+                    key(origin + Vec3::Ones() * resolution, resolution)};
+  }
+  // This revision describes domain configuration, not every sensor update.
+  if (!navigation_map_ || navigation_map_epoch_ != maps_.map_epoch ||
+      navigation_map_->resolution != resolution ||
+      navigation_column_signature_ != signature)
+    ++navigation_domain_revision_;
+  navigation_map_ = std::move(view);
+  navigation_map_observation_ = maps_.observation_revision;
+  navigation_map_epoch_ = maps_.map_epoch;
+  navigation_map_free_count_ = maps_.map.free.size();
+  navigation_map_occupied_count_ = maps_.map.occupied.size();
+  navigation_column_bounds_ = column;
+  navigation_observed_bounds_ = maps_.observed_bounds;
+  navigation_column_signature_ = std::move(signature);
+  return *navigation_map_;
 }
 bool OffboardMissionNode::map_fresh() const {
   return maps_.fresh(ns(), d("explore_max_map_age_s"));
@@ -225,6 +330,9 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
   double growth =
       std::max(0.0, d("explore_localization_variance_growth_m2_per_m"));
   const int64_t epoch = maps_.map_epoch, camera_revision = camera_revision_;
+  const int64_t domain_revision = navigation_domain_revision_,
+                roi_revision = task_roi_revision_;
+  const bool access_available = roi_access_elapsed_s_ < d("roi_access_max_duration_s");
   KeyMap<double> surfaces;
   if (target_ && i("inspection_required_photos") > int(captured_.size()))
     surfaces[key(target_->position, map.resolution)] =
@@ -263,12 +371,15 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
                    surfaces = std::move(surfaces), goals, ids, guide,
                    rebuild_topology, previous_topology, inspection_session,
                    rgb_camera, domain, state, limits,
-                   capture_cost](const auto &token) mutable {
+                   capture_cost, domain_revision, roi_revision,
+                   access_available](const auto &token) mutable {
     PlanResult out;
     out.phase = phase;
     out.revision = revision;
     out.map_epoch = epoch;
     out.camera_revision = camera_revision;
+    out.navigation_domain_revision = domain_revision;
+    out.task_roi_revision = roi_revision;
     out.variance = variance;
     out.variance_growth = growth;
     out.configuration = c;
@@ -308,6 +419,23 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
         auto decision =
             plan_frontier_detailed(map, start, home, remaining, variance, c,
                                    surfaces, variance_at, {}, cancelled);
+        // A local task can be beyond the first scan. Seek a real observed
+        // frontier toward it, without replacing a failed safety/budget check
+        // by a global-unknown reward or by a pre-known goal inside the ROI.
+        if (!decision.plan && decision.roi_unknown_remaining > 0 &&
+            (decision.failure == PlanningFailure::RoiUnknownRemaining ||
+             decision.failure == PlanningFailure::NoLocalCandidate)) {
+          if (access_available) {
+            c.roi_mode = TaskRoiMode::Access;
+            decision = plan_frontier_detailed(map, start, home, remaining,
+                          variance, c, surfaces, variance_at, {}, cancelled);
+          } else {
+            decision.failure = PlanningFailure::RoiNotReachable;
+            decision.detail = "ROI_ACCESS_BUDGET_EXHAUSTED";
+          }
+        }
+        out.roi_mode = decision.roi_mode;
+        out.roi_unknown_remaining = decision.roi_unknown_remaining;
         out.frontier = std::move(decision.plan);
         out.failure = decision.failure;
         out.detail = decision.detail;
@@ -348,9 +476,13 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
 }
 bool OffboardMissionNode::plan_changes_relevant(
     const PlanResult &result) const {
+  (void)planning_map();
+  (void)task_roi();
   if (result.map_epoch != maps_.map_epoch ||
       result.camera_revision != camera_revision_ ||
-      result.bounds != planning_map().bounds || !home_air() ||
+      result.navigation_domain_revision != navigation_domain_revision_ ||
+      result.task_roi_revision != task_roi_revision_ ||
+      !home_air() ||
       (result.home - *home_air()).norm() > 1e-6 ||
       xy_variance_ > result.variance + 1e-9 ||
       result.variance_growth !=
@@ -450,6 +582,13 @@ void OffboardMissionNode::refresh_view_memory() {
 void OffboardMissionNode::prepare_explore() {
   if (!position_)
     return;
+  update_roi_access_budget();
+  if (roi_mode_ == TaskRoiMode::Access &&
+      roi_access_elapsed_s_ >= d("roi_access_max_duration_s")) {
+    explore_failure_ = PlanningFailure::RoiNotReachable;
+    enter_return("ROI_ACCESS_BUDGET_EXHAUSTED: local task ROI remains unconfirmed");
+    return;
+  }
   if (target_recent()) {
     enter_target();
     return;
@@ -523,6 +662,8 @@ void OffboardMissionNode::prepare_explore() {
       topology_built_ = ns();
     }
     explore_revision_ = maps_.observation_revision;
+    roi_unknown_remaining_ = result->roi_unknown_remaining;
+    roi_count_revision_ = result->task_roi_revision;
     if (!result->frontier) {
       waypoints_.clear();
       explore_failure_ = result->failure;
@@ -542,7 +683,11 @@ void OffboardMissionNode::prepare_explore() {
         return;
       }
       if (result->failure == PlanningFailure::FrontierExhausted)
-        enter_return("permitted map has no remaining frontier");
+        enter_return("local task ROI has no remaining unknown voxels");
+      else if (result->failure == PlanningFailure::RoiNotReachable ||
+               result->failure == PlanningFailure::RoiUnknownRemaining)
+        enter_return(std::string(planning_failure_name(result->failure)) +
+                     ": local task ROI remains incomplete; " + result->detail);
       else if (result->failure == PlanningFailure::ReturnReserveLow)
         enter_return("no feasible observation with return reserve");
       else if (result->failure == PlanningFailure::NoLocalCandidate &&
@@ -565,6 +710,17 @@ void OffboardMissionNode::prepare_explore() {
     const double out = outbound ? *outbound + c.viewpoint_dwell_s : inf;
     const double back = returning ? *returning : inf;
     const double needed = out + back + c.reserve_s;
+    if (plan.roi_mode == TaskRoiMode::Access) {
+      const auto local = local_segment(full, c.max_local_path_m);
+      const auto local_time = c.path_time_s(local, yaw_, plan.goal_yaw_rad, false);
+      if (!local_time || *local_time + c.viewpoint_dwell_s >
+              d("roi_access_max_duration_s") - roi_access_elapsed_s_) {
+        ++rejected_plan_results_;
+        explore_failure_ = PlanningFailure::RoiNotReachable;
+        enter_return("ROI_ACCESS_BUDGET_EXHAUSTED: next safe local leg cannot fit");
+        return;
+      }
+    }
     double predicted_variance = xy_variance_;
     const double growth =
         std::max(0.0, d("explore_localization_variance_growth_m2_per_m"));
@@ -611,6 +767,9 @@ void OffboardMissionNode::prepare_explore() {
       return;
     }
     selected_region_id_ = plan.selected_region_id;
+    set_roi_mode(plan.roi_mode);
+    roi_unknown_remaining_ = plan.roi_unknown_remaining;
+    roi_count_revision_ = result->task_roi_revision;
     explore_goal_ = plan.goal_xyz;
     explore_score_ = plan.score;
     explore_failure_ = PlanningFailure::None;
@@ -620,6 +779,11 @@ void OffboardMissionNode::prepare_explore() {
     fields["goal_enu"] = vector_json(plan.goal_xyz);
     fields["frontier_key"] = key_json(plan.frontier_key);
     fields["visible_unknown_voxels"] = plan.visible_unknown_count;
+    fields["roi_mode"] = task_roi_mode_name(plan.roi_mode);
+    fields["visible_roi_unknown_voxels"] = plan.visible_roi_unknown_count;
+    fields["access_visible_unknown_voxels"] = plan.access_visible_unknown_count;
+    fields["roi_unknown_remaining"] = integer(plan.roi_unknown_remaining);
+    fields["roi_access_cost_s"] = plan.roi_access_cost_s;
     fields["surface_gain"] = plan.surface_gain;
     fields["outbound_time_s"] = out;
     fields["return_time_s"] = back;
@@ -679,6 +843,15 @@ void OffboardMissionNode::prepare_return() {
     planning_ = false;
     if (result->phase != phase_)
       return;
+    (void)planning_map();
+    (void)task_roi();
+    if (result->map_epoch != maps_.map_epoch ||
+        result->navigation_domain_revision != navigation_domain_revision_ ||
+        result->task_roi_revision != task_roi_revision_) {
+      ++rejected_plan_results_;
+      return_plan_stamp_ = 0;
+      return;
+    }
     return_revision_ = maps_.observation_revision;
     Path check{*position_};
     if (!result->path.empty())
@@ -746,8 +919,12 @@ void OffboardMissionNode::prepare_target() {
     planning_ = false;
     if (result->phase != phase_)
       return;
+    (void)planning_map();
+    (void)task_roi();
     if (result->map_epoch != maps_.map_epoch ||
-        result->camera_revision != camera_revision_)
+        result->camera_revision != camera_revision_ ||
+        result->navigation_domain_revision != navigation_domain_revision_ ||
+        result->task_roi_revision != task_roi_revision_)
       return;
     if (result->inspection_model_revision != inspection_.model_revision()) {
       target_plan_stamp_ = 0;

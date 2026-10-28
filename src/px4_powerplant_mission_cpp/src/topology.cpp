@@ -322,7 +322,8 @@ std::shared_ptr<const TopologySnapshot> build_topology(
 
 std::vector<RegionPriority> rank_topology_regions(
     const TopologyGuide &guide, double remaining,
-    const std::function<std::optional<double>(uint64_t)> &travel_time) {
+    const std::function<std::optional<double>(uint64_t)> &travel_time,
+    const std::function<bool(const Key &)> &eligible_unknown) {
   validate_topology(guide.configuration);
   if (!guide.snapshot || !travel_time || !std::isfinite(remaining) || remaining <= 0)
     return {};
@@ -330,11 +331,15 @@ std::vector<RegionPriority> rank_topology_regions(
   std::vector<Candidate> candidates;
   size_t maximum_unknown = 0;
   for (const auto &[id, region] : guide.snapshot->regions) {
-    if (region.unknown_neighbors.empty()) continue;
+    const size_t unknown = eligible_unknown
+        ? size_t(std::count_if(region.unknown_neighbors.begin(),
+                              region.unknown_neighbors.end(), eligible_unknown))
+        : region.unknown_neighbors.size();
+    if (!unknown) continue;
     const auto time = travel_time(id);
     if (!time || !std::isfinite(*time) || *time < 0) continue;
-    candidates.push_back({id, region.unknown_neighbors.size(), *time});
-    maximum_unknown = std::max(maximum_unknown, region.unknown_neighbors.size());
+    candidates.push_back({id, unknown, *time});
+    maximum_unknown = std::max(maximum_unknown, unknown);
   }
   std::vector<RegionPriority> result;
   const auto &config = guide.configuration;

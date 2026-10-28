@@ -33,8 +33,13 @@ void OffboardMissionNode::reset_p2_epoch() {
   topology_.reset();
   selected_region_id_ = 0;
   recent_regions_.clear();
+  reset_roi_task();
+  navigation_map_.reset();
+  navigation_map_observation_ = navigation_map_epoch_ = -1;
+  ++navigation_domain_revision_;
   motion_map_.reset();
   motion_map_revision_ = motion_map_epoch_ = -1;
+  motion_map_domain_revision_ = -1;
   if (motion_)
     motion_->disable();
 }
@@ -85,17 +90,26 @@ MotionState OffboardMissionNode::motion_state() const {
   return state;
 }
 void OffboardMissionNode::refresh_motion_geometry() {
-  if (motion_map_ && motion_map_revision_ == maps_.observation_revision &&
-      motion_map_epoch_ == maps_.map_epoch)
+  const auto &navigation = planning_map();
+  if (motion_map_ && motion_map_ == navigation_map_ &&
+      motion_map_revision_ == maps_.observation_revision &&
+      motion_map_epoch_ == maps_.map_epoch &&
+      motion_map_domain_revision_ == navigation_domain_revision_)
     return;
-  motion_map_ = std::make_shared<const PlanningMap>(planning_map());
+  (void)navigation;
+  motion_map_ = navigation_map_;
   motion_map_revision_ = maps_.observation_revision;
   motion_map_epoch_ = maps_.map_epoch;
+  motion_map_domain_revision_ = navigation_domain_revision_;
 }
 MotionSafetyDomain OffboardMissionNode::motion_domain() const {
   MotionSafetyDomain out;
-  out.map = motion_map_ ? motion_map_
-                        : std::make_shared<const PlanningMap>(planning_map());
+  (void)planning_map();
+  out.map = motion_map_ && motion_map_ == navigation_map_ &&
+                         motion_map_revision_ == maps_.observation_revision &&
+                         motion_map_epoch_ == maps_.map_epoch &&
+                         motion_map_domain_revision_ == navigation_domain_revision_
+                ? motion_map_ : navigation_map_;
   out.map_fresh = map_fresh();
   out.epoch = maps_.map_epoch;
   out.revision = maps_.observation_revision;

@@ -51,12 +51,15 @@ struct PlanResult {
   std::string error;
   PlanningFailure failure = PlanningFailure::None;
   int64_t map_epoch = 0, camera_revision = 0;
+  int64_t navigation_domain_revision = 0, task_roi_revision = 0;
   double variance = 0;
   double variance_growth = 0;
   ExplorationConfig configuration;
   Bounds bounds{};
   Vec3 source_start = Vec3::Zero(), home = Vec3::Zero();
   size_t frontier_count = 0, candidate_count = 0;
+  size_t roi_unknown_remaining = 0;
+  TaskRoiMode roi_mode = TaskRoiMode::Work;
   std::string detail;
   std::shared_ptr<const TopologySnapshot> topology;
   // Motion-feasible geometry establishes the monotonically growing coverage
@@ -92,6 +95,7 @@ private:
   friend struct MissionTestAccess;
   friend struct P1MissionTestAccess;
   friend struct P2MissionTestAccess;
+  friend struct RoiMissionTestAccess;
   void subscribe_vehicle();
   void subscribe_map();
   void subscribe_camera();
@@ -186,6 +190,23 @@ private:
           target_plan_stamp_ = 0;
   bool planning_ = false;
   bool explore_global_search_ = false;
+  TaskRoiMode roi_mode_ = TaskRoiMode::Work;
+  double roi_access_elapsed_s_ = 0;
+  int64_t roi_access_last_steady_ = 0;
+  size_t roi_unknown_remaining_ = 0;
+  int64_t roi_count_revision_ = 0;
+  KeyMap<size_t> roi_recent_observations_;
+  mutable std::optional<TaskRoi> configured_task_roi_;
+  mutable std::array<double, 3> configured_roi_access_policy_{{NAN, NAN, NAN}};
+  mutable int64_t task_roi_revision_ = 0;
+  mutable std::shared_ptr<const PlanningMap> navigation_map_;
+  mutable int64_t navigation_map_observation_ = -1,
+                  navigation_map_epoch_ = -1, navigation_domain_revision_ = 0;
+  mutable size_t navigation_map_free_count_ = 0,
+                 navigation_map_occupied_count_ = 0;
+  mutable std::optional<Bounds> navigation_column_bounds_;
+  mutable std::optional<Bounds> navigation_observed_bounds_;
+  mutable std::vector<double> navigation_column_signature_;
   PlanningFailure explore_failure_ = PlanningFailure::WaitingForMap;
   uint64_t reused_plan_results_ = 0, rejected_plan_results_ = 0;
   Phase planning_phase_ = Phase::Idle;
@@ -226,6 +247,7 @@ private:
   uint64_t motion_generation_ = 0, motion_publication_base_ = 0;
   std::shared_ptr<const PlanningMap> motion_map_;
   int64_t motion_map_revision_ = -1, motion_map_epoch_ = -1;
+  int64_t motion_map_domain_revision_ = -1;
   Vec3 motion_target_ = Vec3::Zero();
   double motion_target_yaw_ = 0;
   bool motion_permit_ = false;
@@ -246,6 +268,8 @@ private:
   std::vector<rclcpp::SubscriptionBase::SharedPtr> subscriptions_;
   rclcpp::Service<Trigger>::SharedPtr start_service_, land_service_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
+      roi_parameter_callback_;
   rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr
       heartbeat_pub_;
   rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint>::SharedPtr setpoint_pub_;
@@ -268,6 +292,11 @@ private:
   void stop_motion(const std::string &);
   bool motion_stopped() const;
   void refresh_motion_geometry();
+  TaskRoi task_roi() const;
+  TaskRoi roi_access_region() const;
+  void update_roi_access_budget();
+  void set_roi_mode(TaskRoiMode);
+  void reset_roi_task();
   PlanningMap planning_domain_map() const;
   void invalidate_inspection_calibration(const std::string &);
   void try_registered_observation();

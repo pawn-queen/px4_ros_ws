@@ -24,7 +24,8 @@ bool OffboardMissionNode::capture_photo(size_t waypoint, int goal) {
   fields["view_id"] = view_id;
   fields["target_id"] = integer(inspection_.target_id());
   fields["localization_epoch"] = integer(inspection_.epoch());
-  fields["coverage_scope"] = "reachable_modeled_surface";
+  fields["coverage_scope"] = "reachable_modeled_surface_in_task_roi";
+  fields["task_roi_revision"] = integer(task_roi_revision_);
   fields["camera_revision"] = integer(camera_revision_);
   if (target_) {
     fields["target_enu"] = vector_json(target_->position);

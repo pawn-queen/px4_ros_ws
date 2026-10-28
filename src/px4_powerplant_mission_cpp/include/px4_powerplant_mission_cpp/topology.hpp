@@ -55,5 +55,6 @@ std::shared_ptr<const TopologySnapshot> build_topology(
 // nullopt excludes it. Empty/no-frontier regions do not consume quotas.
 std::vector<RegionPriority> rank_topology_regions(
     const TopologyGuide &, double remaining_flight_s,
-    const std::function<std::optional<double>(uint64_t)> &travel_time);
+    const std::function<std::optional<double>(uint64_t)> &travel_time,
+    const std::function<bool(const Key &)> &eligible_unknown = {});
 } // namespace powerplant

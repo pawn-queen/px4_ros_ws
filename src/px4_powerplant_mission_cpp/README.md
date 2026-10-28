@@ -26,6 +26,17 @@ physical acceptance remain separate from these software checks. Configure
 safety/calibration parameters before the mission and restart while disarmed;
 in-flight hot-swapping of physical safety models is outside this interface.
 
+## Local task ROI and powerplant collision assets
+
+The actual powerplant scene now uses a separately simplified static concave
+collision mesh while keeping its original visual STL. A locked asset commit and
+content hashes guard the real-scene acceptance entrypoint. `explore_min/max_*`
+define task gain and coverage, while takeoff, scan, safe access and return use the
+complete observed navigation domain. EXPLORE contains bounded ROI_ACCESS and
+ROI_WORK submodes; it does not require known waypoints. See
+[Issue #3 implementation](ISSUE3_IMPLEMENTATION.md) and
+[actual validation status](ISSUE3_VALIDATION.md).
+
 ## Build with bounded resource use
 
 From the workspace root:

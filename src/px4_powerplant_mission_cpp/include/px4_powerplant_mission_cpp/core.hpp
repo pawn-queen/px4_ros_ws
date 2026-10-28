@@ -119,6 +119,46 @@ public:
   std::optional<StampedPose> at(int64_t stamp) const;
 };
 struct TopologyGuide;
+// Task geometry is an objective, never evidence that the enclosed space is free.
+// A cell touching only an ROI face has no task volume and is excluded.
+struct TaskRoi {
+  Vec3 minimum = Vec3::Zero(), maximum = Vec3::Zero();
+  bool valid() const {
+    return minimum.allFinite() && maximum.allFinite() &&
+           (minimum.array() < maximum.array()).all();
+  }
+  bool contains(const Vec3 &p) const {
+    return valid() && p.allFinite() &&
+           (p.array() >= minimum.array()).all() &&
+           (p.array() <= maximum.array()).all();
+  }
+  bool intersects_cell(const Key &k, double resolution) const {
+    if (!valid() || !std::isfinite(resolution) || resolution <= 0)
+      return false;
+    const Vec3 lo = Vec3(k[0], k[1], k[2]) * resolution;
+    const Vec3 hi = lo + Vec3::Constant(resolution);
+    return (lo.array() < maximum.array()).all() &&
+           (hi.array() > minimum.array()).all();
+  }
+  double distance_m(const Vec3 &p) const {
+    if (!valid() || !p.allFinite()) return inf;
+    return (minimum.cwiseMax(p).cwiseMin(maximum) - p).norm();
+  }
+  TaskRoi expanded(double margin) const {
+    if (!valid() || !std::isfinite(margin) || margin < 0)
+      throw std::invalid_argument("invalid task ROI expansion");
+    return {minimum - Vec3::Constant(margin),
+            maximum + Vec3::Constant(margin)};
+  }
+  bool operator==(const TaskRoi &other) const {
+    return minimum == other.minimum && maximum == other.maximum;
+  }
+  bool operator!=(const TaskRoi &other) const { return !(*this == other); }
+};
+enum class TaskRoiMode { Access, Work };
+inline const char *task_roi_mode_name(TaskRoiMode mode) {
+  return mode == TaskRoiMode::Access ? "ROI_ACCESS" : "ROI_WORK";
+}
 struct ExplorationConfig {
   double clearance_radius_m = .35, start_snap_radius_m = .35,
          goal_snap_radius_m = .35;
@@ -139,6 +179,10 @@ struct ExplorationConfig {
   Vec3 camera_translation_flu = Vec3::Zero();
   Vec3 camera_rotation_rpy_rad = Vec3::Zero();
   KeyMap<uint64_t> visited_yaw_masks;
+  std::optional<TaskRoi> task_roi, access_region;
+  TaskRoiMode roi_mode = TaskRoiMode::Work;
+  double roi_access_margin_m = 10, roi_revisit_penalty_s = 5;
+  KeyMap<size_t> roi_recent_observations;
   // Optional P2 adapters. Empty retains the explicit offline P1 model.
   std::shared_ptr<const TopologyGuide> topology_guide;
   // Includes motion and yaw time, excluding observation dwell. face_path=true
@@ -162,14 +206,49 @@ struct ExplorationPlan {
   uint64_t selected_region_id = 0;
   int64_t topology_revision = 0;
   double region_score = 0;
+  TaskRoiMode roi_mode = TaskRoiMode::Work;
+  size_t roi_unknown_remaining = 0;
+  int visible_roi_unknown_count = 0, access_visible_unknown_count = 0;
+  double roi_access_cost_s = 0;
 };
 class PlanningIndex;
 struct PlanningMap {
   Keys free, occupied;
   double resolution = .25;
-  mutable Bounds bounds{};
+  Bounds bounds{};
   std::shared_ptr<const PlanningIndex> index;
 };
+// Includes all supplied geometry and optional surveyed/snapshot bounds, then
+// leaves an unknown border for frontier extraction. Does not authorize cells.
+inline std::optional<Bounds> observed_navigation_bounds(
+    const PlanningMap &map, std::optional<Bounds> extra = {},
+    int padding_voxels = 1) {
+  if (padding_voxels < 1 || padding_voxels > 1024)
+    throw std::invalid_argument("invalid navigation bounds padding");
+  auto bounds = extra;
+  if (bounds)
+    for (int axis = 0; axis < 3; ++axis)
+      if ((*bounds)[0][axis] > (*bounds)[1][axis])
+        throw std::invalid_argument("invalid navigation bounds");
+  auto include = [&](const Key &k) {
+    if (!bounds) bounds = Bounds{k, k};
+    else for (int axis = 0; axis < 3; ++axis) {
+      (*bounds)[0][axis] = std::min((*bounds)[0][axis], k[axis]);
+      (*bounds)[1][axis] = std::max((*bounds)[1][axis], k[axis]);
+    }
+  };
+  for (const auto &k : map.free) include(k);
+  for (const auto &k : map.occupied) include(k);
+  if (bounds)
+    for (int axis = 0; axis < 3; ++axis) {
+      if ((*bounds)[0][axis] < std::numeric_limits<int>::min() + padding_voxels ||
+          (*bounds)[1][axis] > std::numeric_limits<int>::max() - padding_voxels)
+        throw std::invalid_argument("navigation bounds exceed integer range");
+      (*bounds)[0][axis] -= padding_voxels;
+      (*bounds)[1][axis] += padding_voxels;
+    }
+  return bounds;
+}
 using Cancel = std::function<bool()>;
 struct PlanningCancelled : std::runtime_error {
   PlanningCancelled() : std::runtime_error("planning cancelled") {}
@@ -184,7 +263,9 @@ enum class PlanningFailure {
   ReturnReserveLow,
   Cancelled,
   InvalidInput,
-  CalibrationUnavailable
+  CalibrationUnavailable,
+  RoiNotReachable,
+  RoiUnknownRemaining
 };
 const char *planning_failure_name(PlanningFailure failure);
 struct FrontierDecision {
@@ -193,6 +274,8 @@ struct FrontierDecision {
   size_t frontier_count = 0, candidate_count = 0;
   std::map<uint64_t, size_t> region_target_count, region_candidate_count;
   std::string detail;
+  TaskRoiMode roi_mode = TaskRoiMode::Work;
+  size_t roi_unknown_remaining = 0;
 };
 void check_cancel(const Cancel &cancel);
 KeyMap<Keys> extract_frontiers(const PlanningMap &map);

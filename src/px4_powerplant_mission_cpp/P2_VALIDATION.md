@@ -2,7 +2,15 @@
 
 本文件给出 P2 的验证入口与证据边界。运行结果以对应目录中的 `report.json` 为准；准备脚本或通过单元测试不等于完成 SITL，更不等于实机验收。编译、测试和 Gazebo 始终串行执行。
 
-本轮按用户最后确认的范围完成软件逻辑、测试和已有日志核查；飞控/动力学参数由用户调整。下文保留实际飞行验收入口和旧运行证据，供参数标定后继续验证，不以调参通过飞行作为本轮软件收尾条件。
+2026-10-26 软件阶段已按当时范围完成测试和旧日志核查；其 316 项软件通过及 CPU17 飞行失败保留在第 5 节。2026-10-28 的 Issue #3 已新增真实电厂入口、碰撞资产锁和局部任务 ROI；本轮实际物理、性能与飞行结果集中维护在 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)，不能由历史记录或新命令推定通过。
+
+## 0. 正式场景与任务范围
+
+正式仿真使用 `/home/pawn/drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf` 及锁定的 include 资产；两个回归房间虽同名为 `world name=powerplant`，内容不同，不能替代实际电厂验收。`--scenario powerplant` 解析真实文件并检查 `config/powerplant_assets.json` 的本地可检出提交和递归哈希；资源缺失或版本改变时拒绝旧验收。
+
+`explore_min/max_*` 只定义局部任务 ROI，起飞、初扫、接入、绕障、取景和返航使用完整已验证导航证据域。默认 ROI 为 x=[-24,34]、y=[-9,49]、z=[3.5,7] m；`--roi-access-test` 仅在隔离测试覆盖中将 ROI 改为 x=[12,24]、y=[-9,12]、z=[3.5,7] m，使起飞点在任务区域外，不预置航点。任务节点的 `ROI_ACCESS/ROI_WORK` 子模式及预算见 [ISSUE3_IMPLEMENTATION.md](ISSUE3_IMPLEMENTATION.md)。
+
+`powerplant` 默认检测模式为 `none`、结束范围为 `scan`；不填写参数不能暗示执行了完整巡检。`--stop-after scan` 检查起飞初扫进展，`--stop-after roi-access` 检查真实接入运动，达到所需阶段后均通过降落服务和新鲜 landed/disarmed 收尾，报告不具有完整任务资格。完整局部任务需显式 `--stop-after mission`，若还要验收巡检，则必须具有真实目标、合格照片与正的表面覆盖。没有真实标注 fixture 时，实际电厂拒绝 `--detection-mode replay`，不能拿小房间已知圆柱框充当检测证据。
 
 ## 1. 构建后的基础回归
 
@@ -22,11 +30,11 @@ bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
 
 ```bash
 /usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
-  --scenario room --detection-mode replay --prepare-only \
-  --output-dir log/p2_sitl_prepared
+  --scenario powerplant --detection-mode none --stop-after scan --prepare-only \
+  --output-dir log/issue3_powerplant_prepared
 ```
 
-这一步解析共享配置与测试世界，检查可执行文件/ROS Python 依赖，写出 `manifest.json` 和独立运行目录。`report.json` 的 `prepared_only=true` 且 `passed=false`，明确表示尚未执行验收。
+这一步解析共享配置、实际电厂和资产锁，检查可执行文件/ROS Python 依赖，写出 `manifest.json` 和独立运行目录。`report.json` 的 `prepared_only=true` 且 `passed=false`，明确表示尚未执行验收。
 
 依赖为本机已构建 PX4、Gazebo `gz`、Micro XRCE-DDS Agent、ROS 2 Jazzy、Gazebo Python `gz.transport13` / `gz.msgs10`、`pymavlink`、已安装的两个任务包和当前 shell 的 Cyclone DDS 配置。PX4 默认目录为 `/home/pawn/drone-simulation`，可用 `--px4-root` 指定其它已构建 checkout。脚本不会构建 PX4、安装依赖或修改其源码。
 
@@ -34,8 +42,21 @@ bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
 
 ```bash
 /usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
-  --scenario room --detection-mode replay --timeout 300 \
-  --output-dir log/p2_sitl_room
+  --scenario powerplant --detection-mode none --sensor-profile cpu \
+  --stop-after scan --timeout 240 --output-dir log/issue3_powerplant_scan
+```
+
+该示例只验收起飞与初扫的有限范围，并显式使用 CPU 降载；不是已执行的通过记录。接入和完整局部任务入口为：
+
+```bash
+/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+  --scenario powerplant --detection-mode none --sensor-profile cpu \
+  --roi-access-test --stop-after roi-access --timeout 300 \
+  --output-dir log/issue3_powerplant_roi_access
+
+/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+  --scenario powerplant --detection-mode yolo --sensor-profile native \
+  --stop-after mission --timeout 360 --output-dir log/issue3_powerplant_mission
 ```
 
 入口实际启动 Agent、Gazebo、PX4、真实 Gazebo 传感器桥和 ROS 任务 launch。检测到已有 PX4 进程时拒绝运行；只清理自己创建的进程组，不接管或杀死其它任务。
@@ -46,10 +67,10 @@ bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
 - 当前进程通过 `PX4_PARAM_*` 配置 SITL 的独立 external vision、关闭 GPS/磁罗盘依赖，以及 `COM_OBL_RC_ACT=4` 的 Offboard-loss 降落。该数字依据当前 checkout 的参数定义；它不是硬件部署建议。
 - 此入口显式设置 `UXRCE_DDS_SYNCT=0`，定位/EV 采用 `px4_timestamp_domain=ros`，使锁步 PX4 与 Gazebo 共用仿真采样时间。硬件仍使用默认系统时钟同步，不能照搬此配置。launch 按已安装 `px4_msgs.MESSAGE_VERSION` 为默认 PX4 输入话题添加版本后缀；自定义话题可继续由参数提供。
 - 测试世界保持 `world name=powerplant`，与现有 `/clock`、真值桥和 UWB 仿真器一致；启动的机型仍为 `x500_depth_0`。
-- 测试专用配置确认半径 1.5 m、高 4.2 m 的空柱体，起飞/返航高度为相对 home 的 3 m。它只适用于本文件附带空场景，不修改共享默认的 `takeoff_region_confirmed=false` 和 `auto_start=false`。
+- runner 的确认柱体半径为 1.5 m。实际电厂测试柱体高 6.2 m、起飞/返航相对 home 为 5 m；回归房间分别为 4.2/3 m。配置中的确认不是物理证明，电厂仍需使用当前资产的独立接触/完整机体净空证据。共享默认的 `takeoff_region_confirmed=false` 和 `auto_start=false` 保持。
 - `p2_simulation.yaml` 提供从 Gazebo 模型解析的导航参考—相机/雷达偏置及包络；实机 `p2_hardware.yaml` 仍需真实标定。
 
-附带 `p2_room.sdf` 是有地面、顶棚、四面墙及对比纹理目标的闭合室内；`p2_two_rooms.sdf` 增加已知几何可通的门洞。世界里的目标真值只供测试检测器生成检测框，不送给探索器作为已知航点或目标坐标。
+以下 `room/two_rooms` 的命令仅用于算法/故障回归，不具有正式电厂场景验收资格。附带 `p2_room.sdf` 是有地面、顶棚、四面墙及对比纹理目标的闭合室内；`p2_two_rooms.sdf` 增加已知几何可通的门洞。世界里的目标真值只供测试检测器生成检测框，不送给探索器作为已知航点或目标坐标。
 
 仿真入口在请求 START 前，要求定位 ready 和 vehicle status fresh 在同一 localization epoch 连续保持至少 3 秒仿真时间且 4 秒墙钟时间；任一条件失效或 epoch 改变均重新累计。这只是测试初始化稳定等待，不放宽正式节点的健康、时钟或起飞门控。请求时的双时钟等待证据记录在 events.jsonl。
 
@@ -117,23 +138,23 @@ Manifest 记录两套原始/有效 SDF 路径与 SHA256、相机配置尺寸/频
 
 ## 4. 验收判据与输出
 
-`report.json` 对每项判据给出布尔值，任何失败均以非零退出码结束：
+`report.json` 对本次请求范围的每项判据给出布尔值，任何失败均以非零退出码结束。下列完整任务要求不能被有限阶段替代；`scan/roi-access` 额外输出实际阶段证据、降落服务及 `full_mission_acceptance=false`，初扫范围不要求拓扑 worker 已经完成。
 
-- 服务确实接受 START，然后顺序经过安全起飞、初扫、探索、目标巡检、返航、降落和 PX4 确认的 COMPLETE。START 服务接受单列证据，因为状态可能在下个周期立刻变为 SAFE_TAKEOFF。
+- 完整巡检范围要求服务确实接受 START，然后顺序经过安全起飞、初扫、探索、目标巡检、返航、降落和 PX4 确认的 COMPLETE。START 服务接受单列证据，因为状态可能在下个周期立刻变为 SAFE_TAKEOFF。
 - 实际接收不少于 250 条位置/速度/加速度/yaw/yawspeed 均有限的 `TrajectorySetpoint`，总发布速率至少 40 Hz、p95/p99 接收间隔均不超过 0.1 s；目标值为 50 Hz，报表保留实测值。
 - 单独统计已解锁、实际 PX4 Offboard 且任务仍在 SAFE_TAKEOFF—RETURN_HOME 的执行区间。按导航采样时间在两条真实 PVA 参考之间插值，逐样本记录位置/速度误差、该条导航的完整协方差及证书余量。位置协方差已经属于 ENU，速度协方差由完整姿态作 `RΣ_FLU Rᵀ` 转入 ENU，原始 FLU 矩阵、ENU 矩阵和姿态同时保留。除原有范数门限使用 `sqrt(λ_max(Σ))` 外，每个 ENU 轴还必须满足 `abs(e_i) ≤ tolerance + k sqrt(Σ_ii)`；标准差与执行器一样按 `0.001 m / 0.001 m/s` 向上取整，不改写原始矩阵。当前仿真位置/速度容差分别为 0.03 m 和 0.25 m/s，`k=2`，不将其宣称为三维 95% 覆盖保证。至少需 100 条完整证书；协方差非有限、非对称、非半正定、对角为零或坐标系不匹配均不能通过，任何范数/单轴超限或不能配对的有效执行样本均失败。NAV_LAND 后没有 PVA 参考的导航样本单列排除数量，不拿降落运动冒充 Offboard 跟踪。
 - 执行区间的发布、导航与 `/clock` 分别记录墙钟/采样间隔的 max、p95、p99，以及导航相对 ROS 时钟的采样年龄、时钟接收年龄和 ROS/wall 间隔差。最大间隔/年龄不得超过配置的 0.3 s 反应预算，导航/发布采样时钟倒退也失败；仅有百分位通过不能掩盖长尾失鲜。
 - P2 缺省命令限值：水平/垂直速度不超过 0.61/0.31 m/s，水平/垂直加速度不超过 0.51/0.31 m/s²，包含 float32 量化容差。
 - 全程没有任务 FAULT；拓扑已实际建立；附加场景检查门户或受控制动证据。
 - 外参验收不预先认定导航参考正确。脚本直接订阅当前隔离 Gazebo partition 的原始 `Pose_V`，从 `dynamic_pose/info` 中只接受精确名称 `x500_depth_0`，保留 `name`、实体 ID 和外层采样时间。Jazzy 的 Pose_V—TF 转换可能丢失名称和时间，因此校验不使用 TF 索引，也不将 `base_link` 当成模型原点。将真值与导航分别插值到真实深度曝光时间；至少十组样本、模型原点误差 p95 不超过 0.20 m，且平均误差必须比误用 `base_link` 的 `+0.24 m` 偏移至少小 0.05 m。不存在具名真值或插值区间时没有通过依据。
-- 使用当前 `p2_simulation.yaml` 完整深度外参、实际深度 CameraInfo 和真实深度像素，对测试世界的静态墙/地面/顶棚作稀疏射线校验；检测目标和纹理块参与遮挡判断，不将目标点硬算成墙面。必须累计至少 200 个墙面样本，真值位姿投影残差 p95 ≤ 0.08 m、导航位姿投影残差 p95 ≤ 0.25 m。采样按真值射线确定，不按残差挑选有利像素。这些门限是附带静态世界的校验初值，真实偏差超限会失败，不能据此自动修改外参。
-- 巡检模式必须有合格照片写盘和正的已覆盖面积。结果明确为 `PARTIAL` 或 `REACHABLE_MODELED_COMPLETE`，覆盖范围字段必须是 `reachable_modeled_surface`。`PARTIAL` 不会被改写成整物体完整巡检。
+- 使用当前 `p2_simulation.yaml` 完整深度外参、实际深度 CameraInfo 和真实深度像素，对当前世界的静态墙/地面/顶棚作稀疏射线校验；实际电厂额外按锁定 STL 判断遮挡，不把模型内部实物误算成外墙；检测目标和纹理块参与遮挡判断，不将目标点硬算成墙面。必须累计至少 200 个墙面样本，真值位姿投影残差 p95 ≤ 0.08 m、导航位姿投影残差 p95 ≤ 0.25 m。采样按真值射线确定，不按残差挑选有利像素。这些门限是当前静态场景校验初值，真实偏差超限会失败，不能据此自动修改外参。渲染深度和 GPU 雷达来自视觉场景，不能单独证明物理碰撞网格正确；接触、通道和起飞域另由 Issue #3 的动态探针验证。
+- 巡检模式必须有合格照片写盘和正的已覆盖面积。结果明确为 `PARTIAL` 或 `REACHABLE_MODELED_COMPLETE`，当前任务覆盖范围字段为 `reachable_modeled_surface_in_task_roi`；旧记录的 `reachable_modeled_surface` 只按对应历史版本解释。`PARTIAL` 不会被改写成整物体完整巡检。
 
 每次运行保存：
 
 | 文件 | 证据 |
 | --- | --- |
-| `manifest.json` | 命令、测试场景、隔离配置、参数文件、检测模式与缺失依赖 |
+| `manifest.json` | 命令、真实 world/递归资产路径与哈希、资产提交、请求范围、局部 ROI、隔离配置、参数文件、检测模式与缺失依赖 |
 | `report.json` | 实际判据、阶段、频率、PVA 最大值、照片数、最终覆盖与失败原因 |
 | `states.jsonl` / `events.jsonl` | 主状态、运动/制动、区域、覆盖及照片质量事件 |
 | `yolo_image_chain.jsonl` | 真实 YOLO 曝光、源图与原始 RGB 的严格配对及像素哈希 |
@@ -166,9 +187,15 @@ Manifest 记录两套原始/有效 SDF 路径与 SHA256、相机配置尺寸/频
 
 完整飞行的后续运行必须继续满足第 4 节全部判据；静态子检查、有效 PVA 数量、进入 Offboard 或接受 START 都不能替代已解锁飞行、巡检和落地证据。
 
+## 2026-10-28：Issue #3 已记录范围
+
+两包 Release 已串行构建；当前 C++/对照/跨进程 ROS 等 colcon 汇总 235 项通过（含 17 个 CTest 外层结果），共享 Python 127 项通过，不将包装数量再次算作直接用例。最终简化碰撞 mesh 501262 面，原视觉 STL 未修改；有限稠密验证集双向最大距离约 19.08 mm。完整/简化碰撞的动态双侧接触、阳性对照及每组 3 条起飞区自由路径已有通过记录。
+
+这些是软件、资产和接触范围的已记录结果；原始传感器性能、针对性 SITL、完整局部任务及照片覆盖的最新通过/失败必须查看 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 和 `log/issue3_powerplant/20261027_204849/` 的实际报告。本节没有将未完成的阶段预先标为通过，也没有覆盖旧 CPU17 失败。
+
 ## 6. P2 逻辑核查与回归覆盖
 
-本轮发现的问题已修复并纳入上述完整回归。它们独立于飞控参数的调节：
+本节保留 2026-10-26 软件核查时的问题及其回归范围。它们独立于飞控参数的调节：
 
 | 逻辑边界 | 修复与验证 |
 | --- | --- |
@@ -180,3 +207,10 @@ Manifest 记录两套原始/有效 SDF 路径与 SHA256、相机配置尺寸/频
 | 照片覆盖证据 | 提交须绑定真实曝光及该曝光的面片版本，拒绝伪造采样、跨曝光面片、冲突重复条目；保存失败、质量失败、迟到结果、分母增长和重复样本已有回归 |
 
 安全/标定参数应在任务开始前配置；调整后在上锁状态重启节点/任务。本轮测试不把运行中热切换机体/制动模型视为受支持接口。已验证的内容是当前测试、回放和日志覆盖到的软件行为；真实停止距离、跟踪包络、满负载延迟以及实机结果仍须使用用户标定后的参数实测。
+
+
+### Issue #3 后续实际运行结论（2026-10-28）
+
+实际电厂的资产、传感器和任务ROI验证详见[ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。本机需要显式进程级 `GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA` 才实际选到NVIDIA；runner验证日志真实写入进程，不据环境变量判定。
+
+明确CPU5Hz降载场景达到约1.02实时因子并进入SAFE_TAKEOFF，随后因停止包络最低点越过确认柱体下界约1.03mm触发FAULT。此记录不是初扫或完整飞行通过；未调控制/健康门限或扩大授权域来掩盖失败。实际GPU采样方向的离线传感器一致性通过也不意味着在线LaserScan名义角度误差已消失。

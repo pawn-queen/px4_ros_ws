@@ -642,23 +642,36 @@ private:
     status["lidar_last_sample_stamp_ns"] = integer(lidar_stamp_);
     publish_json(status_pub_, status);
   }
-  void publish_grid(const std_msgs::msg::Header &h) {
+  std::optional<Grid2D> projection_grid() const {
     double low = d("grid_z_min_m"), high = d("grid_z_max_m");
     if (b("use_flight_height_grid_band") && have_pose_) {
-      double l = std::max(low, position_.z() -
-                                   std::max(0.0, d("grid_z_band_below_m")));
-      double u = std::min(high, position_.z() +
-                                    std::max(0.0, d("grid_z_band_above_m")));
+      // The projection follows the aircraft, including takeoff/scan below the
+      // task ROI. Static display bands must not remove its actual observations.
+      double l = position_.z() - std::max(0.0, d("grid_z_band_below_m"));
+      double u = position_.z() + std::max(0.0, d("grid_z_band_above_m"));
       if (u > l) {
         low = l;
         high = u;
       }
     }
     std::optional<std::array<double, 4>> bounds;
-    if (b("use_fixed_grid_bounds"))
+    if (b("use_fixed_grid_bounds")) {
       bounds = std::array<double, 4>{d("grid_min_x_m"), d("grid_min_y_m"),
                                      d("grid_max_x_m"), d("grid_max_y_m")};
-    auto grid = grid_.project(low, high, bounds);
+      // Keep the configured view as a minimum extent; a local task crop cannot
+      // exclude a fresh scan anchor. The added cells remain unknown unless the
+      // voxel map contains real evidence.
+      if (have_pose_) {
+        (*bounds)[0] = std::min((*bounds)[0], position_.x() - 1.0);
+        (*bounds)[1] = std::min((*bounds)[1], position_.y() - 1.0);
+        (*bounds)[2] = std::max((*bounds)[2], position_.x() + 1.0);
+        (*bounds)[3] = std::max((*bounds)[3], position_.y() + 1.0);
+      }
+    }
+    return grid_.project(low, high, bounds);
+  }
+  void publish_grid(const std_msgs::msg::Header &h) {
+    auto grid = projection_grid();
     if (!grid)
       return;
     nav_msgs::msg::OccupancyGrid m;

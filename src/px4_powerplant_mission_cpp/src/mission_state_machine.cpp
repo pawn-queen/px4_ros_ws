@@ -32,6 +32,7 @@ void OffboardMissionNode::start(Trigger::Response &response) {
     return;
   }
   cancel_jobs();
+  reset_roi_task();
   active_ = true;
   phase_ = Phase::Start;
   if (motion_)
@@ -84,6 +85,7 @@ void OffboardMissionNode::initialize() {
   if (!position_)
     return;
   home_ = position_;
+  reset_roi_task();
   reset_setpoint();
   motion_target_ = *home_;
   motion_target_yaw_ = yaw_;
@@ -106,6 +108,7 @@ void OffboardMissionNode::initialize() {
 }
 void OffboardMissionNode::tick() {
   observe_clock();
+  update_roi_access_budget();
   consume_map_commit();
   if (phase_ == Phase::Landing) {
     update_landing();
@@ -498,8 +501,10 @@ void OffboardMissionNode::update_scan() {
         "coverage sufficient; waiting for a known-free initial segment";
 }
 void OffboardMissionNode::enter_explore() {
+  update_roi_access_budget();
   cancel_jobs();
   phase_ = Phase::Explore;
+  set_roi_mode(TaskRoiMode::Work);
   explore_global_search_ = false;
   explore_failure_ = PlanningFailure::None;
   search_started_ = ns();
@@ -521,6 +526,7 @@ void OffboardMissionNode::enter_target() {
   cancel_jobs();
   stop_motion("YOLO target takeover");
   phase_ = Phase::Target;
+  update_roi_access_budget();
   waypoints_.clear();
   waypoint_ = 0;
   goal_ids_.clear();
@@ -546,6 +552,7 @@ void OffboardMissionNode::enter_return(const std::string &reason) {
   cancel_jobs();
   stop_motion("return takeover: " + reason);
   phase_ = Phase::Return;
+  update_roi_access_budget();
   return_reason_ = reason;
   if (!home_ && position_)
     home_ = position_;
@@ -563,6 +570,7 @@ void OffboardMissionNode::enter_return(const std::string &reason) {
 void OffboardMissionNode::enter_landing(const std::string &reason) {
   cancel_jobs();
   phase_ = Phase::Landing;
+  update_roi_access_budget();
   active_ = false;
   stop_motion("PX4 landing owns descent");
   return_reason_ = reason;
@@ -800,11 +808,13 @@ void OffboardMissionNode::update_phase(const Vec3 &target, double heading) {
           int(std::llround((wrap_pi(explore_yaw_) + pi) / (2 * pi) * bins)) %
           bins;
       visited_views_[goal_key] |= uint64_t(1) << bin;
+      ++roi_recent_observations_[goal_key];
       Keys changed;
       auto fields = object();
       fields["goal_key"] = key_json(goal_key);
       fields["yaw_bin"] = bin;
       fields["actual_depth_sample_id"] = integer(latest_depth_observation_id_);
+      fields["roi_mode"] = task_roi_mode_name(roi_mode_);
       fields["change_history_complete"] =
           maps_.changes_since(viewpoint_revision_, changed);
       fields["changed_voxels_since_arrival"] = integer(changed.size());

@@ -1,5 +1,6 @@
 #include "px4_powerplant_mission_cpp/core.hpp"
 #include "px4_powerplant_mission_cpp/planning_index.hpp"
+#include "px4_powerplant_mission_cpp/topology.hpp"
 #include <gtest/gtest.h>
 
 namespace powerplant {
@@ -28,6 +29,161 @@ double length(const Path &path) {
   return sum;
 }
 } // namespace
+TEST(TaskRoiPlanner, NavigationBoundsArePureAndPreserveUnknownBorder) {
+  auto map = corridor();
+  const auto original = map.bounds;
+  const auto bounds = observed_navigation_bounds(map);
+  ASSERT_TRUE(bounds);
+  EXPECT_EQ((*bounds)[0], (Key{-1, -1, -1}));
+  EXPECT_EQ((*bounds)[1], (Key{6, 5, 5}));
+  EXPECT_EQ(map.bounds, original);
+  const auto expanded = observed_navigation_bounds(
+      map, Bounds{Key{-3, 0, -2}, Key{0, 1, 6}});
+  ASSERT_TRUE(expanded);
+  EXPECT_EQ((*expanded)[0], (Key{-4, -1, -3}));
+  EXPECT_EQ((*expanded)[1], (Key{6, 5, 7}));
+  EXPECT_EQ(map.free.count({-3, 0, -2}), 0u);
+  EXPECT_FALSE(observed_navigation_bounds(PlanningMap{}));
+}
+
+TEST(TaskRoiPlanner, VoxelFaceTouchIsNotAdditionalTaskVolume) {
+  const TaskRoi roi{Vec3(6, 2, 2), Vec3(7, 3, 3)};
+  EXPECT_FALSE(roi.intersects_cell({5, 2, 2}, 1));
+  EXPECT_TRUE(roi.intersects_cell({6, 2, 2}, 1));
+  EXPECT_FALSE(roi.intersects_cell({7, 2, 2}, 1));
+  EXPECT_NEAR(roi.distance_m(Vec3(4, 1, 2.5)), std::sqrt(5.0), 1e-12);
+}
+
+TEST(TaskRoiPlanner, WorkViewAndCompleteReturnMayRemainOutsideTaskBox) {
+  auto map = corridor();
+  auto c = config();
+  c.task_roi = TaskRoi{Vec3(6, 1, 1), Vec3(9, 4, 4)};
+  const auto result = plan_frontier_detailed(map, start, start, 200, 0, c);
+  ASSERT_TRUE(result.plan) << result.detail;
+  EXPECT_EQ(result.roi_unknown_remaining, 27u);
+  EXPECT_FALSE(c.task_roi->contains(result.plan->goal_xyz));
+  EXPECT_TRUE(c.task_roi->intersects_cell(result.plan->frontier_key, map.resolution));
+  EXPECT_GT(result.plan->visible_roi_unknown_count, 0);
+  EXPECT_EQ(result.plan->access_visible_unknown_count, 0);
+  EXPECT_EQ(result.plan->visible_unknown_count,
+            result.plan->visible_roi_unknown_count);
+  EXPECT_TRUE(path_is_known_free(map, result.plan->full_path_xyz, c));
+  EXPECT_TRUE(path_is_known_free(map, result.plan->return_path_xyz, c));
+  EXPECT_TRUE(result.plan->return_path_xyz.back().isApprox(start));
+}
+
+TEST(TaskRoiPlanner, ExteriorInformationDoesNotConsumeTaskTargetQuota) {
+  auto map = corridor();
+  auto c = config();
+  c.task_roi = TaskRoi{Vec3(6, 2, 2), Vec3(7, 3, 3)};
+  c.max_frontier_targets = 1;
+  const auto result = plan_frontier_detailed(map, start, start, 200, 0, c,
+                                             {{{6, 0, 0}, 1000000.0}});
+  ASSERT_TRUE(result.plan) << result.detail;
+  EXPECT_EQ(result.plan->frontier_key, (Key{6, 2, 2}));
+  EXPECT_DOUBLE_EQ(result.plan->surface_gain, 0);
+  EXPECT_EQ(result.plan->visible_roi_unknown_count, 1);
+}
+
+TEST(TaskRoiPlanner, KnownTaskCompletesWithoutExploringExteriorUnknown) {
+  auto c = config();
+  c.task_roi = TaskRoi{Vec3(1, 1, 1), Vec3(3, 3, 3)};
+  const auto result = plan_frontier_detailed(corridor(), start, start, 200, 0, c);
+  EXPECT_FALSE(result.plan);
+  EXPECT_EQ(result.roi_unknown_remaining, 0u);
+  EXPECT_EQ(result.failure, PlanningFailure::FrontierExhausted);
+  EXPECT_NE(result.detail.find("task ROI"), std::string::npos);
+}
+
+TEST(TaskRoiPlanner, UnseenTaskNeedsAccessAndAccessGainIsNotTaskCoverage) {
+  auto c = config();
+  c.task_roi = TaskRoi{Vec3(20, 1, 1), Vec3(23, 4, 4)};
+  auto work = plan_frontier_detailed(corridor(), start, start, 200, 0, c);
+  EXPECT_FALSE(work.plan);
+  EXPECT_EQ(work.failure, PlanningFailure::RoiUnknownRemaining);
+  EXPECT_EQ(work.roi_unknown_remaining, 27u);
+  c.roi_mode = TaskRoiMode::Access;
+  auto access = plan_frontier_detailed(corridor(), start, start, 200, 0, c);
+  ASSERT_TRUE(access.plan) << access.detail;
+  EXPECT_EQ(access.plan->roi_mode, TaskRoiMode::Access);
+  EXPECT_EQ(access.plan->visible_unknown_count, 0);
+  EXPECT_EQ(access.plan->visible_roi_unknown_count, 0);
+  EXPECT_GT(access.plan->access_visible_unknown_count, 0);
+  EXPECT_EQ(access.plan->roi_unknown_remaining, 27u);
+  EXPECT_TRUE(access.plan->return_path_xyz.back().isApprox(start));
+}
+
+TEST(TaskRoiPlanner, AccessSearchRegionCannotTurnUnseenTaskIntoCompletion) {
+  auto c = config();
+  c.task_roi = TaskRoi{Vec3(20, 1, 1), Vec3(23, 4, 4)};
+  c.roi_mode = TaskRoiMode::Access;
+  c.access_region = TaskRoi{Vec3(0, 0, 0), Vec3(3, 5, 5)};
+  const auto result = plan_frontier_detailed(corridor(), start, start, 200, 0, c);
+  EXPECT_FALSE(result.plan);
+  EXPECT_EQ(result.failure, PlanningFailure::RoiNotReachable);
+  EXPECT_EQ(result.roi_unknown_remaining, 27u);
+}
+
+TEST(TaskRoiPlanner, AccessNeverGrantsAnUnobservedReturnConnection) {
+  auto map = corridor();
+  for (int y = 0; y < 5; ++y)
+    for (int z = 0; z < 5; ++z)
+      map.free.erase({3, y, z});
+  auto c = config();
+  c.task_roi = TaskRoi{Vec3(20, 1, 1), Vec3(23, 4, 4)};
+  c.roi_mode = TaskRoiMode::Access;
+  const auto result = plan_frontier_detailed(map, start, Vec3(4.5, 2.5, 2.5),
+                                            200, 0, c);
+  EXPECT_FALSE(result.plan);
+  EXPECT_EQ(result.failure, PlanningFailure::Blocked);
+  EXPECT_GT(result.roi_unknown_remaining, 0u);
+}
+
+TEST(TaskRoiPlanner, AccessRankingUsesExecutableTimeAndRevisitPenalty) {
+  auto c = config();
+  c.task_roi = TaskRoi{Vec3(20, 1, 1), Vec3(23, 4, 4)};
+  c.roi_mode = TaskRoiMode::Access;
+  c.path_time_s = [](const Path &path, double, double, bool) {
+    return std::optional<double>(3 + 2 * length(path));
+  };
+  auto first = plan_frontier_detailed(corridor(), start, start, 200, 0, c);
+  ASSERT_TRUE(first.plan) << first.detail;
+  EXPECT_NEAR(first.plan->roi_access_cost_s,
+              first.plan->outbound_time_s +
+                  c.task_roi->distance_m(first.plan->goal_xyz) / c.cruise_speed_mps,
+              1e-10);
+  const Key previous = key(first.plan->goal_xyz, 1);
+  c.roi_recent_observations[previous] = 1;
+  auto next = plan_frontier_detailed(corridor(), start, start, 200, 0, c);
+  ASSERT_TRUE(next.plan) << next.detail;
+  EXPECT_NE(key(next.plan->goal_xyz, 1), previous);
+  EXPECT_TRUE(path_is_known_free(corridor(), next.plan->return_path_xyz, c));
+}
+
+TEST(TaskRoiPlanner, RemainingUnknownUsesSparseCountsForLargeTaskVolume) {
+  auto c = config();
+  c.task_roi = TaskRoi{Vec3::Constant(-10000), Vec3::Constant(10000)};
+  c.max_search_radius_m = .1;
+  const auto result = plan_frontier_detailed(corridor(), start, start, 200, 0, c);
+  EXPECT_EQ(result.roi_unknown_remaining, size_t(8000000000000ULL - 150));
+  EXPECT_EQ(result.failure, PlanningFailure::RoiUnknownRemaining);
+}
+
+TEST(TaskRoiPlanner, TopologyRanksTaskInformationBeforeAllocatingQuotas) {
+  auto snapshot = std::make_shared<TopologySnapshot>();
+  snapshot->regions[1].unknown_neighbors.insert({6, 2, 2});
+  for (int i = 0; i < 100; ++i)
+    snapshot->regions[2].unknown_neighbors.insert({100 + i, 2, 2});
+  TopologyGuide guide;
+  guide.snapshot = snapshot;
+  const TaskRoi roi{Vec3(6, 2, 2), Vec3(7, 3, 3)};
+  const auto ranked = rank_topology_regions(
+      guide, 200, [](uint64_t) { return std::optional<double>(1); },
+      [&](const Key &k) { return roi.intersects_cell(k, 1); });
+  ASSERT_EQ(ranked.size(), 1u);
+  EXPECT_EQ(ranked.front().region_id, 1u);
+}
+
 TEST(P1Planner, BudgetContainsYawObservationAndFullKnownFreeReturn) {
   auto map = corridor();
   auto c = config();

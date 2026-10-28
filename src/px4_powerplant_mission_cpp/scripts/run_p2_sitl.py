@@ -101,11 +101,297 @@ def takeoff_startup_evidence(parameters, observed_px4_parameters):
             "actual_takeoff_ramp_state_observed": False}
 
 
+def scenario_world(args):
+    if args.scenario == "powerplant":
+        return args.px4_root / "Tools/simulation/gz/worlds/powerplant.sdf"
+    return PACKAGE / "test/worlds" / f"p2_{args.scenario}.sdf"
+
+
+def acceptance_scope(args):
+    if args.image_chain_only: return "yolo_image_chain_only"
+    if args.scenario == "powerplant":
+        return {"scan":"powerplant_takeoff_scan", "roi-access":"powerplant_roi_access",
+                "mission":"powerplant_local_roi_mission"}[args.stop_after]
+    return "full_mission"
+
+
+def resolve_render_context(requested, environment):
+    if requested not in ("auto", "display", "egl"):
+        raise ValueError("unknown Gazebo render context")
+    selected = ("display" if environment.get("DISPLAY") else "egl") if requested=="auto" else requested
+    if selected=="display" and not environment.get("DISPLAY"):
+        raise RuntimeError("display rendering requires DISPLAY; use egl on a headless machine")
+    return selected
+
+
+def limited_stage_progress(stop_after, phases, events, state,
+                           navigation_distance=0.0, truth_distance=0.0):
+    required = ["START", "SAFE_TAKEOFF", "HOVER_SCAN", "EXPLORE"]
+    positions = [phases.index(p) for p in required if p in phases]
+    checks = {"initial_flight_phases_in_order":len(positions)==len(required) and positions==sorted(positions),
+              "initial_scan_completed_with_observation_evidence":any(e.get("event")=="initial_scan_complete" for e in events),
+              "currently_exploring":state.get("phase")=="EXPLORE",
+              "navigation_healthy":bool(state.get("localization_ready"))}
+    if stop_after == "roi-access":
+        checks.update({"roi_access_mode_active":state.get("explore_roi_mode")=="ROI_ACCESS",
+            "executing_tracking_reference":state.get("motion_mode")=="TRACKING",
+            "measured_navigation_moved_0_3m":math.isfinite(navigation_distance) and navigation_distance>=.3,
+            "gazebo_model_origin_moved_0_3m":math.isfinite(truth_distance) and truth_distance>=.3})
+    return {"passed":all(checks.values()),"checks":checks,
+            "navigation_displacement_m":navigation_distance,"truth_displacement_m":truth_distance,
+            "scope":"takeoff_scan" if stop_after=="scan" else "roi_access_progress",
+            "task_roi_complete":False,"full_flight_acceptance":False}
+
+
+def landing_completion_evidence(state, status, landed, clock_ns, clock_wall,
+                                now_wall, max_age_s, disarmed_state=1):
+    """Require independent PX4 measurements, not only the task phase string."""
+    def fresh(row):
+        if not isinstance(row, dict) or clock_ns is None: return False
+        sample,receipt=row.get("sample_ns"),row.get("receipt_wall")
+        return (type(sample) is int and sample>0 and isinstance(receipt,(int,float))
+                and math.isfinite(receipt) and 0<=now_wall-receipt<=max_age_s
+                and -.05<=(clock_ns-sample)*1e-9<=max_age_s)
+    clock_fresh=(isinstance(clock_wall,(int,float)) and math.isfinite(clock_wall)
+                 and 0<=now_wall-clock_wall<=max_age_s)
+    checks={"task_reports_complete":state.get("phase")=="COMPLETE",
+            "fresh_simulation_clock":bool(clock_fresh),
+            "fresh_px4_vehicle_status":fresh(status),
+            "fresh_px4_landing_measurement":fresh(landed),
+            "px4_disarmed":bool(status and status.get("arming_state")==disarmed_state),
+            "px4_landed":bool(landed and landed.get("landed") is True)}
+    return {"passed":all(checks.values()),"checks":checks,
+            "vehicle_status":status,"landing_measurement":landed,
+            "scope":"independent PX4 landed/disarmed sample and receipt evidence"}
+
+
+def access_motion_progress(anchor, sample, identity, active):
+    """Accumulate only paired measurements within one continuous task/epoch."""
+    if (not active or sample is None or len(identity)!=2
+            or any(type(value) is not int or value<=0 for value in identity)):
+        return None,0.0,0.0
+    if (type(sample.get("sample_ns")) is not int or sample["sample_ns"]<=0
+            or any(len(sample.get(key,[]))!=3 or not all(math.isfinite(x) for x in sample[key])
+                   for key in ("navigation","truth"))):
+        return None,0.0,0.0
+    if (anchor is None or anchor["identity"]!=identity
+            or sample["sample_ns"]<anchor["sample_ns"]):
+        return {**sample,"identity":identity},0.0,0.0
+    if sample["sample_ns"]==anchor["sample_ns"]: return anchor,0.0,0.0
+    return anchor,math.dist(sample["navigation"],anchor["navigation"]),math.dist(sample["truth"],anchor["truth"])
+
+
+def read_asset_lock(path, asset_root, world):
+    """Check the real scene's recursively referenced local assets before flight."""
+    asset_root, world = Path(asset_root).resolve(), Path(world).resolve()
+    payload = json.loads(Path(path).read_text())
+    if payload.get("schema_version") != 1:
+        raise RuntimeError("unsupported powerplant asset lock schema")
+    if payload.get("asset_commit_pending"):
+        raise RuntimeError("powerplant assets have not been committed to a reproducible baseline")
+    commit = payload.get("model_git_commit")
+    if commit:
+        resolved = subprocess.run(["git", "-C", str(asset_root), "rev-parse", "HEAD"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        if resolved != commit:
+            raise RuntimeError("powerplant model repository differs from the pinned asset commit")
+    entries = payload.get("files")
+    if isinstance(entries, dict):
+        entries = [{"path": key, "sha256": value} for key, value in entries.items()]
+    if not isinstance(entries, list) or not entries:
+        raise RuntimeError("powerplant asset lock must contain nonempty files")
+    locked = {}
+    for entry in entries:
+        relative, expected = entry.get("path"), entry.get("sha256")
+        if (not isinstance(relative, str) or Path(relative).is_absolute()
+                or not isinstance(expected, str) or len(expected) != 64
+                or any(c not in "0123456789abcdef" for c in expected)):
+            raise RuntimeError("invalid powerplant asset lock entry")
+        source = (asset_root / relative).resolve()
+        if not source.is_relative_to(asset_root) or source in locked:
+            raise RuntimeError("duplicate or escaping powerplant asset path")
+        actual = hashlib.sha256(source.read_bytes()).hexdigest()
+        if actual != expected:
+            raise RuntimeError(f"powerplant asset changed: {source}")
+        locked[source] = actual
+
+    def require(source):
+        source = source.resolve()
+        if source not in locked:
+            raise RuntimeError(f"powerplant asset is not locked: {source}")
+        return source
+
+    checked = set()
+    def walk(source):
+        source = require(source)
+        if source in checked: return
+        checked.add(source)
+        root = ET.parse(source).getroot()
+        for include in root.findall(".//include"):
+            uri = include.findtext("uri", "")
+            if not uri.startswith("model://"):
+                raise RuntimeError(f"unsupported included asset URI: {uri}")
+            folder = asset_root / "models" / uri[len("model://"):]
+            config = require(folder / "model.config")
+            filename = ET.parse(config).getroot().findtext("sdf")
+            if not filename: raise RuntimeError(f"missing model SDF declaration: {config}")
+            walk(folder / filename)
+        for uri_element in root.findall(".//geometry/mesh/uri"):
+            uri = uri_element.text or ""
+            if uri.startswith("model://"):
+                mesh = asset_root / "models" / uri[len("model://"):]
+            elif uri.startswith("file://"):
+                mesh = source.parent / uri[len("file://"):]
+            else:
+                mesh = source.parent / uri
+            require(mesh)
+    walk(world)
+    return {"passed": True, "manifest": str(Path(path).resolve()),
+            "manifest_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+            "world_sha256": locked[world], "asset_root": str(asset_root),
+            "verified_files": [{"path": str(p.relative_to(asset_root)), "sha256": digest}
+                               for p, digest in sorted(locked.items())],
+            "recursive_scene_references_verified": True}
+
+
+class VisualSceneEvaluator:
+    """Offline visual ray truth. Its mesh/geometry never reaches navigation."""
+    def __init__(self, world, models):
+        import numpy as np
+        self.np, self.models = np, Path(models)
+        self.geometries, self.visual_meshes = [], []
+        root = ET.parse(world).getroot()
+        scene = root.find("world")
+        if scene is None: raise RuntimeError("evaluation world is missing")
+        self._walk(scene, np.eye(4), Path(world).parent, "")
+
+    def _pose(self, element):
+        np = self.np
+        if element is None: return np.eye(4)
+        if element.get("relative_to"):
+            raise RuntimeError("offline evaluator requires resolved relative_to poses")
+        values = [float(x) for x in (element.text or "").split()]
+        if len(values) != 6 or not all(math.isfinite(x) for x in values):
+            raise RuntimeError("invalid visual pose")
+        x,y,z,r,p,w = values
+        cr,sr,cp,sp,cy,sy = math.cos(r),math.sin(r),math.cos(p),math.sin(p),math.cos(w),math.sin(w)
+        transform = np.eye(4)
+        transform[:3,:3] = [[cy*cp,cy*sp*sr-sy*cr,cy*sp*cr+sy*sr],
+                            [sy*cp,sy*sp*sr+cy*cr,sy*sp*cr-cy*sr],
+                            [-sp,cp*sr,cp*cr]]
+        transform[:3,3] = [x,y,z]
+        return transform
+
+    def _walk(self, element, parent, folder, name):
+        np = self.np
+        for include in element.findall("include"):
+            uri = include.findtext("uri", "")
+            if not uri.startswith("model://"):
+                raise RuntimeError(f"unsupported visual include URI: {uri}")
+            model_dir = self.models / uri[len("model://"):]
+            config = model_dir / "model.config"
+            sdf_name = ET.parse(config).getroot().findtext("sdf")
+            model = ET.parse(model_dir / sdf_name).getroot().find("model")
+            if model is None: raise RuntimeError(f"included model is missing: {model_dir}")
+            self._model(model, parent @ self._pose(include.find("pose")), model_dir,
+                        include.findtext("name", model.get("name", "")),
+                        override_pose=include.find("pose") is not None)
+        for model in element.findall("model"):
+            self._model(model, parent, folder, model.get("name", ""))
+
+    def _model(self, model, parent, folder, name, override_pose=False):
+        np = self.np
+        transform = parent if override_pose else parent @ self._pose(model.find("pose"))
+        for link in model.findall("link"):
+            body = transform @ self._pose(link.find("pose"))
+            for visual in link.findall("visual"):
+                pose = body @ self._pose(visual.find("pose"))
+                geometry = visual.find("geometry")
+                if geometry is None: continue
+                calibration = name.startswith(("floor", "ground", "ceiling", "wall", "divider", "partition", "indoor_enclosure", "power_plant"))
+                if geometry.find("box") is not None:
+                    size = np.asarray([float(x) for x in geometry.findtext("box/size").split()])
+                    self.geometries.append(("box", np.linalg.inv(pose), size/2, calibration, name))
+                elif geometry.find("cylinder") is not None:
+                    values = (float(geometry.findtext("cylinder/radius")), float(geometry.findtext("cylinder/length"))/2)
+                    self.geometries.append(("cylinder", np.linalg.inv(pose), values, calibration, name))
+                elif geometry.find("plane") is not None:
+                    size = np.asarray([float(x) for x in geometry.findtext("plane/size").split()])
+                    normal = np.asarray([float(x) for x in geometry.findtext("plane/normal", "0 0 1").split()])
+                    if not np.allclose(normal, [0,0,1]): raise RuntimeError("unsupported visual plane normal")
+                    self.geometries.append(("plane", np.linalg.inv(pose), size/2, calibration, name))
+                elif geometry.find("mesh") is not None:
+                    uri = geometry.findtext("mesh/uri", "")
+                    source = (self.models / uri[len("model://"):]) if uri.startswith("model://") else folder / uri.removeprefix("file://")
+                    scale = np.asarray([float(x) for x in geometry.findtext("mesh/scale", "1 1 1").split()])
+                    if not np.isfinite(scale).all() or np.any(scale <= 0): raise RuntimeError("invalid visual mesh scale")
+                    pose[:3,:3] = pose[:3,:3] @ np.diag(scale)
+                    from vtkmodules.vtkIOGeometry import vtkSTLReader
+                    from vtkmodules.vtkCommonDataModel import vtkStaticCellLocator
+                    reader = vtkSTLReader();reader.SetFileName(str(source));reader.Update()
+                    poly = reader.GetOutput()
+                    if poly.GetNumberOfCells() == 0: raise RuntimeError(f"empty visual STL: {source}")
+                    locator = vtkStaticCellLocator();locator.SetDataSet(poly);locator.BuildLocator()
+                    self.geometries.append(("mesh", np.linalg.inv(pose), locator, calibration, name))
+                    self.visual_meshes.append({"path": str(source.resolve()), "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                                               "model_name": name, "pose_matrix": pose.tolist(), "triangles": poly.GetNumberOfCells()})
+        self._walk(model, transform, folder, name)
+
+    def first_hit(self, origin, ray, maximum_parameter=1000.0):
+        np = self.np
+        origin,ray = np.asarray(origin,dtype=float),np.asarray(ray,dtype=float)
+        if not np.isfinite(origin).all() or not np.isfinite(ray).all() or np.linalg.norm(ray) <= 1e-12:
+            return None
+        closest = None
+        for kind,inverse,data,calibration,name in self.geometries:
+            p = inverse[:3,:3]@origin + inverse[:3,3]
+            d = inverse[:3,:3]@ray
+            hits = []
+            if kind == "box":
+                near,far = -math.inf,math.inf
+                for axis in range(3):
+                    if abs(d[axis]) < 1e-12:
+                        if not -data[axis] <= p[axis] <= data[axis]: far=-math.inf;break
+                    else:
+                        a,b=(-data[axis]-p[axis])/d[axis],(data[axis]-p[axis])/d[axis]
+                        near,far=max(near,min(a,b)),min(far,max(a,b))
+                t=near if near>1e-8 else far
+                if far>=max(0,near) and t>1e-8:hits.append(t)
+            elif kind == "plane":
+                if abs(d[2])>1e-12:
+                    t=-p[2]/d[2]
+                    if t>1e-8 and np.all(np.abs((p+t*d)[:2])<=data):hits.append(t)
+            elif kind == "cylinder":
+                radius,height=data
+                a,b=float(d[:2]@d[:2]),float(2*p[:2]@d[:2]);disc=b*b-4*a*(p[:2]@p[:2]-radius*radius)
+                if a>1e-12 and disc>=0:
+                    for t in ((-b-math.sqrt(disc))/(2*a),(-b+math.sqrt(disc))/(2*a)):
+                        if t>1e-8 and abs(p[2]+t*d[2])<=height:hits.append(t)
+                if abs(d[2])>1e-12:
+                    for z in (-height,height):
+                        t=(z-p[2])/d[2]
+                        if t>1e-8 and np.linalg.norm((p+t*d)[:2])<=radius:hits.append(t)
+            else:
+                from vtkmodules.vtkCommonCore import mutable
+                t,sub,cell=mutable(0.0),mutable(0),mutable(0)
+                if data.IntersectWithLine(p,p+d*maximum_parameter,1e-8,t,[0.,0.,0.],[0.,0.,0.],sub,cell):
+                    if float(t)*maximum_parameter>1e-8:hits.append(float(t)*maximum_parameter)
+            if hits and min(hits)<=maximum_parameter and (closest is None or min(hits)<closest["parameter"]):
+                closest={"parameter":float(min(hits)),"model_name":name,"kind":kind,"calibration_surface":calibration}
+        return closest
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--px4-root", type=Path, default=Path("/home/pawn/drone-simulation"))
-    p.add_argument("--scenario", choices=("room", "two_rooms"), default="room")
-    p.add_argument("--detection-mode", choices=("replay", "yolo", "none"), default="replay")
+    p.add_argument("--scenario", choices=("room", "two_rooms", "powerplant"), default="room")
+    p.add_argument("--detection-mode", choices=("replay", "yolo", "none"), default=None)
+    p.add_argument("--powerplant-asset-lock", type=Path, default=PACKAGE/"config/powerplant_assets.json")
+    p.add_argument("--roi-access-test", action="store_true", help="powerplant only: overlay a task ROI outside the launch point")
+    p.add_argument("--stop-after", choices=("scan", "roi-access", "mission"), default=None,
+                   help="powerplant defaults to scan; regression rooms default to complete mission")
+    p.add_argument("--render-context", choices=("auto", "display", "egl"), default="auto",
+                   help="auto uses DISPLAY when available; egl explicitly requests headless rendering")
     p.add_argument("--sensor-profile", choices=("native", "cpu"), default="native",
                    help="cpu copies the camera/vehicle models into this run and reduces sensor load")
     p.add_argument("--cpu-camera-rate-hz", type=float, default=10.0,
@@ -123,6 +409,12 @@ def parse_args():
     p.add_argument("--gui", action="store_true")
     p.add_argument("--prepare-only", action="store_true")
     args = p.parse_args()
+    if args.detection_mode is None: args.detection_mode = "none" if args.scenario=="powerplant" else "replay"
+    if args.stop_after is None: args.stop_after = "roi-access" if args.roi_access_test else ("scan" if args.scenario=="powerplant" else "mission")
+    if args.roi_access_test and args.scenario != "powerplant": p.error("--roi-access-test requires --scenario powerplant")
+    if args.scenario=="powerplant" and args.detection_mode=="replay":
+        p.error("powerplant replay requires a verified annotation fixture from the actual STL; the regression cylinder replay is forbidden (use none or yolo)")
+    if args.scenario!="powerplant" and args.stop_after!="mission": p.error("limited-stage acceptance requires --scenario powerplant")
     if not 0 <= args.ros_domain <= 232 or not 1024 <= args.agent_port <= 65535:
         p.error("choose a ROS domain in [0,232] and an unprivileged UDP port")
     if args.agent_port in (14550, 18570):
@@ -146,6 +438,7 @@ def parse_args():
         args.output_dir = WORKSPACE / "log" / f"p2_sitl_{args.scenario}_{stamp}"
     args.output_dir = args.output_dir.expanduser().resolve()
     args.px4_root = args.px4_root.expanduser().resolve()
+    args.powerplant_asset_lock = args.powerplant_asset_lock.expanduser().resolve()
     return args
 
 
@@ -222,6 +515,49 @@ def sensor_profile(args, runtime):
     return resources,metadata
 
 
+def configure_resource_paths(env, local_models, models, world_directory):
+    """Use the same overlay precedence for Gazebo and nested SDF includes."""
+    paths=[str(local_models) if local_models else "",str(models)]
+    env["GZ_SIM_RESOURCE_PATH"]=os.pathsep.join(x for x in
+        (*paths,str(world_directory),env.get("GZ_SIM_RESOURCE_PATH","")) if x)
+    # libsdformat consults SDF_PATH for nested model:// includes. Omitting the
+    # overlay here silently loads the original camera despite spawning the
+    # copied CPU-profile vehicle and setting GZ_SIM_RESOURCE_PATH correctly.
+    env["SDF_PATH"]=os.pathsep.join(x for x in (*paths,env.get("SDF_PATH","")) if x)
+
+
+def sensor_profile_evidence(metadata, observed):
+    """Bind reported load to actual image geometry and received exposure rates.
+
+    This checks the observed ROS stream; it does not prove renderer adapter or
+    distinguish every dropped intermediate Gazebo exposure. At least five
+    distinct exposures and a rate within 20% are required for each sensor.
+    """
+    configured=metadata.get("configured_sensors",{})
+    checks={};rates={}
+    for name in ("rgb","depth","lidar"):
+        expected=configured.get(name,{})
+        actual=observed.get(name,{})
+        count=actual.get("unique_exposures",0)
+        checks[name+"_enough_exposures"]=(isinstance(count,int) and count>=5)
+        if name=="lidar":
+            samples=expected.get("horizontal",{}).get("samples")
+            checks[name+"_dimensions_match"]=(samples is not None
+                and actual.get("range_samples")==int(samples))
+        else:
+            checks[name+"_dimensions_match"]=all(expected.get(key) is not None
+                and expected.get(key)==actual.get(key) for key in ("width","height"))
+        rate=actual.get("observed_unique_exposure_rate_sim_hz")
+        target=expected.get("configured_update_rate_hz")
+        finite=lambda value:isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value)
+        checks[name+"_exposure_rate_matches"]=(finite(rate) and finite(target)
+            and target>0 and abs(rate-target)<=.20*target)
+        rates[name]={"expected_sim_hz":target,"observed_sim_hz":rate}
+    return {"passed":all(checks.values()),"checks":checks,"rates":rates,
+        "scope":"observed ROS dimensions and unique-exposure rates; no renderer or real-time claim",
+        "rate_relative_tolerance":.20,"minimum_unique_exposures":5}
+
+
 def verified_body_envelope(models, parameters, audit_path):
     audit=json.loads(audit_path.read_text())
     expected={"x500_depth","x500","x500_base","OakD-Lite"}
@@ -248,6 +584,10 @@ def verified_body_envelope(models, parameters, audit_path):
 
 def prepare(args):
     import yaml
+    world = scenario_world(args)
+    ET.parse(world)
+    asset_audit = read_asset_lock(args.powerplant_asset_lock,
+        args.px4_root/"Tools/simulation/gz",world) if args.scenario=="powerplant" else None
     output = args.output_dir
     output.mkdir(parents=True, exist_ok=True)
     runtime = output / "runtime" / f"run-{time.time_ns()}"
@@ -255,33 +595,61 @@ def prepare(args):
     local_models,sensor_metadata = sensor_profile(args,runtime)
     build = args.px4_root / "build/px4_sitl_default"
     binary = build / "bin/px4"
-    world = PACKAGE / "test/worlds" / f"p2_{args.scenario}.sdf"
-    ET.parse(world)
     config = yaml.safe_load((WORKSPACE / "src/px4_powerplant_mission/config/powerplant.yaml").read_text())
     mission = config["powerplant_offboard_mission"]["ros__parameters"]
     profile = yaml.safe_load((WORKSPACE/"src/px4_powerplant_mission/config/p2_simulation.yaml").read_text())["powerplant_offboard_mission"]["ros__parameters"]
     body_audit=verified_body_envelope(args.px4_root/"Tools/simulation/gz/models",{**mission,**profile},
                                       PACKAGE/"research_sources/sitl_body_envelope.json")
     mission.update({
-        "auto_start": False, "takeoff_region_confirmed": True,
-        "takeoff_region_radius_m": 1.5, "takeoff_region_height_m": 4.2,
-        "takeoff_height_m": 3.0, "return_home_height_m": 3.0,
-        "inspection_altitude_m": 3.0, "inspection_photo_dir": str(output / "photos"),
-        "explore_min_x_m": -5.5, "explore_max_x_m": 9.5 if args.scenario == "two_rooms" else 5.5,
-        "explore_min_y_m": -5.5, "explore_max_y_m": 5.5,
-        "explore_min_z_m": 1.0, "explore_max_z_m": 6.0,
+        "auto_start": False, "takeoff_region_confirmed": args.scenario!="powerplant",
+        "takeoff_region_radius_m": 1.5,
+        "takeoff_region_height_m": 6.2 if args.scenario=="powerplant" else 4.2,
+        "takeoff_height_m": 5.0 if args.scenario=="powerplant" else 3.0,
+        "return_home_height_m": 5.0 if args.scenario=="powerplant" else 3.0,
+        "inspection_altitude_m": 5.0 if args.scenario=="powerplant" else 3.0,
+        "inspection_photo_dir": str(output / "photos"),
         "explore_max_duration_s": args.timeout, "initial_scan_timeout_s": 100.0,
     })
+    if args.scenario != "powerplant":
+        mission.update({"explore_min_x_m": -5.5,
+            "explore_max_x_m": 9.5 if args.scenario == "two_rooms" else 5.5,
+            "explore_min_y_m": -5.5, "explore_max_y_m": 5.5,
+            "explore_min_z_m": 1.0, "explore_max_z_m": 6.0})
+    elif args.roi_access_test:
+        mission.update({"explore_min_x_m":12.0,"explore_max_x_m":24.0,
+            "explore_min_y_m":-9.0,"explore_max_y_m":12.0,
+            "explore_min_z_m":3.5,"explore_max_z_m":7.0})
     mapper = config["powerplant_voxel_mapper"]["ros__parameters"]
     # This isolated lockstep simulator and PX4 share the Gazebo boot clock.
     # Hardware retains system↔boot synchronization in the shared defaults.
     config["powerplant_localization"]["ros__parameters"]["px4_timestamp_domain"] = "ros"
     config["powerplant_external_vision_bridge"]["ros__parameters"]["px4_timestamp_domain"] = "ros"
-    mapper.update({"grid_min_x_m": -6.0, "grid_max_x_m": 10.0,
-                   "grid_min_y_m": -6.0, "grid_max_y_m": 6.0,
-                   "grid_z_min_m": 1.0, "grid_z_max_m": 6.0})
+    if args.scenario != "powerplant":
+        mapper.update({"grid_min_x_m": -6.0, "grid_max_x_m": 10.0,
+                       "grid_min_y_m": -6.0, "grid_max_y_m": 6.0,
+                       "grid_z_min_m": 1.0, "grid_z_max_m": 6.0})
+    takeoff_audit = None
+    takeoff_audit_path = output / "takeoff_domain_audit.json"
+    if args.scenario=="powerplant":
+        spec=importlib.util.spec_from_file_location("powerplant_takeoff_audit",
+            PACKAGE/"scripts/powerplant_takeoff_audit.py")
+        takeoff_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(takeoff_module)
+        takeoff_audit=takeoff_module.audit_takeoff_domain(world,
+            args.px4_root/"Tools/simulation/gz/models",{**mission,**profile},home=(0,0,.1))
+        if not takeoff_audit["passed"]:
+            takeoff_audit_path.write_text(json_dumps(takeoff_audit,indent=2,allow_nan=False))
+            failed=[name for name,passed in takeoff_audit["checks"].items() if not passed]
+            raise RuntimeError("real powerplant takeoff domain is unproven: "+", ".join(failed))
+        # The boolean is granted only after the actual source/collision scene
+        # has a sufficient separation proof for this operating column.
+        mission["takeoff_region_confirmed"]=True
     config_path = runtime / "powerplant_p2_sitl.yaml"
     config_path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False))
+    if takeoff_audit is not None:
+        takeoff_module.bind_actual_configuration(takeoff_audit,config_path,{**mission,**profile})
+        takeoff_audit["motion_profile_config_sha256"]=hashlib.sha256(
+            (WORKSPACE/"src/px4_powerplant_mission/config/p2_simulation.yaml").read_bytes()).hexdigest()
+        takeoff_audit_path.write_text(json_dumps(takeoff_audit,indent=2,allow_nan=False))
     rootfs = runtime / "px4_rootfs"
     rootfs.mkdir(exist_ok=True)
     etc = rootfs / "etc"
@@ -310,12 +678,14 @@ def prepare(args):
         # This failsafe change is confined to the fresh SITL rootfs/process.
         "PX4_PARAM_COM_OBL_RC_ACT": "4", "PX4_PARAM_COM_OF_LOSS_T": ".5",
     })
-    resources = [str(local_models) if local_models else "", str(args.px4_root / "Tools/simulation/gz/models"), str(world.parent), env.get("GZ_SIM_RESOURCE_PATH", "")]
-    env["GZ_SIM_RESOURCE_PATH"] = os.pathsep.join(x for x in resources if x)
+    configure_resource_paths(env,local_models,args.px4_root/"Tools/simulation/gz/models",world.parent)
     plugins = str(build / "src/modules/simulation/gz_plugins")
     env["GZ_SIM_SYSTEM_PLUGIN_PATH"] = os.pathsep.join(
         x for x in (plugins, env.get("GZ_SIM_SYSTEM_PLUGIN_PATH", "")) if x)
-    gz = ["gz", "sim", "-r", "-s", "--headless-rendering", str(world)]
+    render_context=resolve_render_context(args.render_context,env)
+    gz = ["gz", "sim", "-r", "-s"]
+    if render_context=="egl": gz.append("--headless-rendering")
+    gz.append(str(world))
     commands = [
         ("agent", ["MicroXRCEAgent", "udp4", "-p", str(args.agent_port)], runtime),
         ("gazebo", gz, runtime),
@@ -337,27 +707,126 @@ def prepare(args):
         except ModuleNotFoundError:
             available = False
         if not available: missing.append(f"Python module {name}")
+    if args.scenario=="powerplant" and importlib.util.find_spec("vtkmodules") is None:
+        missing.append("Python module vtkmodules (offline mesh evaluator only)")
     manifest = {
         "scenario": args.scenario, "detection_mode": args.detection_mode,
-        "acceptance_scope":"yolo_image_chain_only" if args.image_chain_only else "full_mission",
+        "acceptance_scope":acceptance_scope(args),
+        "full_scene_exploration_acceptance":False,
+        "stop_after":args.stop_after,"roi_access_test_overlay":args.roi_access_test,
+        "powerplant_asset_audit":asset_audit,
+        "render_context":{"requested":args.render_context,"selected":render_context,
+            "display":env.get("DISPLAY"),"gpu_device_present":Path("/dev/dxg").exists(),
+            "hardware_acceleration_confirmed":False,
+            "scope":"render context selection only; actual adapter must be confirmed from Gazebo/Ogre logs"},
         "sensor_profile":sensor_metadata,
         "body_envelope_audit":body_audit,
+        "takeoff_geometry_audit":None if takeoff_audit is None else {
+            "path":str(takeoff_audit_path),"passed":True,
+            "sha256":hashlib.sha256(takeoff_audit_path.read_bytes()).hexdigest(),
+            "world_sha256":takeoff_audit["world_sha256"],
+            "actual_config_sha256":takeoff_audit["actual_config_sha256"],
+            "evidence_prism":takeoff_audit["evidence_prism"],
+            "operating_column":takeoff_audit["operating_column"],
+            "navigation_error_envelope_proven":False,"actual_startup_response_proven":False},
         "synthetic_detection_replay": args.detection_mode == "replay",
-        "world": str(world), "config": str(config_path), "rootfs": str(rootfs),
+        "world": str(world), "world_sha256":hashlib.sha256(world.read_bytes()).hexdigest(),
+        "config": str(config_path), "rootfs": str(rootfs),
+        "task_roi":{axis:[mission[f"explore_min_{axis}_m"],mission[f"explore_max_{axis}_m"]]
+                    for axis in "xyz"},
         "ros_domain": args.ros_domain, "agent_port": args.agent_port,
         "gcs_link": {"listen_endpoint": ["127.0.0.1", 14550], "expected_px4_endpoint": ["127.0.0.1", 18570],
                      "verified_peer_required_before_transmit": True, "heartbeat_period_wall_s": 1.0,
+                     "read_only_heartbeat_polling": {"command":"MAV_CMD_REQUEST_MESSAGE",
+                         "message":"HEARTBEAT", "period_wall_s":1.0,
+                         "changes_stream_interval":False,"ack_establishes_health":False,
+                         "scope":"request the actual PX4 stream during slow lockstep; telemetry only"},
                      "expected_px4_NAV_DLL_ACT": 2,
                      "px4_datalink_checks_disabled": False, "sends_arming_mode_or_trajectory_commands": False,
                      "health_file": str(output / "gcs_health.json"),
                      "heartbeat_evidence_file": str(output / "gcs_heartbeats.jsonl")},
         "gz_partition": env["GZ_PARTITION"], "missing_dependencies": missing,
         "commands": [{"name": name, "argv": argv, "cwd": str(cwd)} for name, argv, cwd in commands],
-        "test_only_confirmation": {"radius_m": 1.5, "height_m": 4.2, "relative_takeoff_m": 3.0},
+        "test_only_confirmation": {"radius_m": mission["takeoff_region_radius_m"],
+            "height_m":mission["takeoff_region_height_m"],"relative_takeoff_m":mission["takeoff_height_m"]},
         "takeoff_startup_configuration": takeoff_startup_evidence({**mission, **profile}, {}),
     }
     (output / "manifest.json").write_text(json_dumps(manifest, ensure_ascii=False, indent=2))
     return env, commands, manifest
+
+
+class RendererLogCapture:
+    """Attribute the process-global Ogre log to this run's live writer."""
+    def __init__(self, source, output, env):
+        self.source, self.output = Path(source), Path(output)
+        self.started_ns = time.time_ns()
+        self.requested_adapter = {key: env[key] for key in
+            ("GALLIUM_DRIVER", "MESA_D3D12_DEFAULT_ADAPTER_NAME") if key in env}
+
+    def finish(self, expected_pgid):
+        result = {"status": "UNCONFIRMED", "log_provenance_confirmed": False,
+                  "hardware_acceleration_confirmed": False,
+                  "requested_adapter_environment": self.requested_adapter,
+                  "log_writers": [], "renderer": None, "vendor": None,
+                  "active_context_api": None}
+        try:
+            stat = self.source.stat()
+            content = self.source.read_text(errors="replace")
+        except OSError:
+            return result
+        # A requested adapter, a stale global file, or a different GUI's log
+        # cannot establish which backend rendered this isolated server.
+        if stat.st_mtime_ns < self.started_ns or expected_pgid is None:
+            return result
+        identity = (stat.st_dev, stat.st_ino)
+        for process in Path("/proc").iterdir():
+            if not process.name.isdigit():
+                continue
+            try:
+                for fd in (process / "fd").iterdir():
+                    try:
+                        observed = fd.stat()
+                        if (observed.st_dev, observed.st_ino) != identity:
+                            continue
+                        info = (process / "fdinfo" / fd.name).read_text()
+                        flags = next(int(line.split()[1], 8) for line in info.splitlines()
+                                     if line.startswith("flags:"))
+                        if flags & os.O_ACCMODE not in (os.O_WRONLY, os.O_RDWR):
+                            continue
+                        result["log_writers"].append({"pid": int(process.name),
+                            "process_group": os.getpgid(int(process.name))})
+                    except (OSError, StopIteration, ValueError):
+                        continue
+            except OSError:
+                continue
+        writers = result["log_writers"]
+        if not writers or any(row["process_group"] != expected_pgid for row in writers):
+            return result
+        for line in content.splitlines():
+            for marker, field in (("GL_RENDERER =", "renderer"), ("GL_VENDOR =", "vendor")):
+                if marker in line:
+                    result[field] = line.split(marker, 1)[1].strip()
+            if "Starting GLX Subsystem" in line:
+                result["active_context_api"] = "GLX"
+            elif "Starting EGL Subsystem" in line:
+                result["active_context_api"] = "EGL"
+        if not result["renderer"]:
+            return result
+        lower = result["renderer"].lower()
+        software = any(word in lower for word in
+            ("llvmpipe", "softpipe", "swrast", "software", "swiftshader", "warp", "basic render"))
+        hardware = not software and any(word in lower for word in
+            ("nvidia", "geforce", "radeon", "intel", "quadro"))
+        self.output.mkdir(parents=True, exist_ok=True)
+        destination = self.output / "ogre2.log"
+        destination.write_bytes(self.source.read_bytes())
+        result.update(status="HARDWARE" if hardware else "SOFTWARE" if software else "IDENTIFIED",
+                      log_provenance_confirmed=True,
+                      hardware_acceleration_confirmed=hardware,
+                      log_copy=str(destination),
+                      log_sha256=hashlib.sha256(destination.read_bytes()).hexdigest(),
+                      scope="live server process-group log identity; not throughput or flight acceptance")
+        return result
 
 
 class Processes:
@@ -399,7 +868,7 @@ def monitor(args, processes):
     from gz.transport13 import Node as GzNode
     from gz.msgs10.pose_v_pb2 import Pose_V
     from nav_msgs.msg import Odometry
-    from px4_msgs.msg import TrajectorySetpoint, VehicleStatus
+    from px4_msgs.msg import TrajectorySetpoint, VehicleStatus, VehicleLandDetected
     from rosgraph_msgs.msg import Clock
     from rclpy.node import Node
     from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -462,30 +931,17 @@ def monitor(args, processes):
                                  [sy*cp,sy*sp*sr+cy*cr,sy*sp*cr-cy*sr],[-sp,cp*sr,cp*cr]])
             self.depth_mount_rotation = mount_rotation(profile["camera_rotation_rpy_rad"])
             self.rgb_mount_rotation = mount_rotation(profile["rgb_camera_rotation_rpy_rad"])
-            self.scene_boxes = []
-            self.scene_cylinders = []
-            world = ET.parse(PACKAGE / "test/worlds" / f"p2_{args.scenario}.sdf").getroot()
-            for model in world.findall("./world/model"):
-                name = model.get("name", "")
-                model_pose = np.asarray([float(v) for v in model.findtext("pose", "0 0 0 0 0 0").split()])
-                if np.any(np.abs(model_pose[3:]) > 1e-9):
-                    raise RuntimeError("calibration scene requires axis-aligned static primitives")
-                for link in model.findall("link"):
-                    link_pose = np.asarray([float(v) for v in link.findtext("pose", "0 0 0 0 0 0").split()])
-                    for visual in link.findall("visual"):
-                        visual_pose = np.asarray([float(v) for v in visual.findtext("pose", "0 0 0 0 0 0").split()])
-                        if np.any(np.abs(link_pose[3:]) > 1e-9) or np.any(np.abs(visual_pose[3:]) > 1e-9):
-                            raise RuntimeError("calibration visual must be axis aligned")
-                        center = model_pose[:3] + link_pose[:3] + visual_pose[:3]
-                        box = visual.find("geometry/box/size")
-                        cylinder = visual.find("geometry/cylinder")
-                        if box is not None:
-                            half = np.asarray([float(v) for v in box.text.split()]) / 2
-                            is_wall = name.startswith(("floor", "ceiling", "wall", "divider", "partition"))
-                            self.scene_boxes.append((center-half, center+half, is_wall, name))
-                        elif cylinder is not None:
-                            self.scene_cylinders.append((center, float(cylinder.findtext("radius")),
-                                                        float(cylinder.findtext("length"))/2))
+            # Offline truth is resolved from exactly the same world as Gazebo.
+            # The original visual STL (not the simplified collision mesh) is
+            # projected for sensor/extrinsic checks and never fed to the mapper.
+            self.visual_scene = VisualSceneEvaluator(
+                scenario_world(args), args.px4_root / "Tools/simulation/gz/models")
+            self.limited_stage_reached = False
+            self.limited_stage_evidence = None
+            self.stage_access_anchor = None
+            self.stage_land_future = None
+            self.stage_landing_accepted = False
+            self.raw_vehicle_status = self.raw_landed = None
             self.start_future = None
             self.started = False
             self.last_start_try = 0.0
@@ -526,6 +982,14 @@ def monitor(args, processes):
                 self.create_subscription(String, topic, partial(self.health_sample,name), reliable)
             self.create_subscription(Odometry, "/powerplant/localization/odom", self.pose, reliable)
             self.create_subscription(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", self.pva, qos_profile_sensor_data)
+            status_topic = self.motion_parameters["vehicle_status_topic"]
+            if status_topic=="/fmu/out/vehicle_status" and getattr(VehicleStatus,"MESSAGE_VERSION",0)>0:
+                status_topic+=f"_v{VehicleStatus.MESSAGE_VERSION}"
+            land_topic = self.motion_parameters["vehicle_land_detected_topic"]
+            if land_topic=="/fmu/out/vehicle_land_detected" and getattr(VehicleLandDetected,"MESSAGE_VERSION",0)>0:
+                land_topic+=f"_v{VehicleLandDetected.MESSAGE_VERSION}"
+            self.create_subscription(VehicleStatus,status_topic,self.raw_status,qos_profile_sensor_data)
+            self.create_subscription(VehicleLandDetected,land_topic,self.raw_land,qos_profile_sensor_data)
             self.create_subscription(CameraInfo, "/camera/camera_info", lambda m: setattr(self, "rgb_info", m), qos_profile_sensor_data)
             self.create_subscription(CameraInfo, "/depth_camera/camera_info", lambda m: setattr(self, "depth_info", m), qos_profile_sensor_data)
             self.create_subscription(Image, "/depth_camera", lambda m: self.sensor_image("depth",m), qos_profile_sensor_data)
@@ -988,6 +1452,69 @@ def monitor(args, processes):
                 self.event_file.flush()
                 self.start_future = self.start_client.call_async(Trigger.Request())
 
+        def stop_at_requested_stage(self):
+            if (args.image_chain_only or args.scenario!="powerplant"
+                    or args.stop_after=="mission" or not self.started):
+                return
+            nav_distance = truth_distance = 0.0
+            active_access = (self.latest.get("phase")=="EXPLORE"
+                and self.latest.get("explore_roi_mode")=="ROI_ACCESS"
+                and self.latest.get("motion_mode")=="TRACKING"
+                and self.latest.get("localization_ready") and self.execution_active())
+            paired_sample = None
+            if args.stop_after=="roi-access" and active_access:
+                now=time.monotonic()
+                status_sample=self.latest.get("odom_sample_stamp_ns")
+                for row in reversed(self.navigation_rows):
+                    if now-row["wall"]>self.reaction_budget: break
+                    if (not row["covariance_valid"] or self.clock_ns is None
+                            or type(status_sample) is not int or row["sample_ns"]<status_sample
+                            or not -.05<=(self.clock_ns-row["sample_ns"])*1e-9<=self.reaction_budget):
+                        continue
+                    truth=self.pose_at(row["sample_ns"],self.truth_poses)
+                    if truth is not None:
+                        paired_sample={"sample_ns":row["sample_ns"],"navigation":np.asarray(row["position"]),
+                                       "truth":truth[0],"wall":now}
+                        break
+                identity=(self.latest.get("localization_epoch"),self.latest.get("task_roi_revision"))
+                self.stage_access_anchor,nav_distance,truth_distance=access_motion_progress(
+                    self.stage_access_anchor,paired_sample,identity,active_access)
+            elif not self.limited_stage_reached:
+                # Motion in another phase, epoch or task must not satisfy this
+                # access experiment when the mode later becomes active again.
+                self.stage_access_anchor=None
+            if not self.limited_stage_reached:
+                evidence=limited_stage_progress(args.stop_after,self.phases,self.events,
+                    self.latest,nav_distance,truth_distance)
+                if evidence["passed"]:
+                    self.limited_stage_reached=True
+                    self.limited_stage_evidence={**evidence,"wall":time.monotonic(),
+                        "phase":self.latest.get("phase"),"roi_mode":self.latest.get("explore_roi_mode"),
+                        "paired_navigation_truth_sample_ns":paired_sample["sample_ns"] if paired_sample else None,
+                        "access_anchor_sample_ns":self.stage_access_anchor["sample_ns"] if self.stage_access_anchor else None}
+                    self.event_file.write(json_dumps({"event":"test_limited_stage_reached",**self.limited_stage_evidence})+"\n")
+                    self.event_file.flush()
+            if self.limited_stage_reached and not self.stage_landing_accepted:
+                if self.stage_land_future is not None:
+                    if self.stage_land_future.done():
+                        response=self.stage_land_future.result()
+                        if response is None or not response.success:
+                            raise RuntimeError("limited-stage landing request was rejected")
+                        self.stage_landing_accepted=True
+                elif self.land_client.service_is_ready():
+                    self.stage_land_future=self.land_client.call_async(Trigger.Request())
+
+        def raw_status(self, message):
+            sample=int(message.timestamp)*1000
+            if sample>0 and (self.raw_vehicle_status is None or sample>self.raw_vehicle_status["sample_ns"]):
+                self.raw_vehicle_status={"sample_ns":sample,"receipt_wall":time.monotonic(),
+                                         "arming_state":int(message.arming_state)}
+
+        def raw_land(self, message):
+            sample=int(message.timestamp)*1000
+            if sample>0 and (self.raw_landed is None or sample>self.raw_landed["sample_ns"]):
+                self.raw_landed={"sample_ns":sample,"receipt_wall":time.monotonic(),"landed":bool(message.landed)}
+
         def truth(self, msg):
             # This callback runs on Gazebo Transport's thread. Only copy the
             # exact named model origin and its original protobuf sampling time;
@@ -1035,37 +1562,10 @@ def monitor(args, processes):
             return None
 
         def first_static_hit(self, origin, ray):
-            closest, wall = math.inf, False
-            for lower, upper, is_wall, _ in self.scene_boxes:
-                near, far = -math.inf, math.inf
-                for axis in range(3):
-                    if abs(ray[axis]) < 1e-10:
-                        if not lower[axis] <= origin[axis] <= upper[axis]:
-                            far = -math.inf
-                            break
-                    else:
-                        a, b = (lower[axis]-origin[axis])/ray[axis], (upper[axis]-origin[axis])/ray[axis]
-                        near, far = max(near, min(a,b)), min(far, max(a,b))
-                hit = near if near > 0 else far
-                if far >= max(0, near) and 0 < hit < closest:
-                    closest, wall = hit, is_wall
-            # The target cylinder and checkers are genuine visual occluders.
-            # Rays hitting them cannot be used as known-wall calibration evidence.
-            for center, radius, half_height in self.scene_cylinders:
-                delta = origin-center
-                a, b = float(np.dot(ray[:2],ray[:2])), float(2*np.dot(delta[:2],ray[:2]))
-                c = float(np.dot(delta[:2],delta[:2])-radius*radius)
-                disc = b*b-4*a*c
-                hits = []
-                if a > 1e-12 and disc >= 0:
-                    for t in ((-b-math.sqrt(disc))/(2*a), (-b+math.sqrt(disc))/(2*a)):
-                        if t > 0 and abs(delta[2]+t*ray[2]) <= half_height: hits.append(t)
-                if abs(ray[2]) > 1e-10:
-                    for z in (-half_height,half_height):
-                        t = (z-delta[2])/ray[2]
-                        if t > 0 and np.linalg.norm(delta[:2]+t*ray[:2]) <= radius: hits.append(t)
-                if hits and min(hits) < closest: closest, wall = min(hits), False
-            return closest if wall else None
+            hit = self.visual_scene.first_hit(origin, ray)
+            # Non-wall regression fixtures remain occluders. Real electric
+            # plant surfaces are eligible calibration geometry in their world.
+            return hit["parameter"] if hit and hit["calibration_surface"] else None
 
         def calibrate(self):
             now = time.monotonic()
@@ -1334,6 +1834,9 @@ def monitor(args, processes):
             max_az = max((abs(r["acceleration"][2]) for r in finite), default=math.inf)
             ordered = [p for p in self.phases if p in EXPECTED_PHASES]
             required = EXPECTED_PHASES if args.detection_mode != "none" else [p for p in EXPECTED_PHASES if p != "TARGETING_CYCLE"]
+            limited = args.scenario == "powerplant" and args.stop_after != "mission"
+            if limited:
+                required = ["START", "SAFE_TAKEOFF", "HOVER_SCAN", "EXPLORE", "LANDING", "COMPLETE"]
             positions = [ordered.index(p) for p in required if p in ordered]
             truth_p95 = float(np.percentile(self.depth_truth_residuals,95)) if self.depth_truth_residuals else math.inf
             nav_p95 = float(np.percentile(self.depth_navigation_residuals,95)) if self.depth_navigation_residuals else math.inf
@@ -1341,6 +1844,10 @@ def monitor(args, processes):
             model_mean = float(np.mean(self.reference_errors)) if self.reference_errors else math.inf
             body_mean = float(np.mean(self.body_reference_errors)) if self.body_reference_errors else math.inf
             braking = self.braking_evidence()
+            landing = landing_completion_evidence(self.latest,self.raw_vehicle_status,
+                self.raw_landed,self.clock_ns,self.clock_wall,time.monotonic(),
+                float(self.motion_parameters["max_land_detection_age_s"]),
+                VehicleStatus.ARMING_STATE_DISARMED)
             checks = {
                 "actual_gcs_heartbeat_link_healthy": bool(gcs.get("link_healthy") and gcs["evidence_fresh_at_report"]),
                 "px4_datalink_checks_retained": gcs["px4_datalink_policy_verified"],
@@ -1357,7 +1864,7 @@ def monitor(args, processes):
                 "navigation_depth_wall_projection": len(self.depth_navigation_residuals)>=200 and nav_p95<=.25,
                 "all_required_phases": all(p in ordered for p in required),
                 "phase_order": len(positions)==len(required) and positions==sorted(positions),
-                "landed_and_disarmed_completion": self.latest.get("phase")=="COMPLETE",
+                "landed_and_disarmed_completion": landing["passed"],
                 "finite_position_velocity_acceleration_yaw": len(pva)>=250 and self.bad_pva==0,
                 "command_velocity_limits": max_vxy<=.61 and max_vz<=.31,
                 "command_acceleration_limits": max_axy<=.51 and max_az<=.31,
@@ -1367,11 +1874,18 @@ def monitor(args, processes):
                 "no_mission_fault": "FAULT" not in self.phases,
                 "topology_built": self.max_regions>=1,
             }
-            if args.detection_mode != "none":
+            if limited:
+                checks["requested_stage_observed"] = bool(self.limited_stage_reached and self.limited_stage_evidence and self.limited_stage_evidence["passed"])
+                checks["stage_landing_service_accepted"] = self.stage_landing_accepted
+                if args.stop_after=="scan":
+                    # This scope ends immediately after scan completion. A
+                    # topology worker need not finish before requesting land.
+                    checks.pop("topology_built",None)
+            if args.detection_mode != "none" and not limited:
                 checks.update({
                     "inspection_result_explicit": self.latest.get("inspection_result") in ("PARTIAL","REACHABLE_MODELED_COMPLETE"),
                     "actual_photo_and_surface_evidence": self.photo_count>0 and self.latest.get("inspection_covered_area_m2",0)>0,
-                    "coverage_scope_explicit": self.latest.get("inspection_coverage_scope")=="reachable_modeled_surface",
+                    "coverage_scope_explicit": self.latest.get("inspection_coverage_scope") in ("reachable_modeled_surface", "reachable_modeled_surface_in_task_roi"),
                 })
             if args.inject_obstacle:
                 checks["injected_obstacle_braked_to_measured_stop"] = braking["observed_braking_then_measured_stop"]
@@ -1381,7 +1895,14 @@ def monitor(args, processes):
             if args.detection_mode=="yolo":
                 checks["real_yolo_image_chain"]=chain["passed"]
             return {"passed": all(checks.values()), "exit_reason": reason, "checks": checks,
-                    "acceptance_scope":"full_mission","flight_acceptance_executed":self.started,
+                    "acceptance_scope":acceptance_scope(args),"flight_acceptance_executed":self.started,
+                    "full_mission_acceptance":bool(not limited and all(checks.values())),
+                    "full_scene_exploration_acceptance":False,
+                    "limited_stage_evidence":self.limited_stage_evidence if limited else None,
+                    "landing_evidence":landing,
+                    "evaluation_geometry":{"world":str(scenario_world(args)),
+                        "visual_meshes":self.visual_scene.visual_meshes,
+                        "navigation_receives_scene_truth":False},
                     "yolo_image_chain_checks":chain["checks"] if chain else None,
                     "yolo_image_chain":chain,
                     "gcs_evidence":gcs,
@@ -1449,6 +1970,7 @@ def monitor(args, processes):
             node.consume_truth()
             if not args.image_chain_only: node.calibrate()
             node.start_if_ready()
+            node.stop_at_requested_stage()
             node.inject()
             node.replay()
             if args.image_chain_only and node.yolo_success_count>=3:
@@ -1489,7 +2011,9 @@ def main():
     env, commands, manifest = prepare(args)
     report_path = args.output_dir / "report.json"
     if args.prepare_only:
-        report = {"passed": False, "prepared_only": True, "missing_dependencies": manifest["missing_dependencies"], "sensor_profile":args.sensor_profile, "performance_scope":manifest["sensor_profile"]["performance_scope"]}
+        report = {"passed": False, "prepared_only": True, "missing_dependencies": manifest["missing_dependencies"], "sensor_profile":args.sensor_profile, "performance_scope":manifest["sensor_profile"]["performance_scope"],
+            "acceptance_scope":acceptance_scope(args),"full_mission_acceptance":False,
+            "full_scene_exploration_acceptance":False,"render_context":manifest["render_context"]}
         report_path.write_text(json_dumps(report, indent=2))
         print(json_dumps({"prepared": True, "manifest": str(args.output_dir/"manifest.json"), **report}))
         return int(bool(manifest["missing_dependencies"]))
@@ -1504,6 +2028,7 @@ def main():
             probe.bind(("127.0.0.1", port))
     os.environ.update({k: env[k] for k in ("ROS_DOMAIN_ID", "ROS2CLI_ENABLE_DAEMON")})
     processes = Processes(args.output_dir, env)
+    renderer_capture = RendererLogCapture(Path.home()/".gz/rendering/ogre2.log", args.output_dir, env)
     report = {"passed": False, "exit_reason": "not_started"}
     try:
         for name, argv, cwd in commands:
@@ -1534,11 +2059,24 @@ def main():
     except BaseException as error:
         report = {"passed": False, "exit_reason": type(error).__name__+": "+str(error)}
     finally:
+        server = next((child for name, child, _ in processes.children if name == "gazebo"), None)
+        actual_renderer = renderer_capture.finish(server.pid if server is not None else None)
+        manifest["render_context"].update(actual_renderer)
         processes.close()
         report["sensor_profile"]=args.sensor_profile
-        report["acceptance_scope"]="yolo_image_chain_only" if args.image_chain_only else "full_mission"
-        report["performance_scope"]=manifest["sensor_profile"]["performance_scope"]
+        report["acceptance_scope"]=acceptance_scope(args)
+        report["render_context"]=manifest["render_context"]
+        profile_evidence=sensor_profile_evidence(manifest["sensor_profile"],report.get("observed_sensors",{}))
+        report["sensor_profile_validation"]=profile_evidence
+        report.setdefault("checks",{})["actual_sensor_profile_matches_requested"]=profile_evidence["passed"]
+        report["passed"]=bool(report["passed"] and profile_evidence["passed"])
+        if "full_mission_acceptance" in report:
+            report["full_mission_acceptance"]=bool(report["full_mission_acceptance"] and profile_evidence["passed"])
+        report["requested_performance_scope"]=manifest["sensor_profile"]["performance_scope"]
+        report["performance_scope"]=(report["requested_performance_scope"]
+            if profile_evidence["passed"] else "unverified_sensor_load")
         manifest["sensor_profile"]["observed_sensors"]=report.get("observed_sensors",{})
+        manifest["sensor_profile"]["validation"]=profile_evidence
         manifest["takeoff_startup_validation"]=report.get("takeoff_startup_validation")
         (args.output_dir / "manifest.json").write_text(json_dumps(clean_json(manifest),ensure_ascii=False,indent=2,allow_nan=False))
         report["manifest"] = str(args.output_dir / "manifest.json")

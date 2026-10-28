@@ -24,6 +24,9 @@ struct MapCommitRequest {
 };
 struct MapSnapshotReceiver {
   PlanningMap map;
+  // All validated payload cells, including uncertain evidence. This is not a
+  // free-space authorization and is never taken from an unpaired status.
+  std::optional<Bounds> observed_bounds;
   int64_t revision = -1, observation_revision = 0, stamp = 0, received = 0;
   int64_t depth_count = 0, lidar_count = 0, depth_received = 0,
           lidar_received = 0;

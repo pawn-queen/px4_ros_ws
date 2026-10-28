@@ -135,6 +135,15 @@ struct P2MissionTestAccess {
     EXPECT_EQ(node.phase_, Phase::Takeoff);
   }
   static void prepare(OffboardMissionNode &node) {
+    // This fixture models a low indoor target. Its task ROI must explicitly
+    // include that target instead of relying on pre-ROI inspection semantics.
+    ASSERT_TRUE(node.set_parameters_atomically({
+        rclcpp::Parameter("explore_min_x_m", -5.0),
+        rclcpp::Parameter("explore_max_x_m", 10.0),
+        rclcpp::Parameter("explore_min_y_m", -5.0),
+        rclcpp::Parameter("explore_max_y_m", 5.0),
+        rclcpp::Parameter("explore_min_z_m", .1),
+        rclcpp::Parameter("explore_max_z_m", 5.0)}).successful);
     node.position_ = Vec3(0, 0, 1.2);
     node.orientation_ = Quat::Identity();
     node.speed_ = node.yaw_rate_ = 0;

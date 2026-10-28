@@ -55,6 +55,46 @@ int normal_bin(const Vec3 &normal) {
       axis = candidate;
   return 2 * axis + (normal[axis] < 0);
 }
+// Clip the modeled tangent square to the task box. This is a surfel-area
+// estimate, not a pixel-perfect semantic segmentation or a volume fraction.
+double task_patch_area(const Vec3 &position, const Vec3 &normal, double side,
+                       const std::optional<TaskRoi> &roi) {
+  if (!roi) return side * side;
+  const Vec3 u = normal.unitOrthogonal(), v = normal.cross(u).normalized();
+  const double half = side / 2;
+  std::vector<Vec3> polygon{position - half * u - half * v,
+                            position + half * u - half * v,
+                            position + half * u + half * v,
+                            position - half * u + half * v};
+  for (int axis = 0; axis < 3 && !polygon.empty(); ++axis)
+    for (int side_index = 0; side_index < 2 && !polygon.empty(); ++side_index) {
+      const double bound = side_index ? roi->maximum[axis] : roi->minimum[axis];
+      const double direction = side_index ? -1 : 1;
+      auto distance = [&](const Vec3 &p) {
+        return direction * (p[axis] - bound);
+      };
+      std::vector<Vec3> clipped;
+      Vec3 previous = polygon.back();
+      double before = distance(previous);
+      for (const Vec3 &point : polygon) {
+        const double after = distance(point);
+        const bool previous_inside = before >= -1e-12,
+                   current_inside = after >= -1e-12;
+        if (previous_inside != current_inside)
+          clipped.push_back(previous + (point - previous) *
+                                          (before / (before - after)));
+        if (current_inside) clipped.push_back(point);
+        previous = point;
+        before = after;
+      }
+      polygon = std::move(clipped);
+    }
+  if (polygon.size() < 3) return 0;
+  Vec3 sum = Vec3::Zero();
+  for (size_t i = 1; i + 1 < polygon.size(); ++i)
+    sum += (polygon[i] - polygon[0]).cross(polygon[i + 1] - polygon[0]);
+  return std::clamp(.5 * std::abs(sum.dot(normal)), 0.0, side * side);
+}
 } // namespace
 
 bool InspectionCamera::valid() const {
@@ -211,7 +251,8 @@ register_target_observation(const RegistrationInput &in,
 
 InspectionSession::InspectionSession(InspectionConfig cfg)
     : config_(std::move(cfg)) {
-  if (config_.confirmation_frames < 1 || config_.patch_support_frames < 2 ||
+  if ((config_.task_roi && !config_.task_roi->valid()) ||
+      config_.confirmation_frames < 1 || config_.patch_support_frames < 2 ||
       config_.max_view_attempts < 1 || config_.max_view_attempts > 100 ||
       config_.min_normal_neighbors < 3 || config_.azimuth_samples < 4 ||
       config_.azimuth_samples > 72 || config_.height_offsets_m.empty() ||
@@ -269,7 +310,7 @@ bool InspectionSession::observe(
       !observation.camera_origin.allFinite() ||
       !std::isfinite(observation.confidence) ||
       observation.confidence < config_.min_confidence ||
-      observation.points.empty())
+      observation.points.empty() || !observation_in_task_roi(observation))
     return false;
   // An unconfirmed hypothesis is temporary. Expire it before association so
   // one erroneous background projection cannot lock out the actual target
@@ -341,6 +382,11 @@ bool InspectionSession::observe(
     Vec3 normal = solver.eigenvectors().col(0).normalized();
     if (normal.dot(observation.camera_origin - position) < 0)
       normal = -normal;
+    const double area = task_patch_area(position, normal,
+                                         config_.patch_resolution_m,
+                                         config_.task_roi);
+    if (area <= 1e-12)
+      continue;
     const std::array<int, 4> lookup{cell[0], cell[1], cell[2],
                                     normal_bin(normal)};
     auto found = patch_lookup_.find(lookup);
@@ -353,7 +399,7 @@ bool InspectionSession::observe(
       patch.normal = normal;
       patch.support_frames = 1;
       patch.last_sample_ns = observation.rgb_stamp_ns;
-      patch.area_m2 = config_.patch_resolution_m * config_.patch_resolution_m;
+      patch.area_m2 = area;
       patch_lookup_[lookup] = patches_.size();
       patches_.push_back(patch);
     } else {
@@ -372,6 +418,9 @@ bool InspectionSession::observe(
       }
       patch.position = .5 * (patch.position + position);
       patch.normal = (patch.normal + normal).normalized();
+      // An existing task obligation cannot shrink merely from a new noisy
+      // boundary estimate. A changed ROI creates a new inspection session.
+      patch.area_m2 = std::max(patch.area_m2, area);
       ++patch.support_frames;
       patch.last_sample_ns = observation.rgb_stamp_ns;
       if (!patch.stable &&
@@ -398,7 +447,8 @@ bool InspectionSession::observe(
           if (found == grouped.end())
             continue;
           for (const auto &point : found->second)
-            if ((point - patch.position).norm() <=
+            if ((!config_.task_roi || config_.task_roi->contains(point)) &&
+                (point - patch.position).norm() <=
                 config_.patch_resolution_m * .75) {
               measured = true;
               break;
@@ -410,6 +460,15 @@ bool InspectionSession::observe(
   while (observation_evidence_.size() > 128)
     observation_evidence_.erase(observation_evidence_.begin());
   return true;
+}
+
+bool InspectionSession::observation_in_task_roi(
+    const RegisteredTargetObservation &observation) const {
+  if (!config_.task_roi) return true;
+  return std::any_of(observation.points.begin(), observation.points.end(),
+                     [&](const Vec3 &point) {
+                       return config_.task_roi->contains(point);
+                     });
 }
 
 std::vector<uint64_t> InspectionSession::observed_patch_ids(

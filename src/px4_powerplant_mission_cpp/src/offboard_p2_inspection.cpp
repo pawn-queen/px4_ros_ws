@@ -73,6 +73,7 @@ InspectionConfig OffboardMissionNode::inspection_config() const {
   c.max_view_attempts = i("inspection_max_view_attempts");
   c.standoff_m = d("target_standoff_m");
   c.min_confidence = d("min_target_confidence");
+  c.task_roi = task_roi();
   return c;
 }
 InspectionCamera
@@ -326,6 +327,11 @@ void OffboardMissionNode::consume_registered_observation() {
         inspection_ = InspectionSession(inspection_config());
         inspection_.reset(localization_epoch_, uint64_t(ns()));
       }
+      if (!inspection_.observation_in_task_roi(*result->observation)) {
+        inspection_wait_ = "target surface is outside the local task ROI";
+        try_registered_observation();
+        return;
+      }
       if (!inspection_.observe(*result->observation)) {
         inspection_wait_ =
             "observation rejected by target identity, epoch or sample sequence";
@@ -369,7 +375,7 @@ void OffboardMissionNode::consume_photo_result() {
     fields["quality_accepted"] = false;
     fields["reason"] = "photo_worker_timeout";
     fields["goal_id"] = photo_goal_;
-    fields["coverage_scope"] = "reachable_modeled_surface";
+    fields["coverage_scope"] = "reachable_modeled_surface_in_task_roi";
     event("inspection_photo", fields);
     if (inspection_view_ &&
         !inspection_.view_available(inspection_view_->view_id)) {
@@ -427,7 +433,8 @@ void OffboardMissionNode::finish_inspection(const std::string &reason) {
   auto fields = object();
   fields["result"] = inspection_result_;
   fields["reason"] = reason;
-  fields["scope"] = "reachable_modeled_surface";
+  fields["scope"] = "reachable_modeled_surface_in_task_roi";
+  fields["task_roi_revision"] = integer(task_roi_revision_);
   fields["unknown_extent"] = true;
   fields["coverage_fraction"] = report.fraction;
   fields["target_id"] = integer(inspection_.target_id());
