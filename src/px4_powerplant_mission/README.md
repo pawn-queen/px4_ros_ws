@@ -404,6 +404,8 @@ ros2 launch px4_powerplant_mission powerplant_system.launch.py \
 
 P2 仿真安装与运动参数由 `config/p2_simulation.yaml` 覆盖；`hardware` 使用 `p2_hardware.yaml`，缺省 `motion_model_configured=false`。实机须提供相对PX4导航参考点的实测外参、机体包络、制动/时延与误差范围后启用。相机旋转参数是相机FLU到机体FLU的安装旋转；内部已处理光学轴转换，不能重复填入optical轴转换。仍须独立确认起飞区，不能只为通过检查修改确认值。
 
+当前仿真覆盖配置的 `motion_tracking_position_tolerance_m=0.10` m，作为基础跟踪容差；实际位置误差门还叠加定位不确定性，停止包络同步计入此容差。共享及硬件配置未随本次仿真试验修改。2026-10-28两次原PX4控制值的实际电厂单变量测试仍在离地过渡触发跟踪保护，未完成真实起飞，不能宣布初扫、ROI任务或返航通过；证据见 [Issue #3验收记录](../px4_powerplant_mission_cpp/ISSUE3_VALIDATION.md)。
+
 仿真 P2 起飞先从已解锁后的当前连续、有效 HOLD 参考执行 `motion_takeoff_bootstrap_height_m=0.02` m 微上升，其一致的五次 P/V/A 至少持续 `motion_takeoff_bootstrap_duration_s=4.5` 秒，再经当前停止证书和实测停稳进入正常上升。该时长覆盖当前 PX4 的 spool 和 takeoff ramp，避免正常轨迹先跑完而飞控尚未响应；它不改变跟踪误差门控，也不以位置阶跃触发起飞。SITL 入口只读 `COM_SPOOLUP_TIME`、`MPC_TKO_RAMP_T`，核对微上升时长至少为两者之和加反应预算、微上升高度不超过位置跟踪容差，并记录实测飞行表现。共享与硬件缺省两值均为零，表示未启用或未标定；零不是已验证的零启动时延，硬件应根据实际飞控参数、载荷与响应重新标定，不能复制仿真值。
 
 全系统 launch 根据已安装 `px4_msgs.MESSAGE_VERSION` 将默认 PX4 输入话题映射到对应版本后缀；例如当前 `vehicle_status_v4`、`vehicle_command_ack_v1`。直接运行节点或使用自定义话题时，须在参数中与实际固件一致。RGB 与深度都要求校正后的 pinhole 图像及匹配 CameraInfo；未校正畸变、未处理的立体参考/裁剪/binning 会被拒绝。

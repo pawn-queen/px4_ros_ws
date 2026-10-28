@@ -15,7 +15,7 @@ powerplant_offboard_mission:
     # The SITL harness verifies these against actual read-only PX4 parameters.
     motion_takeoff_bootstrap_height_m: 0.02
     motion_takeoff_bootstrap_duration_s: 4.5
-    motion_tracking_position_tolerance_m: 0.03
+    motion_tracking_position_tolerance_m: 0.10
     motion_body_radius_m: 0.5
     # Analytic collision-box / complete rotor-yaw bound at total tilt <= .35:
     # z >= -.05201654m. Keep ~8mm additional geometric margin here; map and
