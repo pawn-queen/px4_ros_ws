@@ -13,8 +13,8 @@ on:
         options: [check, python-deps, clone-px4, build-sitl]
         default: check
       px4_root:
-        description: "PX4 树目标路径"
-        default: /home/pawn/drone-simulation
+        description: "PX4 树目标路径（留空 = $HOME/drone-simulation）"
+        default: ""
       px4_repo:
         description: "PX4 仓库地址"
         default: https://github.com/pawn-queen/drone-simulation.git
@@ -36,22 +36,26 @@ jobs:
       PX4_REPO: ${{ inputs.px4_repo }}
       PARALLEL: ${{ inputs.parallel }}
     steps:
-      - name: Preflight (sudo / disk)
+      - name: Preflight (path / disk / sudo)
         run: |
           set -uo pipefail
+          if [ -z "${PX4_ROOT:-}" ]; then
+            PX4_ROOT="$HOME/drone-simulation"
+            echo "PX4_ROOT=$PX4_ROOT" >> "$GITHUB_ENV"
+          fi
           echo "host=$(hostname)"
+          echo "user=$(id -un) ($(id -u):$(id -g))"
           echo "root=$PX4_ROOT"
-          # /home/pawn 在这台机器上可能不存在（runner 用户是 gh-runner），
-          # 所以从最近的已存在祖先取磁盘信息，而不是直接 df 父目录。
           probe="$PX4_ROOT"
           while [ ! -d "$probe" ]; do probe="$(dirname "$probe")"; done
           echo "disk probe=$probe"
           df -h "$probe" | tail -1
+          # runner 用户没有免密 sudo。不为自动化去申请 root：改为全部装在
+          # $HOME 下，只在 build-sitl 里尝试、失败就明确报告缺什么。
           if sudo -n true 2>/dev/null; then
             echo "sudo: passwordless OK"
           else
-            echo "::error::runner 用户没有免密 sudo，无法自动安装系统依赖。请在生产机上手动执行 docs/CI_ARCHITECTURE.md 里的命令。"
-            exit 1
+            echo "sudo: NOT available (build-sitl will skip system package install)"
           fi
 
       - name: Report state
@@ -103,13 +107,7 @@ jobs:
         run: |
           set -eo pipefail
           parent="$(dirname "$PX4_ROOT")"
-          if [ ! -d "$parent" ]; then
-            # 仓库内脚本（run_p2_sitl.py、simulation.yml）都默认这个路径，
-            # 所以在这里把它创建出来并交给 runner 用户，而不是换个位置。
-            echo "creating $parent and chowning to $(id -un)"
-            sudo mkdir -p "$parent"
-            sudo chown "$(id -u):$(id -g)" "$parent"
-          fi
+          mkdir -p "$parent"   # runner 用户自己的目录，不需要 sudo
           if [ -d "$PX4_ROOT/.git" ]; then
             echo "already cloned at $PX4_ROOT"
             git -C "$PX4_ROOT" rev-parse HEAD
@@ -135,9 +133,13 @@ jobs:
             echo "::error::Tools/setup/ubuntu.sh missing; is PX4_ROOT correct?"
             exit 1
           fi
-          echo "--- installing PX4 build dependencies (needs sudo) ---"
-          sudo DEBIAN_FRONTEND=noninteractive bash Tools/setup/ubuntu.sh --no-nuttx 2>&1 | tail -20 \
-            || sudo DEBIAN_FRONTEND=noninteractive bash Tools/setup/ubuntu.sh 2>&1 | tail -20
+          if sudo -n true 2>/dev/null; then
+            echo "--- installing PX4 build dependencies (sudo available) ---"
+            sudo DEBIAN_FRONTEND=noninteractive bash Tools/setup/ubuntu.sh --no-nuttx 2>&1 | tail -20 \
+              || sudo DEBIAN_FRONTEND=noninteractive bash Tools/setup/ubuntu.sh 2>&1 | tail -20
+          else
+            echo "::warning::no passwordless sudo; skipping Tools/setup/ubuntu.sh. If the build fails on a missing tool, install it manually on the runner."
+          fi
           echo "--- building px4_sitl_default (parallel=$PARALLEL) ---"
           make px4_sitl_default -j"$PARALLEL" 2>&1 | tail -40
           ls -l build/px4_sitl_default/bin/px4
