@@ -140,6 +140,15 @@ jobs:
           else
             echo "::warning::no passwordless sudo; skipping Tools/setup/ubuntu.sh. If the build fails on a missing tool, install it manually on the runner."
           fi
+          # Tools/setup/ubuntu.sh 被跳过时，PX4 的 Python 构建依赖需要单独装。
+          # 这些是 pip 包，不需要 sudo。
+          if [ -f Tools/setup/requirements.txt ]; then
+            python3 -m pip install --user --break-system-packages -r Tools/setup/requirements.txt
+          else
+            python3 -m pip install --user --break-system-packages \
+              kconfiglib jinja2 empy packaging toml numpy pyros-genmsg
+          fi
+          python3 -c "import kconfiglib, jinja2, empy; print('PX4 python build deps OK')"
           echo "--- building px4_sitl_default (parallel=$PARALLEL) ---"
           make px4_sitl_default -j"$PARALLEL" 2>&1 | tail -40
           ls -l build/px4_sitl_default/bin/px4
