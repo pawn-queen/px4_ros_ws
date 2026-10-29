@@ -126,7 +126,8 @@ jobs:
 
       - name: rosdep install
         run: |
-          set -euo pipefail
+          # 不开 -u：/opt/ros/jazzy/setup.bash 会读未定义变量（AMENT_TRACE_SETUP_FILES）
+          set -eo pipefail
           source /opt/ros/jazzy/setup.bash
           sudo rosdep init 2>/dev/null || true
           rosdep update --rosdistro jazzy
@@ -138,7 +139,7 @@ jobs:
 
       - name: Build
         run: |
-          set -euo pipefail
+          set -eo pipefail
           source /opt/ros/jazzy/setup.bash
           colcon build \
             --packages-up-to px4_powerplant_mission_cpp px4_powerplant_mission \
@@ -146,7 +147,7 @@ jobs:
 
       - name: Run C++ tests (gtest only)
         run: |
-          set -euo pipefail
+          set -eo pipefail
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           # ^test_ 只匹配 15 个 ament_add_gtest 目标；下面 9 个 ament_add_pytest_test

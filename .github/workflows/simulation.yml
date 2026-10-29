@@ -114,7 +114,7 @@ jobs:
 
       - name: colcon build
         run: |
-          set -euo pipefail
+          set -eo pipefail
           source /opt/ros/jazzy/setup.bash
           colcon build \
             --packages-up-to px4_powerplant_mission_cpp px4_powerplant_mission \
