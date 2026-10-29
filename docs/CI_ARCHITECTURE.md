@@ -42,7 +42,9 @@ Github-hosted 侧：ROS 2 Jazzy（Ubuntu 24.04 / noble / amd64 / Python 3.12）�
 自托管侧需要：
 
 - Ubuntu 24.04 + ROS 2 Jazzy（`/opt/ros/jazzy/setup.bash`）
-- PX4 源码树与已编译的 SITL 二进制（默认 `/home/pawn/drone-simulation`）
+- PX4 源码树与已编译的 SITL 二进制。默认取 `$HOME/drone-simulation`，可用仓库变量 `PX4_ROOT` 覆盖。
+  注意 `run_p2_sitl.py` 的 `--px4-root` 默认值是 `/home/pawn/drone-simulation`，在 lab 上手动跑时要显式传参。
+- **不需要免密 sudo**：runner 用户没有 root，所有安装都落在 `$HOME` 下。这是刻意选择——给自托管 runner 开免密 sudo，等于让任何合入 `main` 的 workflow 拿到那台机器的 root。
 - Gazebo（`gz`）、`MicroXRCEAgent`
 - Python: `rclpy`、`numpy`、`yaml`、`pymavlink`、`vtkmodules`、`scipy`、`gz.transport13`、`gz.msgs10`
 

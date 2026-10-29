@@ -84,8 +84,9 @@ jobs:
             echo "- os: \`$(. /etc/os-release && echo "$PRETTY_NAME")\`"
             echo "- cpus: $(nproc)"
             echo "- ros_setup: $( [ -f /opt/ros/jazzy/setup.bash ] && echo present || echo MISSING )"
-            echo "- px4_root: $( [ -d /home/pawn/drone-simulation ] && echo present || echo MISSING )"
-            echo "- px4_bin: $( [ -x /home/pawn/drone-simulation/build/px4_sitl_default/bin/px4 ] && echo present || echo MISSING )"
+            root="${PX4_ROOT:-$HOME/drone-simulation}"
+            echo "- px4_root: $root $( [ -d "$root" ] && echo present || echo MISSING )"
+            echo "- px4_bin: $( [ -x "$root/build/px4_sitl_default/bin/px4" ] && echo present || echo MISSING )"
             for c in gz MicroXRCEAgent ros2 colcon git python3; do
               printf -- '- %s: %s\n' "$c" "$(command -v "$c" || echo MISSING)"
             done
@@ -135,14 +136,16 @@ jobs:
         env:
           SCENARIO: ${{ github.event.inputs.scenario || 'default' }}
           TIMEOUT_S: ${{ github.event.inputs.timeout_s || '180' }}
+          PX4_ROOT: ${{ vars.PX4_ROOT }}
         run: |
           set -euo pipefail
-          world="/home/pawn/drone-simulation/Tools/simulation/gz/worlds/default.sdf"
+          px4_root="${PX4_ROOT:-$HOME/drone-simulation}"
+          world="$px4_root/Tools/simulation/gz/worlds/default.sdf"
           if [ "$SCENARIO" = "room" ]; then
             world="$PWD/src/px4_powerplant_mission_cpp/test/worlds/p2_room.sdf"
           fi
           echo "world=$world"
-          PX4_WORLD="$world" bash scripts/ci/sitl_smoke.sh "$TIMEOUT_S"
+          PX4_ROOT="$px4_root" PX4_WORLD="$world" bash scripts/ci/sitl_smoke.sh "$TIMEOUT_S"
 
       - name: Upload smoke logs
         if: always()
