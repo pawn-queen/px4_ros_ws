@@ -63,7 +63,7 @@ jobs:
             echo ""
             echo "- event: \`${{ github.event_name }}\`"
             echo "- allowed: **$allowed**"
-            [ -n "$reason" ] && echo "- reason: $reason"
+            if [ -n "$reason" ]; then echo "- reason: $reason"; fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   diagnose:
