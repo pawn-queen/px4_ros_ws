@@ -10,7 +10,7 @@ on:
       action:
         description: "执行哪种操作"
         type: choice
-        options: [check, python-deps, clone-px4, build-sitl]
+        options: [check, deps, python-deps, clone-px4, build-sitl, install-deps]
         default: check
       px4_root:
         description: "PX4 树目标路径（留空 = $HOME/drone-simulation）"
@@ -94,6 +94,41 @@ jobs:
           out.close()
           PY
           cat "$GITHUB_STEP_SUMMARY" | tail -20
+
+      - name: Report ROS / Gazebo / RViz deps
+        if: inputs.action == 'deps'
+        run: |
+          set -uo pipefail
+          set +u; . /opt/ros/jazzy/setup.bash; set -u
+          {
+            echo "### ROS / Gazebo / RViz on this runner"
+            echo ""
+            echo "- ros_distro: ${ROS_DISTRO:-<unset>}"
+            for c in ros2 rviz2 gz MicroXRCEAgent; do
+              printf -- '- %s: %s\n' "$c" "$(command -v "$c" || echo MISSING)"
+            done
+            echo "- gz sim versions: $(gz sim --versions 2>&1 | head -3 | tr '\n' ' ')"
+            echo "- installed ros-jazzy-* packages: $(dpkg -l 2>/dev/null | grep -c 'ros-jazzy')"
+            for pkg in ros-jazzy-rviz2 ros-jazzy-ros-gz ros-jazzy-ros-gz-sim ros-jazzy-ros-gz-bridge gz-sim8 gz-tools; do
+              ver=$(dpkg -l "$pkg" 2>/dev/null | awk '/^ii/{print $3}')
+              printf -- '- dpkg %s: %s\n' "$pkg" "${ver:-not-installed}"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          tail -25 "$GITHUB_STEP_SUMMARY"
+
+      - name: Install ROS GUI / Gazebo deps
+        if: inputs.action == 'install-deps'
+        run: |
+          set -eo pipefail
+          if ! sudo -n true 2>/dev/null; then
+            echo "::error::runner 用户没有免密 sudo。请在 lab 机器上手动执行： sudo apt update && sudo apt install -y ros-jazzy-rviz2 ros-jazzy-ros-gz"
+            exit 1
+          fi
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ros-jazzy-rviz2 ros-jazzy-ros-gz
+          set +u; . /opt/ros/jazzy/setup.bash; set -u
+          command -v rviz2
+          gz sim --versions
 
       - name: Install Python deps
         if: inputs.action == 'python-deps'
