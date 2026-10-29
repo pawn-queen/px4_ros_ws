@@ -43,13 +43,14 @@ if [ ! -d "$PX4_ROOTFS/etc" ]; then
   cp -a "$PX4_ETC" "$PX4_ROOTFS/etc"
   note "prepared rootfs from $PX4_ETC"
 fi
-for c in gz MicroXRCEAgent ros2; do
-  command -v "$c" >/dev/null 2>&1 || fail "command not found on runner: $c"
-done
-
+# 必须先 source 再查 ros2：/opt/ros/jazzy/setup.bash 才把它放进 PATH。
 # shellcheck disable=SC1090
 set +u; source "$ROS_SETUP"; set -u
 note "ROS_DISTRO=${ROS_DISTRO:-<unset>}"
+
+for c in gz MicroXRCEAgent ros2; do
+  command -v "$c" >/dev/null 2>&1 || fail "command not found after sourcing $ROS_SETUP: $c"
+done
 
 PIDS=()
 cleanup() {
