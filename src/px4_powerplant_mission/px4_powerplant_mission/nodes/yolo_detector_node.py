@@ -19,7 +19,7 @@ from px4_powerplant_mission.common.qos import reliable_qos_profile, sensor_qos_p
 
 
 class YoloDetectorNode(Node):
-    """Run YOLO inference and publish JSON detections plus an annotated image."""
+    """Publish detections, their original exposure, and optional annotations."""
 
     package_name = "px4_powerplant_mission"
 
@@ -35,6 +35,11 @@ class YoloDetectorNode(Node):
             String,
             self.get_parameter("detections_topic").value,
             reliable_qos_profile(),
+        )
+        self.source_pub = self.create_publisher(
+            Image,
+            self.get_parameter("source_image_topic").value,
+            reliable_qos_profile(depth=2),
         )
         self.annotated_pub = self.create_publisher(
             Image,
@@ -52,6 +57,8 @@ class YoloDetectorNode(Node):
     def _declare_parameters(self) -> None:
         self.declare_parameter("image_topic", "/camera")
         self.declare_parameter("detections_topic", "/powerplant/perception/yolo_detections")
+        self.declare_parameter("source_image_topic", "/powerplant/perception/yolo_source_image")
+        self.declare_parameter("publish_source_image", True)
         self.declare_parameter("annotated_image_topic", "/powerplant/perception/yolo_annotated")
         self.declare_parameter("model_path", "models/yolo/best.pt")
         self.declare_parameter("fallback_model_path", "models/yolo/yolov8n.pt")
@@ -139,6 +146,11 @@ class YoloDetectorNode(Node):
             return
 
         detections = self._result_to_json(results[0], msg)
+        # Keep the original stamp, frame, encoding and pixels. Publishing only
+        # successful inference exposures avoids retaining seconds of 1080p RGB
+        # in the consumer while still allowing exact detection/image pairing.
+        if bool(self.get_parameter("publish_source_image").value):
+            self.source_pub.publish(msg)
         self.detection_pub.publish(String(data=json.dumps(detections, ensure_ascii=False)))
 
         if bool(self.get_parameter("publish_annotated").value):

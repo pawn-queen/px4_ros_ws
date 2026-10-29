@@ -1,0 +1,10 @@
+# Populate measured navigation-reference mounts, body envelope, response delay,
+# tracking bounds and braking limits in your deployment override, then explicitly
+# set motion_model_configured=true. No SITL mount is assumed for hardware.
+powerplant_offboard_mission:
+  ros__parameters:
+    motion_model_configured: false
+    # Uncalibrated: zero is not evidence of zero hardware startup response.
+    # Supply measured bootstrap height/duration with the other motion bounds.
+    motion_takeoff_bootstrap_height_m: 0.0
+    motion_takeoff_bootstrap_duration_s: 0.0

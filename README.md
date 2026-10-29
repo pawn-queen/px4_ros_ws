@@ -1,1 +1,0 @@
-详细的readme文档请见px4_powerplant_mission中的readme文档

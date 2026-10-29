@@ -6,6 +6,7 @@ inspection_photos/
 __pycache__/
 *.pyc
 .pytest_cache/
+.p0_deps/
 .idea/
 .vscode/
 src/px4_msgs/

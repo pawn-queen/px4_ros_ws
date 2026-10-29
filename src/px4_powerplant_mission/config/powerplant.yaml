@@ -5,6 +5,14 @@ powerplant_localization:
     vehicle_odometry_topic: /fmu/out/vehicle_odometry
     depth_image_topic: /depth_camera
     uwb_pose_topic: /uwb/pose
+    uwb_quality_topic: /uwb/quality
+    uwb_status_topic: /uwb/status
+    uwb_frame: map
+    uwb_to_map_translation_m: [0.0, 0.0, 0.0]
+    uwb_to_map_yaw_rad: 0.0
+    navigation_mode: px4
+    px4_timestamp_domain: system
+    max_navigation_age_s: 0.5
     localized_odom_topic: /powerplant/localization/odom
     localized_pose_topic: /powerplant/localization/pose
     status_topic: /powerplant/localization/status
@@ -17,12 +25,16 @@ powerplant_localization:
     px4_position_alpha_when_uwb_recent: 0.02
     use_px4_position_when_uwb_recent: false
     px4_velocity_alpha: 0.15
-    uwb_position_alpha: 0.25
-    uwb_z_alpha: 0.08
     uwb_recent_timeout_s: 0.5
     uwb_outlier_threshold_m: 4.0
-    use_uwb_orientation: true
+    uwb_max_position_variance_m2: 2.0
+    uwb_max_height_variance_m2: 0.5
+    uwb_nis_threshold: 16.27
+    uwb_recovery_timeout_s: 1.0
+    position_process_noise_m2ps: 0.25
+    use_uwb_orientation: false
     max_uwb_yaw_variance_rad2: 0.5
+    max_uwb_tilt_variance_rad2: 0.5
     external_yaw_timeout_s: 0.5
     independent_position_variance_m2: 0.20
     independent_height_variance_m2: 0.35
@@ -39,18 +51,20 @@ powerplant_localization:
 
 powerplant_external_vision_bridge:
   ros__parameters:
-    localized_odom_topic: /powerplant/localization/odom
+    uwb_pose_topic: /uwb/pose
+    uwb_quality_topic: /uwb/quality
+    uwb_status_topic: /uwb/status
+    uwb_frame: map
+    map_frame: map
+    uwb_to_map_translation_m: [0.0, 0.0, 0.0]
+    uwb_to_map_yaw_rad: 0.0
     visual_odometry_topic: /fmu/in/vehicle_visual_odometry
-    # EKF2_EV_CTRL=11 is appropriate while UWB simulation publishes Gazebo truth
-    # yaw. If publish_truth_orientation=false, use EKF2_EV_CTRL=3 instead.
-    use_velocity: false
-    position_variance_m2: 0.20
-    height_variance_m2: 0.35
-    yaw_variance_rad2: 0.12
-    velocity_variance_m2ps2: 0.25
-    require_independent_position: true
-    max_publish_position_variance_m2: 4.0
-    max_publish_height_variance_m2: 4.0
+    max_measurement_age_s: 0.5
+    max_publish_position_variance_m2: 2.0
+    max_publish_height_variance_m2: 0.5
+    use_independent_orientation: false
+    max_orientation_variance_rad2: 0.5
+    px4_timestamp_domain: system
 
 powerplant_uwb_simulator:
   ros__parameters:
@@ -66,6 +80,7 @@ powerplant_uwb_simulator:
     publish_truth_orientation: true
     truth_yaw_variance_rad2: 0.02
     uwb_pose_topic: /uwb/pose
+    uwb_quality_topic: /uwb/quality
     uwb_range_topic_prefix: /uwb/range
     anchor_marker_topic: /uwb/anchors
     map_frame: map
@@ -74,10 +89,14 @@ powerplant_uwb_simulator:
     range_min_m: 0.05
     range_max_m: 80.0
     max_solution_rms_m: 0.75
+    max_geometry_condition: 1000.0
+    # Optional synthetic positive range bias for robust-solver evaluation.
+    range_positive_bias_probability: 0.0
+    range_positive_bias_m: 0.0
     random_seed: 42
     # ENU meters: x=east, y=north, z=up. These anchors bound the expanded
     # search rectangle x=-15..24 m, y=0..40 m with margin.
-    uwb_anchors: [-25.0, -10.0, 6.0, 34.0, -10.0, 6.0, 34.0, 50.0, 6.0, -25.0, 50.0, 6.0, 4.5, 20.0, 26.0]
+    uwb_anchors: [-25.0, -10.0, 6.0, 34.0, -10.0, 6.0, 34.0, 50.0, 18.0, -25.0, 50.0, 6.0, 4.5, 20.0, 26.0]
     uwb_anchor_names: [anchor_0, anchor_1, anchor_2, anchor_3, anchor_4]
 
 powerplant_voxel_mapper:
@@ -88,28 +107,47 @@ powerplant_voxel_mapper:
     laser_scan_topic: /mapping_lidar
     pointcloud_topic: /points
     occupied_voxels_topic: /powerplant/map/occupied_voxels
+    observed_voxels_topic: /powerplant/map/observed_voxels
     occupancy_grid_topic: /powerplant/map/occupancy_grid
+    fusion_status_topic: /powerplant/map/fusion_status
     voxel_marker_topic: /powerplant/map/voxel_markers
     map_frame: map
     base_frame: base_link
-    voxel_resolution_m: 0.15
+    voxel_resolution_m: 0.25
+    localization_status_topic: /powerplant/localization/status
+    max_position_variance_m2: 4.0
+    max_localization_age_s: 0.5
+    max_sensor_age_s: 2.0
+    max_future_stamp_skew_s: 0.1
     hit_log_odds: 0.85
     miss_log_odds: -0.4
-    occupied_log_odds_threshold: 1.5
+    occupied_log_odds_threshold: 0.0
     free_log_odds_threshold: -0.2
     ray_clear_enabled: true
     publish_rate_hz: 2.0
-    depth_stride_px: 8
+    max_orientation_variance_rad2: 0.5
+    depth_fusion_rate_hz: 3.0
+    lidar_fusion_rate_hz: 3.0
+    # Native mapper: maximum adaptive tile size; Python reference: fixed stride.
+    depth_stride_px: 16
+    depth_adaptive_sampling_enabled: true
+    depth_min_stride_px: 1
+    depth_max_ray_spacing_m: 0.20
+    depth_edge_threshold_m: 0.25
+    depth_max_rays_per_frame: 12000
+    depth_min_valid_fraction: 0.05
     max_depth_range_m: 18.0
     min_depth_range_m: 0.25
     camera_fx: 430.0
     camera_fy: 430.0
     camera_cx: 320.0
     camera_cy: 240.0
+    camera_rotation_rpy_rad: [0.0, 0.0, 0.0]
     camera_translation_flu: [0.12, -0.03, 0.24]
-    lidar_translation_flu: [0.0, 0.0, 0.32]
+    lidar_rotation_rpy_rad: [0.0, 0.0, 0.0]
+    lidar_translation_flu: [0.0, 0.0, 0.18]
     pointcloud_frame: base_link
-    max_publish_points: 60000
+    max_publish_points: 200000
     grid_z_min_m: 4.0
     grid_z_max_m: 6.0
     use_flight_height_grid_band: true
@@ -128,6 +166,8 @@ powerplant_voxel_mapper:
 powerplant_yolo_detector:
   ros__parameters:
     image_topic: /camera
+    publish_source_image: true
+    source_image_topic: /powerplant/perception/yolo_source_image
     detections_topic: /powerplant/perception/yolo_detections
     annotated_image_topic: /powerplant/perception/yolo_annotated
     model_path: models/yolo/best.pt
@@ -141,16 +181,110 @@ powerplant_yolo_detector:
 
 powerplant_offboard_mission:
   ros__parameters:
+    # P2 model limits are enabled only by an explicit calibrated profile.
+    motion_model_configured: false
+    motion_rounded_envelope_enabled: false
+    takeoff_transition_policy_id: legacy
+    takeoff_reference_governor_enabled: false
+    # Zero keeps the legacy ascent setup. Enable only with measured PX4
+    # spool/ramp response; simulation supplies its own explicit profile below.
+    motion_takeoff_bootstrap_height_m: 0.0
+    motion_takeoff_bootstrap_duration_s: 0.0
+    # Optional feedback governor. Hardware remains on the existing strict policy
+    # until its tracking and response bounds are measured independently.
+    motion_tracking_soft_guard_enabled: false
+    motion_tracking_soft_trigger_ratio: 0.60
+    motion_tracking_soft_recover_ratio: 0.35
+    motion_tracking_recovery_wait_s: 3.0
+    motion_tracking_recovery_dwell_s: 0.3
+    motion_tracking_recovery_min_samples: 3
+    takeoff_tracking_max_recoveries: 2
+    takeoff_response_sync_enabled: false
+    takeoff_transition_budget_enabled: false
+    takeoff_transition_hard_limit_s: 35.0
+    takeoff_response_probe_height_m: 0.20
+    takeoff_response_clearance_m: 0.05
+    takeoff_response_dwell_s: 0.3
+    takeoff_response_min_samples: 3
+    takeoff_handoff_min_rise_m: 0.25
+    takeoff_handoff_step_m: 0.05
+    takeoff_transition_planning_budget_s: 0.3
+    sitl_controller_profile_id: ""
+    # Shared implementation: keep hardware in strict-only mode until the support
+    # plane and actual landing gear have an independently verified calibration.
+    # SITL supplies these fields from the locked world/body audit in its overlay.
+    takeoff_ground_support_enabled: false
+    px4_timestamp_domain: system
+    takeoff_ground_plane_z_m: 0.0
+    takeoff_ground_plane_error_m: 0.01
+    # takeoff_ground_contact_points_flu is empty in C++ until supplied by calibration.
+    takeoff_ground_model_revision: 0
+    takeoff_ground_land_max_age_s: 2.0
+    takeoff_ground_transition_timeout_s: 12.0
+    takeoff_ground_max_rise_m: 0.75
+    motion_max_horizontal_velocity_mps: 0.6
+    motion_max_vertical_velocity_mps: 0.3
+    motion_max_horizontal_acceleration_mps2: 0.5
+    motion_max_vertical_acceleration_mps2: 0.3
+    motion_brake_horizontal_mps2: 0.4
+    motion_brake_vertical_mps2: 0.25
+    motion_reaction_time_s: 0.3
+    motion_tracking_position_tolerance_m: 0.2
+    motion_tracking_velocity_tolerance_mps: 0.25
+    motion_sigma_multiplier: 2.0
+    motion_map_margin_m: 0.05
+    motion_body_radius_m: 0.35
+    motion_body_z_min_m: 0.0
+    motion_body_z_max_m: 0.5
+    motion_max_check_voxels: 20000
+    motion_max_velocity_variance_m2ps2: 1.0
+    motion_yaw_rate_radps: 0.2
+    motion_yaw_acceleration_radps2: 0.3
+    motion_settle_speed_mps: 0.08
+    motion_settle_dwell_s: 0.3
+    motion_input_timeout_s: 0.3
+    motion_landing_reserve_s: 10.0
+    offboard_warmup_min_s: 2.0
+    initial_scan_max_moves: 4
+    initial_scan_move_length_m: 0.3
+    initial_scan_move_wait_s: 4.0
+    explore_topology_enabled: true
+    topology_core_extra_clearance_m: 0.5
+    topology_switch_hysteresis: 0.1
+    inspection_sync_tolerance_s: 0.05
+    inspection_max_observation_age_s: 2.0
+    inspection_cache_max_bytes: 100663296
+    inspection_coverage_threshold: 0.9
+    inspection_surfel_resolution_m: 0.1
+    inspection_max_view_attempts: 3
+    inspection_min_roi_pixels: 1024
+    inspection_min_laplacian_variance: 40.0
+    inspection_max_exposure_fraction: 0.25
+    inspection_min_depth_support_fraction: 0.2
+    inspection_capture_timeout_s: 2.0
+    inspection_min_modeled_area_m2: 0.02
+    inspection_max_viewpoints: 32
+    topology_rebuild_interval_s: 2.0
+    yolo_source_image_topic: /powerplant/perception/yolo_source_image
+    rgb_camera_info_topic: /camera/camera_info
+    rgb_camera_translation_flu: [0.12, -0.03, 0.24]
+    rgb_camera_rotation_rpy_rad: [0.0, 0.0, 0.0]
     localized_odom_topic: /powerplant/localization/odom
     occupancy_grid_topic: /powerplant/map/occupancy_grid
+    map_fusion_status_topic: /powerplant/map/fusion_status
+    observed_voxels_topic: /powerplant/map/observed_voxels
     planned_path_topic: /powerplant/control/planned_path
     yolo_detections_topic: /powerplant/perception/yolo_detections
     target_position_topic: /powerplant/perception/target_position
     inspection_event_topic: /powerplant/control/inspection_events
     depth_image_topic: /depth_camera
+    laser_scan_topic: /mapping_lidar
     depth_camera_info_topic: /depth_camera/camera_info
     rgb_image_topic: /camera
     vehicle_status_topic: /fmu/out/vehicle_status
+    vehicle_land_detected_topic: /fmu/out/vehicle_land_detected
+    localization_status_topic: /powerplant/localization/status
+    battery_status_topic: /fmu/out/battery_status
     failsafe_flags_topic: /fmu/out/failsafe_flags
     vehicle_command_ack_topic: /fmu/out/vehicle_command_ack
     offboard_control_mode_topic: /fmu/in/offboard_control_mode
@@ -158,54 +292,123 @@ powerplant_offboard_mission:
     vehicle_command_topic: /fmu/in/vehicle_command
     mission_status_topic: /powerplant/control/mission_status
     map_frame: map
+    base_frame: base_link
     auto_start: false
     arm_on_start: true
     command_retry_interval_s: 1.0
     offboard_warmup_setpoints: 20
     require_localization_for_start: true
     max_localization_age_s: 0.5
+    max_future_stamp_skew_s: 0.1
+    max_vehicle_status_age_s: 1.0
+    max_land_detection_age_s: 1.0
+    max_start_yaw_variance_rad2: 0.5
     max_start_position_variance_m2: 4.0
     max_start_height_variance_m2: 4.0
     require_preflight_checks: true
     require_accepts_offboard_setpoints: false
     takeoff_height_m: 5.0
+    # Confirm a surveyed clear cylinder about the actual starting position.
+    # Forward RGB-D + horizontal lidar do not establish overhead clearance.
+    takeoff_region_confirmed: false
+    takeoff_region_radius_m: 1.0
+    takeoff_region_height_m: 0.0
+    initial_scan_hover_s: 2.0
+    # Search step size only; completion requires actual fused-depth coverage.
+    initial_scan_yaw_steps: 12
+    # Mapper emits 72 heading sectors; finer receiver bins cannot infer coverage.
+    initial_scan_coverage_bins: 72
+    initial_scan_required_coverage_fraction: 0.9
+    initial_scan_min_valid_depth_fraction: 0.2
+    initial_scan_min_free_path_m: 0.75
+    initial_scan_heading_timeout_s: 3.0
+    initial_scan_yaw_rate_radps: 0.2
+    initial_scan_yaw_dwell_s: 0.3
+    initial_scan_yaw_tolerance_rad: 0.12
+    initial_scan_max_tilt_rad: 0.35
+    initial_scan_max_tilt_variance_rad2: 0.5
+    initial_scan_max_speed_mps: 0.35
+    initial_scan_max_hover_yaw_rate_radps: 0.12
+    initial_scan_max_position_error_m: 0.5
+    initial_scan_max_horizontal_setpoint_speed_mps: 0.3
+    initial_scan_max_sensor_age_s: 2.0
+    initial_scan_min_valid_lidar_ranges: 10
+    initial_scan_min_known_grid_cells: 10
+    initial_scan_timeout_s: 90.0
     return_home_height_m: 5.0
     target_acceptance_m: 0.45
     yaw_acceptance_rad: 0.25
     cruise_yaw_enu_rad: 0.0
-    face_waypoint_during_search: true
     max_horizontal_setpoint_speed_mps: 2.0
     max_vertical_setpoint_speed_mps: 0.8
     max_yaw_rate_radps: 0.6
-    use_occupancy_grid_planner: true
-    planner_inflation_radius_m: 0.45
-    planner_unknown_policy: cost
-    planner_unknown_cost: 2.0
-    path_waypoint_stride: 4
     avoidance_startup_gate_enabled: true
     avoidance_startup_min_height_m: 4.0
     avoidance_startup_max_tilt_rad: 0.35
     replan_interval_s: 2.0
     safety_stop_enabled: true
-    safety_stop_distance_m: 0.9
-    safety_stop_width_m: 0.4
+    safety_stop_distance_m: 1.2
+    safety_stop_width_m: 0.5
     safety_stop_treat_unknown_as_blocked: false
     target_class_name: gas_cylinders
     min_target_confidence: 0.35
     target_memory_s: 8.0
     lock_target_after_acquisition: true
-    loop_search_waypoints: true
-    search_timeout_s: 300.0
+    # Local task ROI: only this region contributes exploration/inspection gain.
+    # Safe takeoff, scan, access, external viewpoints and return use the complete
+    # observed navigation domain, not this task crop. No waypoints are supplied.
+    explore_min_x_m: -24.0
+    explore_max_x_m: 34.0
+    explore_min_y_m: -9.0
+    explore_max_y_m: 49.0
+    explore_min_z_m: 3.5
+    explore_max_z_m: 7.0
+    roi_access_max_duration_s: 60.0
+    roi_access_margin_m: 10.0
+    roi_access_revisit_penalty_s: 5.0
+    explore_max_duration_s: 300.0
+    # Separate task deadline starts at first EXPLORE; zero uses global flight budget only.
+    explore_task_duration_s: 0.0
+    explore_min_replan_interval_s: 1.0
+    explore_max_map_age_s: 3.0
+    explore_clearance_radius_m: 0.35
+    explore_max_search_radius_m: 10.0
+    explore_sensor_range_m: 8.0
+    explore_local_path_length_m: 2.0
+    explore_viewpoint_dwell_s: 0.4
+    explore_view_yaw_rate_radps: 0.6
+    # Require calibration matched to a successfully fused depth image.
+    explore_require_camera_info: true
+    explore_max_candidates: 96
+    explore_max_frontier_targets: 400
+    explore_yaw_bins: 12
+    explore_candidate_spacing_m: 0.75
+    explore_min_goal_distance_m: 0.75
+    explore_information_weight: 3.0
+    explore_surface_weight: 2.0
+    explore_travel_time_weight: 0.12
+    explore_clearance_weight: 0.5
+    explore_localization_weight: 0.5
+    explore_reserve_weight: 0.5
+    explore_cruise_speed_mps: 1.0
+    explore_return_speed_mps: 1.0
+    explore_return_reserve_s: 30.0
+    explore_max_position_variance_m2: 1.0
+    explore_localization_variance_growth_m2_per_m: 0.01
+    explore_min_battery_fraction: 0.20
+    explore_battery_max_age_s: 3.0
     target_standoff_m: 2.2
     inspection_altitude_m: 5.0
     inspection_orbit_points: 4
     inspection_required_photos: 4
     inspection_photo_dir: /home/pawn/px4_ros_ws/inspection_photos
-    require_image_for_photo: false
+    require_image_for_photo: true
+    max_photo_age_s: 1.0
     camera_fx: 430.0
     camera_fy: 430.0
     camera_cx: 320.0
     camera_cy: 240.0
+    camera_rotation_rpy_rad: [0.0, 0.0, 0.0]
     camera_translation_flu: [0.12, -0.03, 0.24]
     bbox_depth_sample_fraction: 0.45
     min_detection_depth_m: 0.25
@@ -213,14 +416,4 @@ powerplant_offboard_mission:
     max_depth_age_s: 1.0
     land_complete_height_m: 0.25
     land_complete_timeout_s: 20.0
-    # ENU waypoints in Gazebo world coordinates. This perimeter searches the
-    # expanded rectangle x=-15..24 m, y=0..40 m at inspection altitude.
-    mission_waypoints_enu: [
-                0.0, 0.0, 5.0,
-                -15.0, 0.0, 5.0,
-                -15.0, 40.0, 5.0,
-                24.0, 40.0, 5.0,
-                24.0, 0.0, 5.0,
-                0.0, 40.0, 7.0,
-                0.0, 0.0, 7.0,
-            ]
+    landing_confirm_dwell_s: 1.0

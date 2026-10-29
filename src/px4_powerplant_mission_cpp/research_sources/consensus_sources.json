@@ -1,0 +1,298 @@
+{
+  "thread_id": "wSzMC0RaTjairsryp9SvDQ",
+  "url": "https://consensus.app/search/请完成一份中文研究综述面向当前-ros2px4-c-室内无人机自主探索与巡检项目研究截止2026-1/wSzMC0RaTjairsryp9SvDQ/",
+  "retrieved_at": "2026-10-24",
+  "notes": "Consensus检索元数据，未作为论文出版年份的最终核验。完整自动报告通过url访问。本地不复制长篇论文引文。项目研究报告另以论文原文核对。",
+  "citations": [
+    {
+      "n": 1,
+      "title": "A Shadowcasting-Based Next-Best-View Planner for Autonomous 3D Exploration",
+      "authors": [
+        "Ana Batinovic",
+        "Antun Ivanovic",
+        "T. Petrović",
+        "S. Bogdan"
+      ],
+      "year": 2021,
+      "journal": "IEEE Robotics and Automation Letters",
+      "doi": "10.1109/lra.2022.3146586",
+      "url": "https://consensus.app/papers/a-shadowcastingbased-nextbestview-planner-for-batinovic-ivanovic/76632f8182195dcfbe0fc6f403fe2277/",
+      "paper_id": "76632f8182195dcfbe0fc6f403fe2277"
+    },
+    {
+      "n": 2,
+      "title": "Fast Frontier-based Information-driven Autonomous Exploration with an MAV",
+      "authors": [
+        "Anna Dai",
+        "Sotiris Papatheodorou",
+        "Nils Funk",
+        "Dimos Tzoumanikas",
+        "Stefan Leutenegger"
+      ],
+      "year": 2020,
+      "journal": "2020 IEEE International Conference on Robotics and Automation (ICRA)",
+      "doi": "10.1109/icra40945.2020.9196707",
+      "url": "https://consensus.app/papers/fast-frontierbased-informationdriven-autonomous-dai-papatheodorou/8544622912035ddf90feaec0612fc43e/",
+      "paper_id": "8544622912035ddf90feaec0612fc43e"
+    },
+    {
+      "n": 3,
+      "title": "A UAV-based explore-then-exploit system for autonomous indoor facility inspection and scene reconstruction",
+      "authors": [
+        "Chuan-Xiang Gao",
+        "Xinyi Wang",
+        "Ruoyu Wang",
+        "Zuoquan Zhao",
+        "Yu-Jian Zhai",
+        "Xi Chen",
+        "Ben M. Chen"
+      ],
+      "year": 2023,
+      "journal": "Automation in Construction",
+      "doi": "10.1016/j.autcon.2023.104753",
+      "url": "https://consensus.app/papers/a-uavbased-explorethenexploit-system-for-autonomous-gao-wang/3f87474aeb8a53f98fd8a50856ee7462/",
+      "paper_id": "3f87474aeb8a53f98fd8a50856ee7462"
+    },
+    {
+      "n": 4,
+      "title": "Continuous-time trajectory optimization for online UAV replanning",
+      "authors": [
+        "Helen Oleynikova",
+        "M. Burri",
+        "Zachary Taylor",
+        "Juan I. Nieto",
+        "R. Siegwart",
+        "Enric Galceran"
+      ],
+      "year": 2016,
+      "journal": "2016 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)",
+      "doi": "10.1109/iros.2016.7759784",
+      "url": "https://consensus.app/papers/continuoustime-trajectory-optimization-for-online-uav-oleynikova-burri/28cba21db7c051a7a417731b031021c1/",
+      "paper_id": "28cba21db7c051a7a417731b031021c1"
+    },
+    {
+      "n": 5,
+      "title": "Continuous Occupancy Mapping in Dynamic Environments Using Particles",
+      "authors": [
+        "Gang Chen",
+        "Wei Dong",
+        "Peng Peng",
+        "J. Alonso-Mora",
+        "Xiang-Yang Zhu"
+      ],
+      "year": 2022,
+      "journal": "IEEE Transactions on Robotics",
+      "doi": "10.1109/tro.2023.3323841",
+      "url": "https://consensus.app/papers/continuous-occupancy-mapping-in-dynamic-environments-chen-dong/de93edb98b3a5145b8cde1d2c99697c9/",
+      "paper_id": "de93edb98b3a5145b8cde1d2c99697c9"
+    },
+    {
+      "n": 6,
+      "title": "Efficient and Probabilistic Adaptive Voxel Mapping for Accurate Online LiDAR Odometry",
+      "authors": [
+        "Chongjian Yuan",
+        "Wei Xu",
+        "Xiyuan Liu",
+        "Xiaoping Hong",
+        "Fu Zhang"
+      ],
+      "year": 2021,
+      "journal": "IEEE Robotics and Automation Letters",
+      "doi": "10.1109/lra.2022.3187250",
+      "url": "https://consensus.app/papers/efficient-and-probabilistic-adaptive-voxel-mapping-for-yuan-xu/6e0257575dfc5255a3d0eb81ec11572b/",
+      "paper_id": "6e0257575dfc5255a3d0eb81ec11572b"
+    },
+    {
+      "n": 7,
+      "title": "Camera-LIDAR Integration: Probabilistic Sensor Fusion for Semantic Mapping",
+      "authors": [
+        "J. S. Berrio",
+        "Shan Mao",
+        "S. Worrall",
+        "E. Nebot"
+      ],
+      "year": 2020,
+      "journal": "IEEE Transactions on Intelligent Transportation Systems",
+      "doi": "10.1109/tits.2021.3071647",
+      "url": "https://consensus.app/papers/cameralidar-integration-probabilistic-sensor-fusion-for-berrio-mao/5d2741e5fe515931b0e038e2c4d6fac6/",
+      "paper_id": "5d2741e5fe515931b0e038e2c4d6fac6"
+    },
+    {
+      "n": 8,
+      "title": "A real-time dynamic obstacle tracking and mapping system for UAV navigation and collision avoidance with an RGB-D camera",
+      "authors": [
+        "Zhe-Fan Xu",
+        "Xiao-Yang Zhan",
+        "Baihan Chen",
+        "Yumeng Xiu",
+        "Chen-Hao Yang",
+        "Kenji Shimada"
+      ],
+      "year": 2022,
+      "journal": "2023 IEEE International Conference on Robotics and Automation (ICRA)",
+      "doi": "10.1109/icra48891.2023.10161194",
+      "url": "https://consensus.app/papers/a-realtime-dynamic-obstacle-tracking-and-mapping-system-xu-zhan/292d9d24da005c89b20120e2725eaa0a/",
+      "paper_id": "292d9d24da005c89b20120e2725eaa0a"
+    },
+    {
+      "n": 9,
+      "title": "Dynamic Occupancy Grid Map with Semantic Information Using Deep Learning-Based BEVFusion Method with Camera and LiDAR Fusion",
+      "authors": [
+        "Harin Jang",
+        "Taehyun Kim",
+        "Kyungjae Ahn",
+        "Soo Jeon",
+        "Yeonsik Kang"
+      ],
+      "year": 2024,
+      "journal": "Sensors (Basel, Switzerland)",
+      "doi": "10.3390/s24092828",
+      "url": "https://consensus.app/papers/dynamic-occupancy-grid-map-with-semantic-information-jang-kim/0759cbbdd8405d409c226034778dd07f/",
+      "paper_id": "0759cbbdd8405d409c226034778dd07f"
+    },
+    {
+      "n": 10,
+      "title": "Uncertainty-Aware Robust UAV Trajectory Planning With Dynamic Collision Avoidance",
+      "authors": [
+        "Mai Chang",
+        "Jian-Shan Zhou",
+        "D. Tian",
+        "Xu-Ting Duan",
+        "Kai-Ge Qu",
+        "D. Cao"
+      ],
+      "year": 2025,
+      "journal": "IEEE Internet of Things Journal",
+      "doi": "10.1109/jiot.2025.3582721",
+      "url": "https://consensus.app/papers/uncertaintyaware-robust-uav-trajectory-planning-with-chang-zhou/ca70c60f16a55cd4986ef01fef626780/",
+      "paper_id": "ca70c60f16a55cd4986ef01fef626780"
+    },
+    {
+      "n": 11,
+      "title": "A Two-Stage Optimized Next-View Planning Framework for 3-D Unknown Environment Exploration, and Structural Reconstruction",
+      "authors": [
+        "Ze-Hui Meng",
+        "Hai-Long Qin",
+        "Zi-Yue Chen",
+        "Xudong Chen",
+        "Hao Sun",
+        "Feng Lin",
+        "M. Ang"
+      ],
+      "year": 2017,
+      "journal": "IEEE Robotics and Automation Letters",
+      "doi": "10.1109/lra.2017.2655144",
+      "url": "https://consensus.app/papers/a-twostage-optimized-nextview-planning-framework-for-3d-meng-qin/9ce85fb982e15b568bca5ebed2bf5e73/",
+      "paper_id": "9ce85fb982e15b568bca5ebed2bf5e73"
+    },
+    {
+      "n": 12,
+      "title": "Efficient 3D Exploration with Distributed Multi-UAV Teams: Integrating Frontier-Based and Next-Best-View Planning",
+      "authors": [
+        "André Ribeiro",
+        "M. Basiri"
+      ],
+      "year": 2024,
+      "journal": "Drones",
+      "doi": "10.3390/drones8110630",
+      "url": "https://consensus.app/papers/efficient-3d-exploration-with-distributed-multiuav-teams-ribeiro-basiri/7ef07644ce1556efa42576620f4ed352/",
+      "paper_id": "7ef07644ce1556efa42576620f4ed352"
+    },
+    {
+      "n": 13,
+      "title": "UAV Framework for Autonomous Onboard Navigation and People/Object Detection in Cluttered Indoor Environments",
+      "authors": [
+        "Juan Sandino",
+        "F. Vanegas",
+        "Frédéric Maire",
+        "P. Caccetta",
+        "Conrad Sanderson",
+        "Felipe Gonzalez"
+      ],
+      "year": 2020,
+      "journal": "Remote. Sens.",
+      "doi": "10.3390/rs12203386",
+      "url": "https://consensus.app/papers/uav-framework-for-autonomous-onboard-navigation-and-sandino-vanegas/becaa8d46b9154d8a3e80751bdc4ba3e/",
+      "paper_id": "becaa8d46b9154d8a3e80751bdc4ba3e"
+    },
+    {
+      "n": 14,
+      "title": "An autonomous unmanned aerial vehicle system for fast exploration of large complex indoor environments",
+      "authors": [
+        "V. Krátký",
+        "Pavel Petráček",
+        "Tomáš Báča",
+        "M. Saska"
+      ],
+      "year": 2021,
+      "journal": "Journal of Field Robotics",
+      "doi": "10.1002/rob.22021",
+      "url": "https://consensus.app/papers/an-autonomous-unmanned-aerial-vehicle-system-for-fast-krátký-petráček/f4954cf939d15edcb94d2857e0f09f29/",
+      "paper_id": "f4954cf939d15edcb94d2857e0f09f29"
+    },
+    {
+      "n": 15,
+      "title": "Event-Triggered PSO-APF Hybrid Algorithm for Single-UAV Path Planning in Obstacle Environments",
+      "authors": [
+        "Heng Zhang",
+        "Liang Yuan",
+        "Chao-Qun Yang",
+        "Xiang-Hui Cao",
+        "Ming Li",
+        "Meng Huang",
+        "Jian Zhang"
+      ],
+      "year": 2026,
+      "journal": "IEEE Communications Letters",
+      "doi": "10.1109/lcomm.2026.3670451",
+      "url": "https://consensus.app/papers/eventtriggered-psoapf-hybrid-algorithm-for-singleuav-zhang-yuan/83081d0ad6d258998dbec9aba036db14/",
+      "paper_id": "83081d0ad6d258998dbec9aba036db14"
+    },
+    {
+      "n": 16,
+      "title": "Nonlinear MPC for Collision Avoidance and Control of UAVs With Dynamic Obstacles",
+      "authors": [
+        "B. Lindqvist",
+        "S. Mansouri",
+        "Ali-akbar Agha-mohammadi",
+        "G. Nikolakopoulos"
+      ],
+      "year": 2020,
+      "journal": "IEEE Robotics and Automation Letters",
+      "doi": "10.1109/lra.2020.3010730.",
+      "url": "https://consensus.app/papers/nonlinear-mpc-for-collision-avoidance-and-control-of-uavs-lindqvist-mansouri/23d900abf22952fab283c24fff0c3ece/",
+      "paper_id": "23d900abf22952fab283c24fff0c3ece"
+    },
+    {
+      "n": 17,
+      "title": "Optimized real-time path planning for micro UAVs in dynamic environments aided by reciprocal velocity obstacle algorithm",
+      "authors": [
+        "Peng-Xiang Sun",
+        "Wei Sun",
+        "Wei Ding",
+        "Yadan Li",
+        "Jin-Gang Zhao"
+      ],
+      "year": 2025,
+      "journal": "PLOS One",
+      "doi": "10.1371/journal.pone.0336098",
+      "url": "https://consensus.app/papers/optimized-realtime-path-planning-for-micro-uavs-in-dynamic-sun-sun/ba7eb0b75fd15c29b33bcc497edcb027/",
+      "paper_id": "ba7eb0b75fd15c29b33bcc497edcb027"
+    },
+    {
+      "n": 18,
+      "title": "UAV Indoor Exploration for Fire-Target Detection and Extinguishing",
+      "authors": [
+        "Halil Utku Unlu",
+        "Dimitris Chaikalis",
+        "Athanasios Tsoukalas",
+        "A. Tzes"
+      ],
+      "year": 2023,
+      "journal": "Journal of Intelligent & Robotic Systems",
+      "doi": "10.1007/s10846-023-01835-0",
+      "url": "https://consensus.app/papers/uav-indoor-exploration-for-firetarget-detection-and-unlu-chaikalis/7e080eb6cef65477aa20f53bdfe7d34f/",
+      "paper_id": "7e080eb6cef65477aa20f53bdfe7d34f"
+    }
+  ]
+}

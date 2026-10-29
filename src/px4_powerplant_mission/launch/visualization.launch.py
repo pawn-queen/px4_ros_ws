@@ -15,12 +15,14 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             DeclareLaunchArgument("rviz_config", default_value=default_rviz_config),
+            DeclareLaunchArgument("use_sim_time", default_value="true"),
             Node(
                 package="rviz2",
                 executable="rviz2",
                 name="powerplant_rviz",
                 output="screen",
                 arguments=["-d", LaunchConfiguration("rviz_config")],
+                parameters=[{"use_sim_time": LaunchConfiguration("use_sim_time")}],
             ),
         ]
     )

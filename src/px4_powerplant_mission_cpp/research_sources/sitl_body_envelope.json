@@ -1,0 +1,143 @@
+{
+  "sdf_version": "1.11",
+  "model": "x500_depth",
+  "reference": "model_origin/PX4 retained SITL navigation reference",
+  "total_tilt_bound_rad": 0.35,
+  "collision_count": 10,
+  "full_yaw_sweep_links": [
+    "rotor_0",
+    "rotor_1",
+    "rotor_2",
+    "rotor_3"
+  ],
+  "minimum_z_m": -0.05201653883447344,
+  "maximum_z_m": 0.41454883895579475,
+  "maximum_horizontal_radius_m": 0.46556035274093704,
+  "collisions": [
+    {
+      "link": "base_link",
+      "collision": "base_link_collision_0",
+      "full_rotor_yaw_sweep": false,
+      "zero_tilt_min_z_m": 0.222,
+      "zero_tilt_max_z_m": 0.272,
+      "min_z_m": 0.12281629038825528,
+      "max_z_m": 0.3412338297583499,
+      "max_horizontal_radius_m": 0.3281113818397275
+    },
+    {
+      "link": "base_link",
+      "collision": "base_link_collision_1",
+      "full_rotor_yaw_sweep": false,
+      "zero_tilt_min_z_m": 0.015794131595109326,
+      "zero_tilt_max_z_m": 0.21820586840489065,
+      "min_z_m": -0.02877327312371255,
+      "max_z_m": 0.2289906422044291,
+      "max_horizontal_radius_m": 0.1427922016874278
+    },
+    {
+      "link": "base_link",
+      "collision": "base_link_collision_2",
+      "full_rotor_yaw_sweep": false,
+      "zero_tilt_min_z_m": 0.015794131595109326,
+      "zero_tilt_max_z_m": 0.21820586840489065,
+      "min_z_m": -0.02877327312371255,
+      "max_z_m": 0.2289906422044291,
+      "max_horizontal_radius_m": 0.1427922016874278
+    },
+    {
+      "link": "base_link",
+      "collision": "base_link_collision_3",
+      "full_rotor_yaw_sweep": false,
+      "zero_tilt_min_z_m": 0.01299999999999999,
+      "zero_tilt_max_z_m": 0.02799999999999999,
+      "min_z_m": -0.05201653883447344,
+      "max_z_m": 0.09053082006121596,
+      "max_horizontal_radius_m": 0.1893917896847696
+    },
+    {
+      "link": "base_link",
+      "collision": "base_link_collision_4",
+      "full_rotor_yaw_sweep": false,
+      "zero_tilt_min_z_m": 0.01299999999999999,
+      "zero_tilt_max_z_m": 0.02799999999999999,
+      "min_z_m": -0.05201653883447344,
+      "max_z_m": 0.09053082006121596,
+      "max_horizontal_radius_m": 0.1893917896847696
+    },
+    {
+      "link": "rotor_0",
+      "collision": "rotor_0_collision",
+      "full_rotor_yaw_sweep": true,
+      "zero_tilt_min_z_m": 0.2995769230769231,
+      "zero_tilt_max_z_m": 0.3004230769230769,
+      "min_z_m": 0.14907478875263255,
+      "max_z_m": 0.41454883895579475,
+      "max_horizontal_radius_m": 0.46556035274093704
+    },
+    {
+      "link": "rotor_1",
+      "collision": "rotor_1_collision",
+      "full_rotor_yaw_sweep": true,
+      "zero_tilt_min_z_m": 0.2995769230769231,
+      "zero_tilt_max_z_m": 0.3004230769230769,
+      "min_z_m": 0.14907478875263255,
+      "max_z_m": 0.41454883895579475,
+      "max_horizontal_radius_m": 0.46556035274093704
+    },
+    {
+      "link": "rotor_2",
+      "collision": "rotor_2_collision",
+      "full_rotor_yaw_sweep": true,
+      "zero_tilt_min_z_m": 0.2995769230769231,
+      "zero_tilt_max_z_m": 0.3004230769230769,
+      "min_z_m": 0.14907478875263255,
+      "max_z_m": 0.41454883895579475,
+      "max_horizontal_radius_m": 0.46556035274093704
+    },
+    {
+      "link": "rotor_3",
+      "collision": "rotor_3_collision",
+      "full_rotor_yaw_sweep": true,
+      "zero_tilt_min_z_m": 0.2995769230769231,
+      "zero_tilt_max_z_m": 0.3004230769230769,
+      "min_z_m": 0.14907478875263255,
+      "max_z_m": 0.41454883895579475,
+      "max_horizontal_radius_m": 0.46556035274093704
+    },
+    {
+      "link": "camera_link",
+      "collision": "OakD-Lite/collision",
+      "full_rotor_yaw_sweep": false,
+      "zero_tilt_min_z_m": 0.242,
+      "zero_tilt_max_z_m": 0.27,
+      "min_z_m": 0.17934519041389205,
+      "max_z_m": 0.30161363856396595,
+      "max_horizontal_radius_m": 0.2240324366400914
+    }
+  ],
+  "proof": "Convex box vertices suffice for linear height and convex radial extrema; complete vertical-joint yaw is enclosed analytically by pivot radius plus vertex orbit radius. The whole total-tilt cone uses exact scalar trigonometric extrema, not sampled attitudes.",
+  "scope": "All collision boxes in this expanded SDF, all rotor yaw angles; not render mesh certification, hardware geometry, controller response or contact dynamics.",
+  "expanded_sdf_sha256": "75f3ed6a47836c400e79405a36e19231d3199a8c67acc5274cdaa788c05897b0",
+  "source_sdf_sha256": {
+    "/home/pawn/drone-simulation/Tools/simulation/gz/models/x500_depth/model.sdf": "c6630ca20abf235572d397e5f7ec4565cc366fc1f9ec90ac8bb13c8533d1e829",
+    "/home/pawn/drone-simulation/Tools/simulation/gz/models/x500/model.sdf": "cb76a4afd439f253a8c516b1fcd3528f80347619cfa46bebb620557054fbf125",
+    "/home/pawn/drone-simulation/Tools/simulation/gz/models/x500_base/model.sdf": "e807dca3406f7cd5cb3d545898601c3ec17e0e5242e25cf467a69df1812cf436",
+    "/home/pawn/drone-simulation/Tools/simulation/gz/models/OakD-Lite/model.sdf": "f8a78a93c19eb3902ec751fc56bf22b389c7528b38f4d5e3a6c177f3548ee070"
+  },
+  "sdformat_warnings": [
+    "Warning [Utils.cc:132] [/sdf/model[@name=\"x500_base\"]/link[@name=\"base_link\"]/sensor[@name=\"air_pressure_sensor\"]/gz_frame_id:/home/pawn/drone-simulation/Tools/simulation/gz/models/x500_base/model.sdf:L219]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].",
+    "Warning [Utils.cc:132] [/sdf/model[@name=\"x500_base\"]/link[@name=\"base_link\"]/sensor[@name=\"magnetometer_sensor\"]/gz_frame_id:/home/pawn/drone-simulation/Tools/simulation/gz/models/x500_base/model.sdf:L233]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].",
+    "Warning [Utils.cc:132] [/sdf/model[@name=\"x500_base\"]/link[@name=\"base_link\"]/sensor[@name=\"imu_sensor\"]/gz_frame_id:/home/pawn/drone-simulation/Tools/simulation/gz/models/x500_base/model.sdf:L259]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].",
+    "Warning [Utils.cc:132] [/sdf/model[@name=\"x500_base\"]/link[@name=\"base_link\"]/sensor[@name=\"navsat_sensor\"]/gz_frame_id:/home/pawn/drone-simulation/Tools/simulation/gz/models/x500_base/model.sdf:L311]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].",
+    "Warning [Utils.cc:132] [/sdf/model[@name=\"OakD-Lite\"]/link[@name=\"camera_link\"]/sensor[@name=\"IMX214\"]/gz_frame_id:/home/pawn/drone-simulation/Tools/simulation/gz/models/OakD-Lite/model.sdf:L38]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].",
+    "Warning [Utils.cc:132] [/sdf/model[@name=\"OakD-Lite\"]/link[@name=\"camera_link\"]/sensor[@name=\"StereoOV7251\"]/gz_frame_id:/home/pawn/drone-simulation/Tools/simulation/gz/models/OakD-Lite/model.sdf:L56]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].",
+    "Warning [Utils.cc:132] [/sdf/model[@name=\"x500_depth\"]/link[@name=\"mapping_lidar_link\"]/sensor[@name=\"mapping_lidar\"]/gz_frame_id:/home/pawn/drone-simulation/Tools/simulation/gz/models/x500_depth/model.sdf:L30]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor]."
+  ],
+  "checked_profile": "/home/pawn/px4_ros_ws/src/px4_powerplant_mission/config/p2_simulation.yaml",
+  "configured_body": {
+    "body_radius_m": 0.5,
+    "body_z_min_m": -0.06,
+    "body_z_max_m": 0.5
+  },
+  "configured_body_contains_collision_envelope": true
+}

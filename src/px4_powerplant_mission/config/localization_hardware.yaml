@@ -1,0 +1,13 @@
+# Shared nodes; only sensor source and explicitly independent attitude differ.
+powerplant_localization:
+  ros__parameters:
+    uwb_pose_topic: /uwb/hardware/pose
+    uwb_quality_topic: /uwb/hardware/quality
+    uwb_status_topic: /uwb/hardware/status
+    use_uwb_orientation: false
+powerplant_external_vision_bridge:
+  ros__parameters:
+    uwb_pose_topic: /uwb/hardware/pose
+    uwb_quality_topic: /uwb/hardware/quality
+    uwb_status_topic: /uwb/hardware/status
+    use_independent_orientation: false

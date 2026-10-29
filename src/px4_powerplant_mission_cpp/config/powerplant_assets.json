@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "asset_root_hint": "/home/pawn/drone-simulation/Tools/simulation/gz",
+  "model_git_commit": "69f6511d0b11e2189b204ce6b10f12cbef24f119",
+  "asset_commit_pending": false,
+  "files": [
+    {
+      "path": "models/land_zone/land_zone.sdf",
+      "sha256": "38685b62a38ab7dd699c968cee766b665112ccb0c5edffc077357f63fd581f07"
+    },
+    {
+      "path": "models/land_zone/materials/textures/landzone.jpg",
+      "sha256": "8013978d23585b75c52237e429f6ba0a677a4861433a5e294506a02a92680919"
+    },
+    {
+      "path": "models/land_zone/model.config",
+      "sha256": "cfd79268fd1c8eb0dbf2f6230feb95a387d098a06d6bf1cbcd307a18856bb1b3"
+    },
+    {
+      "path": "models/power-plant/collision_manifest.json",
+      "sha256": "7ce761dc3c8f4e1b9d45f698548996d4a04ce42893a704422a8424dac26de4cd"
+    },
+    {
+      "path": "models/power-plant/collision_validation.json",
+      "sha256": "cee17d2541f36414d2fa586c89a0c5b3a8cf94d545dddeb8cf730ed792a58223"
+    },
+    {
+      "path": "models/power-plant/meshes/power-plant-collision.stl",
+      "sha256": "0eb279ccb4f3a28f922872d9d67e909905ab23085f098944e521071c23637cf0"
+    },
+    {
+      "path": "models/power-plant/meshes/power-plant.stl",
+      "sha256": "076476fcef7535cb1c24d8fc7dffab21987d906f7464a3dbf91374f7d49cdf87"
+    },
+    {
+      "path": "models/power-plant/model.config",
+      "sha256": "65c6ddb08d3a6688f4a874b74b3f6e62dd6981688d3ad16ca264840269c422a0"
+    },
+    {
+      "path": "models/power-plant/model.sdf",
+      "sha256": "f60cac677a14d9a55e17623f819f1562e6aa04eeb96a5eb658226bd10339947c"
+    },
+    {
+      "path": "models/power-plant/probe_fixtures.json",
+      "sha256": "b3e3c5b70e5789f839814894ca1ddb32f2e74af2788f3f6be36fb8870a154e13"
+    },
+    {
+      "path": "models/power-plant/scripts/build_collision.py",
+      "sha256": "6e8107dbf2211b718ece5737b02aec70d25c920f98624c5ff4db7ccad639d251"
+    },
+    {
+      "path": "models/power-plant/scripts/build_probe_fixtures.py",
+      "sha256": "89cd9c13cef8afeb579b29ea0a1550c5e84cc0df64a47d9b5256ddedd696666e"
+    },
+    {
+      "path": "models/power-plant/scripts/verify_collision.py",
+      "sha256": "eb69455fdd4556ec8439db101ee9cfed09d5eb4eac0a809c9de505c16cf3bd0b"
+    },
+    {
+      "path": "models/power-plant/takeoff_geometry.json",
+      "sha256": "aa5663fa171ef83cfaa1929af60f48e751f8b6d0c2ad39e07b1f6e4acfddbd25"
+    },
+    {
+      "path": "worlds/powerplant.sdf",
+      "sha256": "8e8af17b20101cc852610673cbb5267e09c492f66553911bed3f1886a46aeee7"
+    }
+  ]
+}
