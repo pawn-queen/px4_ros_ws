@@ -1,0 +1,154 @@
+name: Simulation (self-hosted)
+
+# 这条流水线只在有 PX4 树和 Gazebo 的专用机器上跑（runner: ubuntu-lab-sim）。
+# 公开仓库 + 自托管 runner 是危险组合：外部 fork 的 PR 绝不允许触发这台机器。
+# 因此这里有两道闸：
+#   1) head.repo.full_name == github.repository —— fork PR 直接跳过
+#   2) 只有被人工打上 run-sim 标签的 PR 才跑 —— 打标签需要 write 权限
+# 只有维护者本人能同时满足这两条。详见 docs/CI_ARCHITECTURE.md。
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "SITL 场景"
+        type: choice
+        options: [default, room]
+        default: default
+      timeout_s:
+        description: "链路启动超时（秒）"
+        default: "180"
+  pull_request:
+    types: [labeled]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sim-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Simulation guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      allowed: ${{ steps.check.outputs.allowed }}
+    steps:
+      - id: check
+        run: |
+          set -euo pipefail
+          allowed=false
+          reason=""
+          if [ "${{ github.repository }}" != "pawn-queen/px4_ros_ws" ]; then
+            reason="not the canonical repository"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "${{ github.event.label.name }}" != "run-sim" ]; then
+              reason="PR did not request the run-sim label"
+            elif [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+              reason="fork PR is never allowed on the self-hosted runner"
+            else
+              allowed=true
+            fi
+          else
+            allowed=true
+          fi
+          echo "allowed=$allowed" >> "$GITHUB_OUTPUT"
+          echo "decision: allowed=$allowed ${reason:+($reason)}"
+          {
+            echo "### Simulation gate"
+            echo ""
+            echo "- event: \`${{ github.event_name }}\`"
+            echo "- allowed: **$allowed**"
+            [ -n "$reason" ] && echo "- reason: $reason"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  diagnose:
+    name: Runner environment
+    needs: guard
+    if: needs.guard.outputs.allowed == 'true'
+    runs-on: [self-hosted, sim-heavy]
+    timeout-minutes: 10
+    steps:
+      - name: Report environment
+        run: |
+          set -uo pipefail
+          {
+            echo "### Runner environment"
+            echo ""
+            echo "- host: \`$(hostname)\`"
+            echo "- kernel: \`$(uname -sr)\`"
+            echo "- os: \`$(. /etc/os-release && echo "$PRETTY_NAME")\`"
+            echo "- cpus: $(nproc)"
+            echo "- ros_setup: $( [ -f /opt/ros/jazzy/setup.bash ] && echo present || echo MISSING )"
+            echo "- px4_root: $( [ -d /home/pawn/drone-simulation ] && echo present || echo MISSING )"
+            echo "- px4_bin: $( [ -x /home/pawn/drone-simulation/build/px4_sitl_default/bin/px4 ] && echo present || echo MISSING )"
+            for c in gz MicroXRCEAgent ros2 colcon git python3; do
+              printf -- '- %s: %s\n' "$c" "$(command -v "$c" || echo MISSING)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
+      - name: Report Python modules
+        run: |
+          set -uo pipefail
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import importlib.util as u
+          for m in ("rclpy", "numpy", "yaml", "pymavlink", "vtkmodules",
+                    "gz.transport13", "gz.msgs10", "scipy"):
+              print(f"- python {m}: {'ok' if u.find_spec(m) else 'MISSING'}")
+          PY
+
+  build:
+    name: Build workspace
+    needs: [guard, diagnose]
+    if: needs.guard.outputs.allowed == 'true'
+    runs-on: [self-hosted, sim-heavy]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: colcon build
+        run: |
+          set -eo pipefail
+          source /opt/ros/jazzy/setup.bash
+          colcon build \
+            --packages-up-to px4_powerplant_mission_cpp px4_powerplant_mission \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+
+  smoke:
+    name: Simulation chain smoke
+    needs: [guard, build]
+    if: needs.guard.outputs.allowed == 'true'
+    runs-on: [self-hosted, sim-heavy]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Run SITL smoke
+        env:
+          SCENARIO: ${{ github.event.inputs.scenario || 'default' }}
+          TIMEOUT_S: ${{ github.event.inputs.timeout_s || '180' }}
+        run: |
+          set -euo pipefail
+          world="/home/pawn/drone-simulation/Tools/simulation/gz/worlds/default.sdf"
+          if [ "$SCENARIO" = "room" ]; then
+            world="$PWD/src/px4_powerplant_mission_cpp/test/worlds/p2_room.sdf"
+          fi
+          echo "world=$world"
+          PX4_WORLD="$world" bash scripts/ci/sitl_smoke.sh "$TIMEOUT_S"
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sitl-smoke-logs
+          path: log/ci_sitl_smoke/
+          if-no-files-found: ignore
+          retention-days: 7

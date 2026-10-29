@@ -1,0 +1,95 @@
+name: Bug Report
+description: 报告可复现的缺陷、异常行为或回归
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先搜索已有 Issue。涉及解锁、起飞、失效保护的问题请额外标注 `hardware`，并优先处理。
+        安全红线：本仓库不接受任何要求自动执行实机解锁/起飞的改动建议。
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 问题背景
+      description: 在什么任务、什么场景下发现问题？影响的是仿真、实机，还是两者共用代码？
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 精确到命令。不要写"启动仿真"这种无法执行的描述。
+      placeholder: |
+        1. source /opt/ros/jazzy/setup.bash
+        2. colcon build --packages-up-to px4_powerplant_mission_cpp
+        3. ros2 launch px4_powerplant_mission powerplant_system.launch.py use_control:=true
+        4. 观察 /powerplant/localization/status
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志与错误信息
+      description: 粘贴关键片段。大文件请给路径（如 `log/<run>/report.json`），不要粘贴 `.pt`、`.pyc` 或二进制内容。
+      render: shell
+
+  - type: textarea
+    id: ros_px4_state
+    attributes:
+      label: 相关 ROS Topic / PX4 状态
+      description: 列出出问题时关键 topic 的实际值与期望值。
+      placeholder: |
+        /fmu/out/vehicle_status.arming_state = 2 (ARMED)
+        /powerplant/localization/status = ...
+        EKF2_EV_CTRL = 11
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 软件与硬件环境
+      value: |
+        - OS / 内核:
+        - ROS 2 发行版:
+        - PX4 commit:
+        - Gazebo 版本:
+        - Python 版本:
+        - 运行形态（SITL / 实机）:
+        - 硬件（飞控、机载计算机、传感器）:
+    validations:
+      required: true
+
+  - type: textarea
+    id: definition_of_done
+    attributes:
+      label: 可验证的完成标准
+      description: 写清楚"修好"如何被证明：哪个测试由红转绿、哪个 topic 应出现什么字段、哪条 SITL 场景应通过。
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 确认
+      options:
+        - label: 我已搜索现有 Issue，未发现重复
+          required: true
+        - label: 本条内容不含密钥、凭据、私人路径或飞行控制敏感信息
+          required: true

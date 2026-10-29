@@ -1,0 +1,75 @@
+name: Refactor Request
+description: 结构调整、模块重组或性能重写，不改变外部行为
+title: "[Refactor] "
+labels: ["refactor"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        重构必须能回答一个问题：**重构后哪条判据会变好，而行为保持不变？** 如果答案不存在，这多半是 Feature 或 Bug。
+
+  - type: textarea
+    id: current_problem
+    attributes:
+      label: 当前架构问题
+      description: 具体到文件与症状，例如"体素建图在 Python 里 5 Hz 就跑满 CPU，导致 offboard 发布频率掉到 20 Hz"。
+    validations:
+      required: true
+
+  - type: textarea
+    id: target_architecture
+    attributes:
+      label: 期望架构
+      description: 目标结构、边界划分、由谁负责、数据如何流动。
+    validations:
+      required: true
+
+  - type: textarea
+    id: modules
+    attributes:
+      label: 涉及的 Python / C++ 模块
+      placeholder: |
+        Python: px4_powerplant_mission/mapping/voxel_grid.py
+        C++:    px4_powerplant_mission_cpp/src/...
+
+  - type: textarea
+    id: shared_code
+    attributes:
+      label: 是否影响仿真与实机共用代码
+      description: 如果影响，必须说明如何在 SITL 与实机两侧分别验证。
+    validations:
+      required: true
+
+  - type: textarea
+    id: api_compat
+    attributes:
+      label: API 兼容性要求
+      description: 是否允许破坏 topic 名、消息字段、参数名、C++ 头文件接口？若允许，迁移路径是什么？
+
+  - type: textarea
+    id: metrics
+    attributes:
+      label: 性能与资源指标
+      description: 给出可测量的目标，例如发布频率、p95 延迟、CPU、内存。
+      placeholder: |
+        发布频率: >= 40 Hz
+        p95 发布间隔: <= 0.1 s
+        单核 CPU: <= 60 %
+
+  - type: textarea
+    id: regression
+    attributes:
+      label: 测试与回归验证要求
+      description: 哪些现有测试必须保持绿？需要新增哪些回归用例？SITL 场景是什么？
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 确认
+      options:
+        - label: 我已确认这不是一个伪装成重构的功能变更
+          required: true
+        - label: 我列出了至少一条可自动化的回归判据
+          required: true

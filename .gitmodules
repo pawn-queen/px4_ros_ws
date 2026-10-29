@@ -1,6 +1,9 @@
+# 两者都是 PX4 官方上游。之前写成 ./src/... 的相对路径，会解析成
+# https://github.com/pawn-queen/src/px4_msgs（404），新克隆无法 --init。
+# commit 由 gitlink 锁定，不跟随上游分支漂移。
 [submodule "src/px4_msgs"]
 	path = src/px4_msgs
-	url = ./src/px4_msgs
+	url = https://github.com/PX4/px4_msgs.git
 [submodule "src/px4_ros_com"]
 	path = src/px4_ros_com
-	url = ./src/px4_ros_com
+	url = https://github.com/PX4/px4_ros_com.git

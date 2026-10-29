@@ -1,0 +1,9 @@
+# 默认所有文件由维护者负责。
+# 初期为单人开发，CODEOWNERS 只用于标记审查归属，不配合强制 Review 人数使用。
+*                       @pawn-queen
+
+/.github/               @pawn-queen
+/docs/                  @pawn-queen
+/src/px4_powerplant_mission_cpp/       @pawn-queen
+/src/px4_powerplant_mission/           @pawn-queen
+/.gitmodules            @pawn-queen
