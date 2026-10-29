@@ -31,10 +31,18 @@ note "=== preflight ==="
 for f in "$ROS_SETUP" "$PX4_BIN"; do
   [ -f "$f" ] || fail "missing file: $f"
 done
-for d in "$PX4_ROOTFS"; do
-  [ -d "$d" ] || fail "missing directory: $d"
-done
+PX4_ETC=$PX4_ROOT/build/px4_sitl_default/etc
+[ -d "$PX4_ETC" ] || fail "missing ROMFS source: $PX4_ETC (did the build finish?)"
 [ -f "$PX4_WORLD" ] || fail "missing world file: $PX4_WORLD (set PX4_WORLD)"
+
+# 全新构建后 tmp/rootfs 并不存在（本地机器上同样没有）：PX4 是在
+# `make px4_sitl` 启动时才从 build/.../etc 铺出来的。这里自己铺一份，
+# 这样 smoke 不依赖那条会顺带启动 Gazebo 的 make 目标。
+if [ ! -d "$PX4_ROOTFS/etc" ]; then
+  mkdir -p "$PX4_ROOTFS"
+  cp -a "$PX4_ETC" "$PX4_ROOTFS/etc"
+  note "prepared rootfs from $PX4_ETC"
+fi
 for c in gz MicroXRCEAgent ros2; do
   command -v "$c" >/dev/null 2>&1 || fail "command not found on runner: $c"
 done
