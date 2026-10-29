@@ -36,6 +36,10 @@ enum class Phase {
   Fault
 };
 const char *phase_name(Phase p);
+enum class TakeoffProgress {
+  StartupIntent, ResponseProbe, HandoffAscent, StrictClimb
+};
+const char *takeoff_progress_name(TakeoffProgress);
 struct TargetObservation {
   std::string class_name;
   double confidence = 0;
@@ -256,11 +260,24 @@ private:
   bool motion_permit_ = false;
   std::string motion_input_reason_;
   MotionLimits motion_limits() const;
+  MotionLimits strict_motion_limits() const;
   MotionState motion_state() const;
   MotionSafetyDomain motion_domain() const;
 
   bool motion_brake_requested_ = false;
   bool takeoff_bootstrap_active_ = false;
+  TakeoffProgress takeoff_progress_ = TakeoffProgress::StartupIntent;
+  double takeoff_transition_budget_s_ = 12.;
+  double takeoff_support_clearance_lower_m_ = -inf;
+  double takeoff_handoff_rise_m_ = 0.;
+  int64_t takeoff_response_since_ = 0, takeoff_response_last_sample_ = 0;
+  uint32_t takeoff_response_samples_ = 0;
+  bool takeoff_response_confirmed_ = false;
+  std::string takeoff_budget_reason_;
+  double takeoff_transition_budget_s() const;
+  double takeoff_lowest_support_clearance_m() const;
+  void update_takeoff_response_evidence();
+  std::optional<double> predict_takeoff_handoff_rise() const;
   MotionCertificateKind takeoff_safety_stage_ = MotionCertificateKind::AirborneStrict;
   uint64_t takeoff_authorization_revision_ = 1;
   Vec3 takeoff_ground_reference_ = Vec3::Zero();
@@ -272,6 +289,7 @@ private:
       const std::vector<rclcpp::Parameter> &overrides = {}) const;
   void reset_takeoff_safety();
   void update_takeoff_safety();
+  bool handle_motion_failure(const MotionUpdate &);
   bool takeoff_strict_ready() const;
   double takeoff_ground_remaining_s() const;
   int64_t warmup_started_ = 0;

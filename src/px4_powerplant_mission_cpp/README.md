@@ -20,7 +20,7 @@ evidence: [P2 implementation](P2_IMPLEMENTATION.md). P3 remains future work.
 The P2 software audit now checks sampling-time reference history, fresh HOLD
 confirmation, shared planner/executor uncertainty budgets, executable local
 prefixes, exact stop/time accounting, region identity and exposure-bound photo
-coverage. The latest build and 316 direct regression cases pass; see
+coverage. That historical audit passed 316 direct regression cases; see
 [P2 validation](P2_VALIDATION.md) for evidence and scope. Flight parameters and
 physical acceptance remain separate from these software checks. Configure
 safety/calibration parameters before the mission and restart while disarmed;
@@ -36,6 +36,22 @@ complete observed navigation domain. EXPLORE contains bounded ROI_ACCESS and
 ROI_WORK submodes; it does not require known waypoints. See
 [Issue #3 implementation](ISSUE3_IMPLEMENTATION.md) and
 [actual validation status](ISSUE3_VALIDATION.md).
+
+The takeoff response update separates a startup reference from measured lift,
+adds early certified braking and a recovery latch, and derives one immutable
+SITL ground-transition budget before starting. Its isolated controller profile
+must be verified against actual PX4 parameters before arming; it does not change
+PX4 source or hardware defaults. See [takeoff response design](TAKEOFF_RESPONSE_SYNC.md)
+for policy and [Issue #3 validation](ISSUE3_VALIDATION.md) for actual flight scope.
+The current build and 524 direct software cases pass. The latest A–D transition
+policies use a fixed 45-second budget, rounded swept envelopes and bounded
+reference selection, with atomic restoration of the original strict policy.
+All 20 actual policy/integral candidates failed takeoff/scan. Five runs verified
+the instantaneous strict ACK but failed during later strict climb/recovery;
+none reached HOVER_SCAN. No controller profile was frozen. The main flight,
+governor ablation and ROI acceptance remain unexecuted. See the latest
+[validation record](ISSUE3_VALIDATION.md) and workspace evidence under
+`log/issue3_margin_governor/20261029_1336/`.
 
 ## Build with bounded resource use
 

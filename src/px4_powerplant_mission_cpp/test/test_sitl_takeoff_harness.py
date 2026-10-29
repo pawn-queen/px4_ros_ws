@@ -88,6 +88,18 @@ def test_exact_stage_event_closes_interval_between_status_updates():
     assert not r['passed'] and r['unsafe_contacts'][0]['stage']=='AIRBORNE_STRICT'
 
 
+def test_actual_ack_time_revokes_contact_permission_before_delayed_task_event():
+    e=evidence();e.observe([row(sample=10_040_000_000),row(sample=10_100_000_000)])
+    strict={'event_stamp_ns':10_200_000_000,'motion_strict_promotion_stamp_ns':10_050_000_000,
+        'localization_epoch':7,'phase':'SAFE_TAKEOFF','takeoff_safety_stage':'AIRBORNE_STRICT',
+        'event':'takeoff_strict_handoff_complete'}
+    result=e.result([state(),state(sample=10_080_000_000)], [strict])
+    assert result['allowed_support_contact_count']==1
+    assert result['unsafe_contact_count']==1
+    assert result['unsafe_contacts'][0]['sample_ns']==10_100_000_000
+    assert result['unsafe_contacts'][0]['stage']=='AIRBORNE_STRICT'
+
+
 def test_sparse_status_interval_cannot_authorize_contact():
     e=evidence();e.observe([row(sample=10_500_000_000)])
     r=e.result([state(),state(sample=11_000_000_000)])
@@ -173,18 +185,31 @@ def handoff_fixture():
           'phase':'SAFE_TAKEOFF','localization_epoch':7,'takeoff_safety_stage':'LIFTOFF_TRANSITION',
           'motion_authorization_revision':2}
     strict={'event':'takeoff_strict_handoff_complete','event_stamp_ns':12_000_000_000,
+            'motion_strict_promotion_stamp_ns':12_000_000_000,
             'phase':'SAFE_TAKEOFF','localization_epoch':7,'takeoff_safety_stage':'AIRBORNE_STRICT',
             'motion_certificate_kind':'AIRBORNE_STRICT','motion_stop_certificate_valid':True,
             'motion_contact_certificate_valid':False,'motion_stopped':True,'motion_mode':'HOLD',
             'motion_authorization_revision':3,'motion_stopping_envelope_enu':{'minimum_m':[-.6,-.6,.061]}}
+    strict['motion_strict_ack']={'stamp_ns':12_000_000_000,'state_sample_ns':11_980_000_000,
+        'localization_epoch':7,'authorization_revision':3,'survey_revision':5,'session':42,
+        'certificate_kind':'AIRBORNE_STRICT','stopped':True,'mode':'HOLD',
+        'position_enu_m':[0,0,.5],'velocity_enu_mps':[0,0,0],
+        'reference_position_enu_m':[0,0,.5],'reference_velocity_enu_mps':[0,0,0],
+        'reference_acceleration_enu_mps2':[0,0,0],'policy_id':'airborne-strict-v2','policy_revision':2,
+        'position_tolerance_m':.1,'body_radius_m':.5,'soft_trigger_ratio':.6,
+        'map_margin_m':.05,'sigma_multiplier':2.,
+        'recover_ratio':.35,'recovery_wait_s':3.,'reference_governor_enabled':False,
+        'tracking_risk_ratio':0.,'stopping_envelope_enu':{'minimum_m':[-.6,-.6,.061]}}
     scan=state(sample=12_100_000_000,phase='HOVER_SCAN',stage='AIRBORNE_STRICT')
     explore=state(sample=12_200_000_000,phase='EXPLORE',stage='AIRBORNE_STRICT')
-    refs=[{'timestamp':t,'position':[0,0,.5],'velocity':[0,0,0],'acceleration':[0,0,0]}
-          for t in (11_980_000,12_020_000)]
+    refs=[{'timestamp':t,'position':[0,0,-.5],'velocity':[0,0,0],'acceleration':[0,0,0]}
+          for t in (11_980_000,12_000_000,12_020_000)]
     return ([ground,scan,explore],[lift,strict],[{'sample_ns':11_950_000_000,'landed':False}],refs,
             {'verified':True,'passed':True,'plane_z_enu_m':0,'plane_uncertainty_m':.01,
              'ground_support_parameters':{'takeoff_ground_model_revision':5}},
-            {'motion_map_margin_m':.05,'takeoff_ground_land_max_age_s':2.})
+            {'motion_map_margin_m':.05,'takeoff_ground_land_max_age_s':2.,'takeoff_transition_policy_id':'B'},
+            [{'sample_ns':11_980_000_000,'position':[0,0,.5],'velocity':[0,0,0],
+              'covariance_valid':True,'task_identity':[7,1]}])
 
 
 def test_strict_handoff_requires_runtime_ack_raw_box_and_fresh_airborne_sample():
@@ -192,7 +217,7 @@ def test_strict_handoff_requires_runtime_ack_raw_box_and_fresh_airborne_sample()
     assert contact.takeoff_handoff_evidence(*fixture)['passed']
     fixture[1][1]['motion_certificate_kind']='LIFTOFF_TRANSITION'
     assert not contact.takeoff_handoff_evidence(*fixture)['passed']
-    fixture=handoff_fixture();fixture[1][1]['motion_stopping_envelope_enu']['minimum_m'][2]=.059
+    fixture=handoff_fixture();fixture[1][1]['motion_strict_ack']['stopping_envelope_enu']['minimum_m'][2]=.059
     assert not contact.takeoff_handoff_evidence(*fixture)['passed']
     fixture=handoff_fixture();fixture[2].clear()
     assert not contact.takeoff_handoff_evidence(*fixture)['passed']
@@ -202,6 +227,49 @@ def test_handoff_does_not_accept_reference_reanchor_or_post_strict_stage_regress
     fixture=handoff_fixture();fixture[3][1]['position'][0]=.01
     assert not contact.takeoff_handoff_evidence(*fixture)['passed']
     fixture=handoff_fixture();fixture[0][-1]['takeoff_safety_stage']='GROUND_CONTACT'
+    assert not contact.takeoff_handoff_evidence(*fixture)['passed']
+
+
+def test_handoff_uses_executor_ack_instead_of_later_task_event_time():
+    fixture=handoff_fixture()
+    fixture[1][1]['event_stamp_ns']=12_100_000_000
+    fixture[3].append({'timestamp':12_100_000,'position':[0,0,.5001],
+        'velocity':[0,0,.005],'acceleration':[0,0,.1]})
+    assert contact.takeoff_handoff_evidence(*fixture)['passed']
+    for bad in (None,0,12_200_000_000,11_700_000_000):
+        fixture[1][1]['motion_strict_promotion_stamp_ns']=bad
+        assert not contact.takeoff_handoff_evidence(*fixture)['passed']
+
+
+def test_handoff_accepts_ros_float32_arrays_and_rejects_invalid_numbers():
+    import numpy as np
+    fixture=handoff_fixture()
+    fixture[6][0]['covariance_valid']=np.bool_(True)
+    for row in fixture[3]:
+        for field in ('position','velocity','acceleration'):
+            row[field]=list(np.asarray(row[field],dtype=np.float32))
+    result=contact.takeoff_handoff_evidence(*fixture)
+    assert result['passed']
+    assert result['sampled_reference_jumps']=={'position_jump':0.,'velocity_jump':0.,'acceleration_jump':0.}
+    for bad in (np.bool_(False),None,1,'True'):
+        bad_fixture=handoff_fixture();bad_fixture[6][0]['covariance_valid']=bad
+        assert not contact.takeoff_handoff_evidence(*bad_fixture)['passed']
+    for bad in (np.float32('nan'),None,True):
+        fixture[3][1]['velocity'][0]=bad
+        assert not contact.takeoff_handoff_evidence(*fixture)['passed']
+
+
+def test_ack_witness_is_not_replaced_by_later_state_and_requires_independent_input():
+    fixture=handoff_fixture()
+    fixture[1][1]['motion_stopped']=False # Later input need not still be stopped.
+    assert contact.takeoff_handoff_evidence(*fixture)['passed']
+    for change in ({'stopped':False},{'mode':'TRACKING'},{'state_sample_ns':None},
+                   {'localization_epoch':8},{'survey_revision':6},{'position_tolerance_m':.15},
+                   {'map_margin_m':.03},{'sigma_multiplier':1.},
+                   {'tracking_risk_ratio':.6},{'session':0},{'position_enu_m':[0,0,.51]}):
+        fixture=handoff_fixture();fixture[1][1]['motion_strict_ack'].update(change)
+        assert not contact.takeoff_handoff_evidence(*fixture)['passed'],change
+    fixture=handoff_fixture();fixture[6].clear()
     assert not contact.takeoff_handoff_evidence(*fixture)['passed']
 
 
@@ -215,3 +283,19 @@ def test_explicit_controller_calibration_needs_real_readback():
     assert runner.controller_profile_evidence(args,{'MPC_THR_HOVER':{'value':.7463329}})['passed']
     args.px4_z_velocity_integral=0.
     assert not runner.controller_profile_evidence(args,{'MPC_THR_HOVER':{'value':.7463329}})['passed']
+
+
+def test_early_contact_clock_can_be_confirmed_by_bounded_real_world_step():
+    value=evidence();sample=10_100_000_000
+    early=row(sample,clock_at_receipt_ns=10_000_000_000,receipt_wall=30.)
+    value.observe([early])
+    assert not value.result([state()])['passed']
+    value.world_steps.append({'sample_ns':10_150_000_000,'iterations':300,
+        'paused':False,'receipt_wall':30.1})
+    result=value.result([state()])
+    assert result['passed'] and result['deferred_clock_contacts_confirmed']==1
+    assert early['clock_at_receipt_ns']==10_000_000_000
+    value.world_steps[-1]['receipt_wall']=30.4
+    assert not value.result([state()])['passed']
+    value.world_steps[-1]['receipt_wall']=30.1
+    assert not value.result([state(),{**state(10_120_000_000),'localization_epoch':8}])['passed']

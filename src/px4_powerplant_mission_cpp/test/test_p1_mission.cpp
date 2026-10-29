@@ -471,12 +471,12 @@ struct P1MissionTestAccess {
   static void local_motion_rejection_survives_adoption(bool returning) {
     OffboardMissionNode n;
     prepare(n);
+    ASSERT_TRUE(n.set_parameter(rclcpp::Parameter("motion_body_radius_m", 2.0)).successful);
     n.phase_ = returning ? Phase::Return : Phase::Explore;
     if (returning) {
       n.home_ = Vec3(2, 0, 0);
       n.return_goal_ = n.home_air();
     }
-    n.set_parameter(rclcpp::Parameter("motion_body_radius_m", 2.0));
     // The geometric .35m corridor is clear. The larger motion/stop envelope
     // is deliberately not observed-free, so adoption must reject it visibly.
     const Vec3 goal = returning ? *n.return_goal_ : Vec3(1, 0, 5);

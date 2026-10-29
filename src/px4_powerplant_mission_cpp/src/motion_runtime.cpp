@@ -47,8 +47,24 @@ bool same_limits(const MotionLimits &a, const MotionLimits &b) {
   SAME_LIMIT(max_control_gap_s);
   SAME_LIMIT(max_clock_stall_s);
   SAME_LIMIT(max_check_voxels);
+  SAME_LIMIT(tracking_guard.enabled);
+  SAME_LIMIT(tracking_guard.trigger_ratio);
+  SAME_LIMIT(tracking_guard.recover_ratio);
+  SAME_LIMIT(tracking_guard.recovery_wait_s);
+  SAME_LIMIT(tracking_guard.recovery_dwell_s);
+  SAME_LIMIT(tracking_guard.recovery_min_samples);
+  SAME_LIMIT(rounded_envelope);
+  SAME_LIMIT(reference_governor);
+  SAME_LIMIT(reference_duration_scale);
+  SAME_LIMIT(policy_id);
+  SAME_LIMIT(policy_revision);
 #undef SAME_LIMIT
   return true;
+}
+
+bool same_strict_limits(const std::optional<MotionLimits> &a,
+                         const std::optional<MotionLimits> &b) {
+  return bool(a) == bool(b) && (!a || same_limits(*a, *b));
 }
 
 bool same_column(const std::optional<ConfirmedColumn> &a,
@@ -73,8 +89,10 @@ bool publication_context_matches(const MotionRuntimeInput &source,
   const bool same_context = latest.enabled && latest.session == source.session &&
       latest.generation == source.generation && latest.permit == source.permit &&
       latest.request_strict_promotion == source.request_strict_promotion &&
+      latest.max_tracking_recovery_attempts == source.max_tracking_recovery_attempts &&
       latest.state.epoch == source.state.epoch &&
       same_domain(latest.domain, source.domain) &&
+      same_strict_limits(latest.strict_limits, source.strict_limits) &&
       same_limits(latest.limits, source.limits);
   // A current invalid input must report its own FAULT, including unknown/NaN
   // covariance. Only publication, below, requires healthy navigation.
@@ -116,6 +134,8 @@ void MotionRuntime::input(MotionRuntimeInput value) {
       const auto &promotion=*strict_promotion_;
       if (value.domain.certificate_kind!=MotionCertificateKind::AirborneStrict) {
         const bool old_ack_input=value.domain.authorization_revision==promotion.source_revision &&
+            (!promotion.source_limits || same_limits(value.limits, *promotion.source_limits)) &&
+            (!promotion.target_limits || same_strict_limits(value.strict_limits, promotion.target_limits)) &&
             same_ground_support(value.domain.ground_support,promotion.source_ground) &&
             same_column(value.domain.column,promotion.source_column);
         value.domain.certificate_kind=old_ack_input ? MotionCertificateKind::AirborneStrict
@@ -123,10 +143,17 @@ void MotionRuntime::input(MotionRuntimeInput value) {
         value.domain.authorization_revision=promotion.target_revision;
         value.domain.ground_support.reset();
         value.domain.column=promotion.column;
+        if (old_ack_input && promotion.target_limits) {
+          value.limits = *promotion.target_limits;
+          value.strict_limits = promotion.target_limits;
+          value.max_tracking_recovery_attempts = 0;
+        }
         value.request_strict_promotion=false;
       } else if (value.domain.authorization_revision<promotion.target_revision) {
         value.domain.certificate_kind=MotionCertificateKind::None;
       }
+      if (promotion.target_limits && !same_limits(value.limits, *promotion.target_limits))
+        value.domain.certificate_kind=MotionCertificateKind::None;
     }
     auto input = std::make_shared<const MotionRuntimeInput>(std::move(value));
     previous = std::move(input_);
@@ -165,6 +192,7 @@ bool MotionRuntime::same_planning_context(
          budget.state_epoch == input.state.epoch &&
          budget.map_epoch == input.domain.epoch &&
          same_limits(physical_limits, input.limits) &&
+         same_strict_limits(budget.strict_limits, input.strict_limits) &&
          same_column(budget.column, input.domain.column) &&
          budget.certificate_kind==input.domain.certificate_kind &&
          budget.authorization_revision==input.domain.authorization_revision &&
@@ -275,10 +303,26 @@ void MotionRuntime::work_loop() {
     };
     try {
       if (work.kind == WorkKind::Prepare) {
-        result.prepared = prepare_(
-            work.input->domain, work.anchor,
-            {work.anchor.position_enu, work.input->target},
-            work.input->target_yaw, work.input->limits, cancelled);
+        const bool governor = work.input->limits.reference_governor &&
+            work.input->domain.certificate_kind == MotionCertificateKind::LiftoffTransition;
+        bool preview_rejected = false;
+        for (double scale : {1., 1.25}) {
+          if (!governor && scale != 1.) break;
+          auto limits = work.input->limits;
+          limits.reference_duration_scale = scale;
+          result.prepared = prepare_(work.input->domain, work.anchor,
+              {work.anchor.position_enu, work.input->target},
+              work.input->target_yaw, limits, cancelled);
+          if (!result.prepared.plan) continue;
+          const double age = std::max(0., (clock_()-work.preview_state.sample_stamp_ns)*1e-9);
+          if (!governor || motion_reference_preview_risk(*result.prepared.plan,
+                work.preview_state, limits, age) < limits.tracking_guard.trigger_ratio)
+            break;
+          preview_rejected = true;
+          result.prepared.plan.reset();
+        }
+        if (!result.prepared.plan && preview_rejected)
+          result.prepared.reason = "REFERENCE_GOVERNOR_NO_CANDIDATE";
       } else {
         const double elapsed = std::max(
             0., (clock_() - work.validation.start_ros_ns) * 1e-9);
@@ -313,6 +357,8 @@ void MotionRuntime::run() {
   std::shared_ptr<const MotionRuntimeInput> failed_context;
   std::string prepare_failure;
   int64_t stopped_since = 0;
+  MotionTrackingRecovery tracking_recovery;
+  uint64_t handled_soft_stop = 0;
   auto next = std::chrono::steady_clock::now();
   while (running_) {
     next += std::chrono::milliseconds(20);
@@ -344,6 +390,7 @@ void MotionRuntime::run() {
         throw std::invalid_argument("MOTION_AUTHORIZATION_SESSION_MISMATCH");
       if (!initialized || session != in->session ||
           reset_serial != observed_reset) {
+        const bool new_session = session != in->session;
         cancel_work();
         outstanding = 0;
         retire_work(active_work);
@@ -363,6 +410,9 @@ void MotionRuntime::run() {
         observed_velocity_axes.setZero();
         observed_context.reset();
         stopped_since = 0;
+        if (new_session) tracking_recovery.reset();
+        else tracking_recovery.rebind_execution_serial();
+        handled_soft_stop = 0;
       }
       if (observed_context && !same_planning_context(*observed_context, *in)) {
         observed_position_sigma = observed_velocity_sigma = 0;
@@ -452,6 +502,19 @@ void MotionRuntime::run() {
         accepted = std::numeric_limits<uint64_t>::max();
       }
       auto update = executor_.update(checked_state, in->domain, now, steady);
+      tracking_recovery.update(update, checked_state, in->limits.tracking_guard,
+                               steady, in->max_tracking_recovery_attempts);
+      if (update.tracking_soft_stop_serial > handled_soft_stop) {
+        handled_soft_stop = update.tracking_soft_stop_serial;
+        // Neither a late worker result nor a changed mission generation can
+        // bridge the recovery latch. Retain executor-owned stop and history.
+        cancel_work();
+        outstanding = 0;
+        retire_work(active_work);
+        retire_input(failed_context);
+        if (result) { retire_input(result->work.input); result.reset(); }
+        accepted = std::numeric_limits<uint64_t>::max();
+      }
       if (update.valid && checked_state.healthy) {
         // A transient observed peak can disappear before the vehicle stops.
         // Remember valid inputs as a floor for the NEXT complete proof, not
@@ -470,6 +533,7 @@ void MotionRuntime::run() {
         budget.state_epoch = in->state.epoch;
         budget.map_epoch = in->domain.epoch;
         budget.limits = in->limits;
+        budget.strict_limits = in->strict_limits;
         budget.column = in->domain.column;
         budget.certificate_kind=in->domain.certificate_kind;
         budget.authorization_revision=in->domain.authorization_revision;
@@ -497,7 +561,12 @@ void MotionRuntime::run() {
         stopped_since = 0;
       const bool settled = stopped_since &&
           (steady - stopped_since) * 1e-9 >= in->settle_dwell_s;
-      if (in->request_strict_promotion && update.valid && update.stopped && settled &&
+      if (in->strict_limits && in->domain.ground_support && update.valid && update.mode == MotionMode::Hold) {
+        update.strict_promotion_ready = executor_.can_promote_to_strict(checked_state,
+            in->domain, *in->strict_limits, now, steady, &update.strict_promotion_reason);
+      }
+      if (!tracking_recovery.blocked() && in->request_strict_promotion &&
+          update.valid && update.stopped && settled &&
           update.strict_promotion_ready && in->domain.ground_support) {
         std::shared_ptr<const MotionRuntimeInput> replaced;
         bool promoted=false;
@@ -506,7 +575,8 @@ void MotionRuntime::run() {
           if (input_ && publication_context_matches(*in,*input_) &&
               reset_serial_==observed_reset) {
             std::string rejection;
-            if (executor_.promote_to_strict(checked_state,in->domain,now,steady,&rejection)) {
+            const auto target = in->strict_limits.value_or(in->limits);
+            if (executor_.promote_to_strict(checked_state,in->domain,target,now,steady,&rejection)) {
               StrictPromotion latch;
               latch.session=in->session;
               latch.state_epoch=in->state.epoch;
@@ -515,6 +585,8 @@ void MotionRuntime::run() {
               latch.column=in->domain.column;
               latch.source_column=in->domain.column;
               latch.source_ground=in->domain.ground_support;
+              latch.source_limits=in->limits;
+              if (in->strict_limits) latch.target_limits=target;
               if (latch.column)
                 latch.column->z_min_m=std::max(latch.column->z_min_m,
                     latch.source_ground->plane_z_m+latch.source_ground->plane_error_m);
@@ -527,6 +599,8 @@ void MotionRuntime::run() {
                   copy->domain.column->z_min_m=std::max(copy->domain.column->z_min_m,
                       latch.source_ground->plane_z_m+latch.source_ground->plane_error_m);
                 copy->domain.ground_support.reset();
+                if (latch.target_limits) copy->limits=*latch.target_limits;
+                copy->max_tracking_recovery_attempts=0;
                 copy->request_strict_promotion=false;
                 return copy;
               };
@@ -553,7 +627,8 @@ void MotionRuntime::run() {
           update.strict_promotion_reason="STRICT_PROMOTION_ACK";
         }
       }
-      if (result && result->work.kind == WorkKind::Prepare && in->permit &&
+      if (!tracking_recovery.blocked() && result &&
+          result->work.kind == WorkKind::Prepare && in->permit &&
           update.valid && update.stopped && settled &&
           accepted != in->generation) {
         std::string reason;
@@ -570,6 +645,10 @@ void MotionRuntime::run() {
           update = executor_.update(checked_state, in->domain, now, steady);
           stopped_since = 0;
         } else {
+          if (!result->prepared.plan && result->prepared.reason == "REFERENCE_GOVERNOR_NO_CANDIDATE") {
+            executor_.request_tracking_hold();
+            update = executor_.update(checked_state, in->domain, now, steady);
+          }
           update.reason = "MOTION_PLAN_UNAVAILABLE: " +
               (result->prepared.plan ? reason : result->prepared.reason);
           prepare_failure = update.reason;
@@ -591,13 +670,15 @@ void MotionRuntime::run() {
           work.validation = std::move(*validation);
           outstanding = submit_work(work);
           active_work = std::move(work);
-        } else if (in->permit && update.valid && update.stopped && settled &&
+        } else if (!tracking_recovery.blocked() && in->permit &&
+                   update.valid && update.stopped && settled &&
                    accepted != in->generation) {
           if (failed_context)
             update.reason = prepare_failure;
           else {
             Work work;
             work.anchor = checked_state;
+            work.preview_state = checked_state;
             work.anchor.position_sigma_m = std::max(
                 work.anchor.position_sigma_m, observed_position_sigma);
             work.anchor.velocity_sigma_mps = std::max(
@@ -652,6 +733,10 @@ void MotionRuntime::run() {
           }
         }
       }
+      // An accept/promotion update above replaces the report; preserve the
+      // session diagnostics without advancing recovery dwell a second time.
+      tracking_recovery.update(update, checked_state, in->limits.tracking_guard,
+                               steady, in->max_tracking_recovery_attempts);
       {
         std::lock_guard<std::mutex> lock(mutex_);
         if (input_ && publication_context_matches(*in, *input_) &&

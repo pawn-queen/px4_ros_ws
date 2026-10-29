@@ -79,3 +79,19 @@ python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
 补齐采样时间、解锁事件时限、会话/epoch/模型版本、异步结果失效、慢速过渡与失败降落证据。修复测试探索60秒误用整趟飞行预算的问题：共享 `explore_max_duration_s=300` 保留，新增 `explore_task_duration_s` 从首次 EXPLORE 开始；默认0，测试显式60。严格交接前需要结束任务时直接降落，不携带地面证书返航。
 
 原理、参数及坐标关系见 [TAKEOFF_GROUND_SUPPORT.md](TAKEOFF_GROUND_SUPPORT.md)。静态与软件通过不能替代实际飞行；当前实飞仍触发原跟踪保护，后续阶段没有通过，详见 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。
+
+## 2026-10-29：起飞响应同步
+
+本轮在上述地面支持证书上增加启动意图/物理响应分离、采样时间预测风险及BRAKING→HOLD恢复锁存、一次性完整过渡预算和独立SITL控制标定。首次上升采用已发布HOLD偏航，保持地面禁止转向；物理响应要求实际起落架净空下界、新导航样本及新鲜离地状态，预测交接不能代替实时严格ACK。完整设计、参数、默认launch与审计后临时profile的区别见 [TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)。
+
+506项直接软件回归通过；实际电厂全部五个允许积分候选失败，未冻结配置，主链仍未通过。本轮不修改PX4源码、硬件缺省、场景、碰撞或ROI，不提交/推送。失败日志及下一步边界见 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。
+
+## 2026-10-29续改：SITL过渡白名单与严格交接证据
+
+A—D过渡策略与严格策略分别作为不可变limits输入，绑定policy ID/revision、session、epoch与支持模型，纳入worker/缓存/发布复核。严格ACK重新证明完整目标停止形状与风险，原子恢复严格策略，不重置参考。停止查询用圆角扫掠体筛除确实不相交的方盒角部，未知/占据接触继续拒绝；保留外框与实际形状的独立输出。
+
+参考管理仅在过渡停稳HOLD选择1.0/1.25时间倍率；无候选进入有限恢复。固定预算计入5秒等待和最坏1.25倍率为44.125秒，向上取整45秒，任务中不续期。审计后的D允许0.48m，严格阶段恢复0.50m；地图余量/协方差倍率未降低。
+
+ACK新增不可变状态/参考/包络/策略快照及源采样时间；验收独立匹配导航、发布与接触边界。修正float32/NumPy布尔类型适配、微小偏航/横移数值差产生禁止运动的规划缺陷。依赖显式声明python3-numpy。参数仅IDLE修改，原顶层状态/话题保留，PX4与硬件缺省不改。
+
+原理与论文借鉴见[TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)。524项软件回归通过；实际20候选均未过初扫，5次严格ACK子项通过不代表整体任务通过。完整证据及剩余控制/导航/时钟问题见[ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。

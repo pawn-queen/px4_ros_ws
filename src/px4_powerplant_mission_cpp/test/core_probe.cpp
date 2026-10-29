@@ -1,6 +1,7 @@
 // Test-only line-delimited JSON bridge to compare native algorithms with the
 // retained Python oracle.
 #include "px4_powerplant_mission_cpp/ros_support.hpp"
+#include "px4_powerplant_mission_cpp/motion.hpp"
 #include <iostream>
 #include <set>
 using namespace powerplant;
@@ -75,6 +76,32 @@ ExplorationConfig configuration(const JsonValue &p) {
 }
 JsonValue execute(const JsonValue &p) {
   std::string op = p["op"].asString();
+  if (op == "tracking_policy_replay") {
+    auto rows=array();
+    for (const auto &sample:p["samples"]) {
+      MotionState state;
+      state.position_enu=point(sample["position_error_enu_m"]);
+      state.velocity_enu=point(sample["velocity_error_enu_mps"]);
+      state.position_sigma_m=sample["position_sigma_certificate_m"].asDouble();
+      state.velocity_sigma_mps=sample["velocity_sigma_certificate_mps"].asDouble();
+      state.position_covariance_enu_m2=point(sample["position_axis_sigma_certificate_m"]).array().square().matrix().asDiagonal();
+      state.linear_velocity_covariance_enu_m2ps2=point(sample["velocity_axis_sigma_certificate_mps"]).array().square().matrix().asDiagonal();
+      MotionLimits strict;strict.tracking_position_tolerance_m=.1;
+      MotionSample reference;
+      auto row=object();
+      for (const auto &id:{"legacy","A","B","C","D"}) {
+        const auto limits=takeoff_transition_limits(strict,id);
+        auto value=object();
+        value["risk"]=motion_tracking_risk_ratio(state,reference,limits);
+        auto instantaneous=limits;instantaneous.reaction_time_s=0.;
+        value["hard_accepted"]=motion_tracking_risk_ratio(state,reference,instantaneous)<=1.;
+        value["soft_triggered"]=value["risk"].asDouble()>=limits.tracking_guard.trigger_ratio;
+        row[id]=value;
+      }
+      rows.append(row);
+    }
+    return rows;
+  }
   if (op == "voxel") {
     VoxelGrid grid;
     grid.resolution = p["resolution"].asDouble();

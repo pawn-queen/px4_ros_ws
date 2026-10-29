@@ -48,6 +48,17 @@ void validate_limits(const MotionLimits &l) {
       l.brake_horizontal_mps2 > l.max_horizontal_acceleration_mps2 ||
       l.brake_vertical_mps2 > l.max_vertical_acceleration_mps2)
     throw std::invalid_argument("invalid motion body, brake or checking limits");
+  const auto &guard = l.tracking_guard;
+  if (!std::isfinite(l.reference_duration_scale) || l.reference_duration_scale < 1 ||
+      l.reference_duration_scale > 1.25)
+    throw std::invalid_argument("invalid reference duration scale");
+  if (!std::isfinite(guard.trigger_ratio) || !std::isfinite(guard.recover_ratio) ||
+      guard.recover_ratio <= 0 || guard.recover_ratio >= guard.trigger_ratio ||
+      guard.trigger_ratio >= 1 || !std::isfinite(guard.recovery_wait_s) ||
+      !std::isfinite(guard.recovery_dwell_s) || guard.recovery_wait_s <= 0 ||
+      guard.recovery_dwell_s < 0 || guard.recovery_dwell_s > guard.recovery_wait_s ||
+      guard.recovery_min_samples < 3)
+    throw std::invalid_argument("invalid motion tracking recovery policy");
 }
 
 bool finite_state(const MotionState &s) {
@@ -84,7 +95,7 @@ double leg_time(const Vec3 &delta, double yaw_delta, const MotionLimits &l) {
   const double angle = std::abs(yaw_delta);
   if (horizontal < 1e-12 && vertical < 1e-12 && angle < 1e-12)
     return 0;
-  return std::max(
+  return l.reference_duration_scale * std::max(
       {.02, l.minimum_leg_duration_s,
        max_first_derivative * horizontal / l.max_horizontal_velocity_mps,
        max_first_derivative * vertical / l.max_vertical_velocity_mps,
@@ -166,6 +177,40 @@ bool ground_contains(const MotionSafetyDomain &domain, const Vec3 &minimum,
   return column_contains(*domain.column, air_min, air_max);
 }
 
+bool column_contains_shape(const ConfirmedColumn &column,
+                           const MotionSafetyBox &box, bool support = false,
+                           double support_top = 0.) {
+  if (!box.rounded) {
+    Vec3 lo = box.minimum, hi = box.maximum;
+    if (support) { lo.z() = std::max(lo.z(), support_top); hi.z() = std::max(hi.z(), support_top); }
+    return column_contains(column, lo, hi);
+  }
+  const double lo = support ? std::max(box.minimum.z(), support_top) : box.minimum.z();
+  const double hi = support ? std::max(box.maximum.z(), support_top) : box.maximum.z();
+  if (!column.confirmed || !column.center_enu.allFinite() ||
+      !std::isfinite(column.radius_m) || column.radius_m <= 0 ||
+      !std::isfinite(column.z_min_m) || !std::isfinite(column.z_max_m) ||
+      column.z_min_m >= column.z_max_m || lo < column.z_min_m || hi > column.z_max_m)
+    return false;
+  const double x = std::max(std::abs(box.reference_minimum.x()-column.center_enu.x()),
+                            std::abs(box.reference_maximum.x()-column.center_enu.x()));
+  const double y = std::max(std::abs(box.reference_minimum.y()-column.center_enu.y()),
+                            std::abs(box.reference_maximum.y()-column.center_enu.y()));
+  return std::hypot(x, y) + box.horizontal_radius_m <= column.radius_m + 1e-12;
+}
+
+bool rounded_intersects_cell(const MotionSafetyBox &box, const Vec3 &lo,
+                             const Vec3 &hi, double epsilon) {
+  if (!box.rounded) return true;
+  double squared = 0.;
+  for (int axis = 0; axis < 2; ++axis) {
+    const double gap = std::max({0., lo[axis]-box.reference_maximum[axis],
+                                     box.reference_minimum[axis]-hi[axis]});
+    squared += gap*gap;
+  }
+  return squared <= std::pow(box.horizontal_radius_m+epsilon, 2);
+}
+
 bool plan_authorization_matches(const MotionSafetyDomain &domain,
                                  const MotionPlan &plan) {
   return domain.certificate_kind == plan.certificate_kind &&
@@ -187,6 +232,15 @@ bool authorize_box(const MotionSafetyDomain &domain, const MotionSafetyBox &box,
   if (!box.minimum.allFinite() || !box.maximum.allFinite() ||
       (box.minimum.array() > box.maximum.array()).any()) {
     reason = "INVALID_MOTION_ENVELOPE";
+    return false;
+  }
+  if (box.rounded && (!box.reference_minimum.allFinite() ||
+      !box.reference_maximum.allFinite() || !std::isfinite(box.horizontal_radius_m) ||
+      box.horizontal_radius_m < 0 ||
+      (box.reference_minimum.array() > box.reference_maximum.array()).any() ||
+      (box.minimum.head<2>() - (box.reference_minimum.head<2>().array()-box.horizontal_radius_m).matrix()).norm() > 1e-8 ||
+      (box.maximum.head<2>() - (box.reference_maximum.head<2>().array()+box.horizontal_radius_m).matrix()).norm() > 1e-8)) {
+    reason = "INVALID_ROUNDED_MOTION_ENVELOPE";
     return false;
   }
   if (contact_kind(domain.certificate_kind) &&
@@ -221,6 +275,12 @@ bool authorize_box(const MotionSafetyDomain &domain, const MotionSafetyBox &box,
     count *= size_t(length);
   }
   budget -= count;
+  const bool entire_surveyed = domain.column && column_contains_shape(*domain.column, box);
+  const bool entire_supported = contact_kind(domain.certificate_kind) &&
+      ground_geometry_valid(domain) && column_contains_shape(*domain.column, box, true,
+          domain.ground_support->plane_z_m + domain.ground_support->plane_error_m);
+  if ((entire_surveyed || entire_supported) && (!domain.map || domain.map->occupied.empty()))
+    return true; // Complete surveyed shape, with no actual occupied veto to query.
   for (int64_t x = first[0]; x <= last[0]; ++x)
     for (int64_t y = first[1]; y <= last[1]; ++y)
       for (int64_t z = first[2]; z <= last[2]; ++z) {
@@ -231,6 +291,7 @@ bool authorize_box(const MotionSafetyDomain &domain, const MotionSafetyBox &box,
         const Vec3 maximum = cell_max.cwiseMin(box.maximum);
         if ((minimum.array() > maximum.array() + epsilon).any())
           continue;
+        if (!rounded_intersects_cell(box, cell_min, cell_max, epsilon)) continue;
         if (domain.map && domain.map->occupied.count(k)) {
           reason = "OCCUPIED_MOTION_ENVELOPE";
           return false;
@@ -239,9 +300,9 @@ bool authorize_box(const MotionSafetyDomain &domain, const MotionSafetyBox &box,
             domain.map && domain.map_fresh && inside(k, domain.map->bounds) &&
             domain.map->free.count(k);
         const bool surveyed =
-            domain.column && column_contains(*domain.column, minimum, maximum);
-        const bool supported = contact_kind(domain.certificate_kind) &&
-                               ground_contains(domain, minimum, maximum);
+            entire_surveyed || (domain.column && column_contains(*domain.column, minimum, maximum));
+        const bool supported = entire_supported || (contact_kind(domain.certificate_kind) &&
+                               ground_contains(domain, minimum, maximum));
         if (!observed && !surveyed && !supported) {
           reason = !domain.map_fresh && domain.map
                        ? "MOTION_MAP_STALE"
@@ -298,6 +359,10 @@ MotionSafetyBox reserve_box(Vec3 pmin, Vec3 pmax, Vec3 vmin, Vec3 vmax,
         reaction_max + std::max(0.0, stopping_displacement(possible_max, brake[axis]));
   }
   const double horizontal = l.body_radius_m + l.map_margin_m;
+  out.rounded = l.rounded_envelope;
+  out.reference_minimum = out.minimum;
+  out.reference_maximum = out.maximum;
+  out.horizontal_radius_m = horizontal;
   out.minimum.head<2>().array() -= horizontal;
   out.maximum.head<2>().array() += horizontal;
   out.minimum.z() += l.body_z_min_m - l.map_margin_m;
@@ -418,6 +483,115 @@ bool certify_leg(const MotionSafetyDomain &domain, const QuinticMotionLeg &leg,
   return true;
 }
 } // namespace
+
+double motion_tracking_risk_ratio(const MotionState &state,
+                                  const MotionSample &reference,
+                                  const MotionLimits &limits) {
+  const Vec3 position_error = (state.position_enu - reference.position_enu).cwiseAbs();
+  const Vec3 velocity_error = (state.velocity_enu - reference.velocity_enu).cwiseAbs();
+  const auto ratio = [](double error, double bound) {
+    return bound > 0 ? error / bound : (error > 0 ? inf : 0.);
+  };
+  double risk = ratio(position_error.norm() + limits.reaction_time_s * velocity_error.norm(),
+      limits.tracking_position_tolerance_m + limits.sigma_multiplier * state.position_sigma_m);
+  risk = std::max(risk, ratio(velocity_error.norm(),
+      limits.tracking_velocity_tolerance_mps + limits.sigma_multiplier * state.velocity_sigma_mps));
+  const Vec3 position_bound = Vec3::Constant(limits.tracking_position_tolerance_m) +
+      limits.sigma_multiplier * motion_position_axis_sigma_m(state);
+  const Vec3 velocity_bound = Vec3::Constant(limits.tracking_velocity_tolerance_mps) +
+      limits.sigma_multiplier * motion_velocity_axis_sigma_mps(state);
+  for (int axis = 0; axis < 3; ++axis) {
+    risk = std::max(risk, ratio(position_error[axis] +
+        limits.reaction_time_s * velocity_error[axis], position_bound[axis]));
+    risk = std::max(risk, ratio(velocity_error[axis], velocity_bound[axis]));
+  }
+  return risk;
+}
+
+MotionLimits takeoff_transition_limits(const MotionLimits &strict, const std::string &id) {
+  if (id == "legacy") return strict;
+  if (id != "A" && id != "B" && id != "C" && id != "D")
+    throw std::invalid_argument("unknown takeoff policy");
+  auto out = strict;
+  out.policy_id = "takeoff-" + id + "-v2";
+  out.policy_revision = 2;
+  out.tracking_guard.enabled = true;
+  out.tracking_guard.trigger_ratio = .80;
+  out.tracking_guard.recover_ratio = .55;
+  out.tracking_guard.recovery_wait_s = 5.;
+  out.tracking_position_tolerance_m = id == "A" ? .10 : id == "B" ? .12 : .15;
+  out.body_radius_m = id == "D" ? .48 : .50;
+  return out;
+}
+
+double motion_reference_preview_risk(const MotionPlan &plan,
+                                     const MotionState &measured,
+                                     const MotionLimits &limits,
+                                     double sample_age_s) {
+  if (!finite_state(measured) || !std::isfinite(sample_age_s) || sample_age_s < 0)
+    return inf;
+  double maximum = 0.;
+  for (int i = 0; i <= 10; ++i) {
+    const double t = .1 * i;
+    MotionState advisory = measured;
+    advisory.position_enu += measured.velocity_enu * (sample_age_s + t);
+    maximum = std::max(maximum, motion_tracking_risk_ratio(
+        advisory, sample_motion_plan(plan, t), limits));
+  }
+  return maximum;
+}
+
+void MotionTrackingRecovery::reset() { *this = MotionTrackingRecovery{}; }
+
+void MotionTrackingRecovery::update(
+    MotionUpdate &motion, const MotionState &state,
+    const MotionTrackingGuardPolicy &policy, int64_t steady_now,
+    uint32_t maximum_attempts) {
+  if (motion.tracking_soft_stop_serial > observed_serial_) {
+    observed_serial_ = motion.tracking_soft_stop_serial;
+    ++attempts_;
+    active_ = true;
+    wait_started_ns_ = stable_since_ns_ = stable_since_sample_ns_ = last_sample_ns_ = 0;
+    stable_samples_ = 0;
+    reason_ = "MOTION_TRACKING_SOFT_BRAKE";
+    if (maximum_attempts && attempts_ > maximum_attempts) {
+      failed_ = true;
+      reason_ = "MOTION_TRACKING_RECOVERY_ATTEMPTS_EXHAUSTED";
+    }
+  }
+  if (active_ && !failed_ && motion.valid && motion.mode == MotionMode::Hold) {
+    if (!wait_started_ns_) wait_started_ns_ = steady_now;
+    const bool recovered_sample = motion.stopped && state.healthy &&
+        std::isfinite(motion.tracking_risk_ratio) &&
+        motion.tracking_risk_ratio <= policy.recover_ratio;
+    if (!recovered_sample) {
+      stable_since_ns_ = stable_since_sample_ns_ = 0;
+      stable_samples_ = 0;
+      reason_ = "MOTION_TRACKING_RECOVERY_WAIT";
+    } else if (state.sample_stamp_ns > last_sample_ns_) {
+      if (!stable_since_ns_) {
+        stable_since_ns_ = steady_now;
+        stable_since_sample_ns_ = state.sample_stamp_ns;
+      }
+      ++stable_samples_;
+      last_sample_ns_ = state.sample_stamp_ns;
+      reason_ = "MOTION_TRACKING_RECOVERY_DWELL";
+    }
+    if (stable_since_ns_ && stable_samples_ >= policy.recovery_min_samples &&
+        (steady_now - stable_since_ns_) * 1e-9 >= policy.recovery_dwell_s &&
+        (state.sample_stamp_ns - stable_since_sample_ns_) * 1e-9 >= policy.recovery_dwell_s) {
+      active_ = false;
+      reason_ = "MOTION_TRACKING_RECOVERED_REPLAN";
+    } else if ((steady_now - wait_started_ns_) * 1e-9 >= policy.recovery_wait_s) {
+      failed_ = true;
+      reason_ = "MOTION_TRACKING_RECOVERY_TIMEOUT";
+    }
+  }
+  motion.tracking_recovery_active = active_;
+  motion.tracking_recovery_failed = failed_;
+  motion.tracking_recovery_attempts = attempts_;
+  motion.tracking_recovery_reason = reason_;
+}
 
 Vec3 motion_position_axis_sigma_m(const MotionState &state) {
   Vec3 bounds = axis_sigma(state.position_covariance_enu_m2, state.position_sigma_m);
@@ -667,6 +841,8 @@ bool motion_plan_is_authorized(const MotionSafetyDomain &domain,
   std::string error;
   bool okay = false;
   try {
+    if (plan.policy_id != limits.policy_id || plan.policy_revision != limits.policy_revision)
+      throw std::invalid_argument("MOTION_POLICY_REVISION_CHANGED");
     validate_limits(limits);
     check_cancel(cancel);
     if (!std::isfinite(elapsed_s) || elapsed_s < 0 ||
@@ -717,17 +893,21 @@ MotionPlanResult build_motion_plan(const MotionSafetyDomain &domain,
     }
     Path requested{state.position_enu};
     requested.insert(requested.end(), path.begin(), path.end());
-    requested = merge_collinear(requested);
     if (contact_kind(domain.certificate_kind)) {
       const auto &g=*domain.ground_support;
       if (std::abs(wrap_pi(goal_yaw-state.yaw_rad))>1e-6) {
         out.reason="GROUND_SUPPORT_YAW_MOTION_FORBIDDEN"; return out;
       }
+      // Accepted roundoff is not permission to generate a tiny turn. The
+      // live ground certificate forbids any yaw/lateral motion, so construct
+      // the permitted trajectory on the issued HOLD axis exactly. Runtime
+      // supplies that reference as the anchor, never a noisy remeasurement.
+      goal_yaw = state.yaw_rad;
       for (size_t index=0;index<requested.size();++index) {
         if (requested[index].z()-g.ground_reference_enu.z()>g.max_rise_m+1e-9) {
           out.reason="GROUND_SUPPORT_MAX_RISE_EXCEEDED"; return out;
         }
-        if (index && ((requested[index]-requested[index-1]).head<2>().norm()>1e-6 ||
+        if (index && ((requested[index]-state.position_enu).head<2>().norm()>1e-6 ||
                       requested[index].z()<requested[index-1].z()-1e-8)) {
           out.reason="GROUND_SUPPORT_REQUIRES_VERTICAL_ASCENT"; return out;
         }
@@ -735,9 +915,15 @@ MotionPlanResult build_motion_plan(const MotionSafetyDomain &domain,
             (domain.certificate_kind!=MotionCertificateKind::LiftoffTransition || !state.armed)) {
           out.reason="GROUND_SUPPORT_REQUIRES_LIFTOFF_STAGE"; return out;
         }
+        requested[index].head<2>() = state.position_enu.head<2>();
+        if (index) requested[index].z() = std::max(requested[index].z(),requested[index-1].z());
       }
     }
+    requested = merge_collinear(requested);
     MotionPlan plan;
+    plan.policy_id = limits.policy_id;
+    plan.policy_revision = limits.policy_revision;
+    plan.reference_duration_scale = limits.reference_duration_scale;
     plan.route.push_back(state.position_enu);
     plan.goal_yaw_rad = wrap_pi(goal_yaw);
     plan.epoch = domain.epoch;
@@ -865,6 +1051,8 @@ void MotionExecutor::reset(const MotionState &state, const MotionLimits &limits)
   reason_.clear();
   start_ros_ns_ = brake_ros_ns_ = last_ros_ns_ = last_steady_ns_ = 0;
   clock_progress_steady_ns_ = 0;
+  strict_promotion_stamp_ns_ = 0;
+  strict_ack_.reset();
   epoch_ = state.epoch;
   domain_epoch_ = 0;
   checked_revision_ = -1;
@@ -875,6 +1063,8 @@ void MotionExecutor::reset(const MotionState &state, const MotionLimits &limits)
   validation_pending_since_ = 0;
   ++plan_serial_;
   brake_duration_s_ = 0;
+  tracking_risk_ratio_ = 0;
+  tracking_soft_stop_serial_ = 0;
   reference_history_.clear();
   hold_started_ros_ns_ = 0;
   stopping_envelope_.reset();
@@ -897,6 +1087,8 @@ bool MotionExecutor::accept(const MotionPlan &plan, const MotionState &state,
       return reject("MOTION_FAULT_REQUIRES_EXPLICIT_RESET");
     if (last_ros_ns_ && ros_now < last_ros_ns_)
       return reject("MOTION_CLOCK_REVERSED");
+    if (plan.policy_id != limits.policy_id || plan.policy_revision != limits.policy_revision)
+      return reject("MOTION_POLICY_REVISION_CHANGED");
     if (!finite_state(state) || plan.legs.empty() || plan.route.empty() ||
         plan.epoch != domain.epoch || !plan_authorization_matches(domain,plan) ||
         plan.state_epoch != state.epoch ||
@@ -989,6 +1181,8 @@ bool MotionExecutor::accept_prepared(
   };
   try {
     validate_limits(limits);
+    if (plan.policy_id != limits.policy_id || plan.policy_revision != limits.policy_revision)
+      return reject("MOTION_POLICY_REVISION_CHANGED");
     if (mode_ == MotionMode::Fault)
       return reject("MOTION_FAULT_REQUIRES_EXPLICIT_RESET");
     if (last_ros_ns_ && ros_now < last_ros_ns_)
@@ -1046,6 +1240,7 @@ bool MotionExecutor::accept_prepared(
       begin_reference_phase(MotionMode::Hold, state.sample_stamp_ns, sample_);
     plan_ = std::make_shared<const MotionPlan>(plan);
     limits_ = limits;
+    limits_.reference_duration_scale = plan.reference_duration_scale;
     authorized_ = true;
     mode_ = MotionMode::Tracking;
     stop_requested_ = false;
@@ -1136,6 +1331,7 @@ MotionMode MotionExecutor::mode() const {
 
 MotionUpdate MotionExecutor::result(const MotionState &state) const {
   MotionUpdate out;
+  out.effective_limits = limits_;
   out.sample = sample_;
   out.mode = mode_;
   out.reason = reason_;
@@ -1150,31 +1346,110 @@ MotionUpdate MotionExecutor::result(const MotionState &state) const {
                         limits_.sigma_multiplier * state.position_sigma_m &&
                 position_within_axis_bounds(state, sample_.position_enu, limits_);
   out.stop_time_s = brake_duration_s_;
+  out.tracking_risk_ratio = tracking_risk_ratio_;
+  out.tracking_soft_stop_serial = tracking_soft_stop_serial_;
+  out.policy_id = limits_.policy_id;
+  out.policy_revision = limits_.policy_revision;
+  out.reference_duration_scale = plan_ ? plan_->reference_duration_scale : limits_.reference_duration_scale;
   out.stopping_envelope = stopping_envelope_;
   out.stop_margin_lower_bound_m = stop_margin_lower_bound_m_;
   out.certificate_kind=out.valid ? certificate_kind_ : MotionCertificateKind::None;
   out.authorization_revision=authorization_revision_;
+  out.strict_promotion_stamp_ns = strict_promotion_stamp_ns_;
+  out.strict_ack = strict_ack_;
   return out;
+}
+
+std::string MotionExecutor::strict_target_reason(
+    const MotionState &state, const MotionSafetyDomain &domain,
+    const MotionLimits &target, int64_t ros_now, int64_t steady_now,
+    MotionSafetyBox *checked) const {
+  const auto current=result(state);
+  if (!current.valid || !current.stopped || mode_!=MotionMode::Hold ||
+      !stopping_envelope_)
+    return std::string("STRICT_HANDOFF_REQUIRES_SETTLED_HOLD");
+  if (domain.authorization_revision!=authorization_revision_ ||
+      domain.certificate_kind!=certificate_kind_)
+    return std::string("STRICT_HANDOFF_AUTHORIZATION_CHANGED");
+  try { validate_limits(target); } catch (const std::exception &e) { return std::string(e.what()); }
+  if (!finite_state(state) ||
+      (state.position_enu-sample_.position_enu).norm() > target.tracking_position_tolerance_m + target.sigma_multiplier*state.position_sigma_m ||
+      !position_within_axis_bounds(state, sample_.position_enu, target) ||
+      !velocity_within_axis_bounds(state, sample_.velocity_enu, target) ||
+      (state.velocity_enu-sample_.velocity_enu).norm() > target.tracking_velocity_tolerance_mps + target.sigma_multiplier*state.velocity_sigma_mps ||
+      state.velocity_enu.norm() > target.stop_speed_mps)
+    return std::string("STRICT_POLICY_TRACKING_NOT_READY");
+  if ((target.policy_id != limits_.policy_id || target.policy_revision != limits_.policy_revision) &&
+      motion_tracking_risk_ratio(state, sample_, target) >= target.tracking_guard.trigger_ratio)
+    return std::string("STRICT_POLICY_SOFT_RISK_NOT_READY");
+  const double age = std::max((ros_now-state.sample_stamp_ns)*1e-9,
+                              (steady_now-state.receipt_steady_ns)*1e-9);
+  if (age < 0 || age > target.max_state_age_s)
+    return std::string("STRICT_POLICY_STATE_STALE");
+  const auto target_box = reserve_box(sample_.position_enu.cwiseMin(state.position_enu),
+      sample_.position_enu.cwiseMax(state.position_enu),
+      sample_.velocity_enu.cwiseMin(state.velocity_enu),
+      sample_.velocity_enu.cwiseMax(state.velocity_enu), state, target, age);
+  const auto error=strict_handoff_reason(state,domain,target,target_box,ros_now,steady_now);
+  if (!error.empty()) return error;
+  if (checked) *checked = target_box;
+  return {};
+}
+
+bool MotionExecutor::can_promote_to_strict(
+    const MotionState &state, const MotionSafetyDomain &domain,
+    const MotionLimits &target, int64_t now, int64_t steady, std::string *reason) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto error = strict_target_reason(state, domain, target, now, steady, nullptr);
+  if (reason) *reason = error;
+  return error.empty();
+}
+
+void MotionExecutor::request_tracking_hold() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (mode_ == MotionMode::Hold && authorized_) {
+    ++tracking_soft_stop_serial_;
+    reason_ = "MOTION_REFERENCE_GOVERNOR_WAIT";
+  }
 }
 
 bool MotionExecutor::promote_to_strict(
     const MotionState &state,const MotionSafetyDomain &domain,
     int64_t ros_now,int64_t steady_now,std::string *reason) {
+  MotionLimits current;
+  { std::lock_guard<std::mutex> lock(mutex_); current = limits_; }
+  return promote_to_strict(state, domain, current, ros_now, steady_now, reason);
+}
+
+bool MotionExecutor::promote_to_strict(
+    const MotionState &state,const MotionSafetyDomain &domain,
+    const MotionLimits &target, int64_t ros_now,int64_t steady_now,std::string *reason) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto reject=[&](const std::string &error){if(reason)*reason=error;return false;};
-  const auto current=result(state);
-  if (!current.valid || !current.stopped || mode_!=MotionMode::Hold ||
-      !stopping_envelope_)
-    return reject("STRICT_HANDOFF_REQUIRES_SETTLED_HOLD");
-  if (domain.authorization_revision!=authorization_revision_ ||
-      domain.certificate_kind!=certificate_kind_)
-    return reject("STRICT_HANDOFF_AUTHORIZATION_CHANGED");
-  const auto error=strict_handoff_reason(state,domain,limits_,*stopping_envelope_,ros_now,steady_now);
+  MotionSafetyBox target_box;
+  const auto error = strict_target_reason(state, domain, target, ros_now, steady_now, &target_box);
   if (!error.empty()) return reject(error);
   const auto strict=strict_domain(domain);
+  auto ack = std::make_shared<MotionStrictAcknowledgement>();
+  ack->ros_stamp_ns = ros_now;
+  ack->steady_stamp_ns = steady_now;
+  ack->authorization_revision = strict.authorization_revision;
+  ack->session = domain.ground_support ? domain.ground_support->session : 0;
+  ack->survey_revision = domain.ground_support ? domain.ground_support->survey_revision : 0;
+  ack->map_epoch = domain.epoch;
+  ack->map_revision = domain.revision;
+  ack->state = state;
+  ack->reference = sample_;
+  ack->stopping_envelope = target_box;
+  ack->limits = target;
+  ack->tracking_risk_ratio = motion_tracking_risk_ratio(state, sample_, target);
   certificate_kind_=strict.certificate_kind;
   authorization_revision_=strict.authorization_revision;
   authorization_ground_.reset();
+  limits_ = target;
+  strict_promotion_stamp_ns_ = ros_now;
+  strict_ack_ = std::move(ack);
+  stopping_envelope_ = target_box;
   checked_revision_=domain.revision;
   checked_map_fresh_=domain.map_fresh;
   validation_pending_since_=0;
@@ -1300,6 +1575,7 @@ MotionUpdate MotionExecutor::update(const MotionState &state,
     fail("MOTION_REFERENCE_HISTORY_UNAVAILABLE");
     return result(state);
   }
+  tracking_risk_ratio_ = motion_tracking_risk_ratio(state, *sampled_reference, limits_);
   const double position_error = (state.position_enu - sampled_reference->position_enu).norm();
   const double velocity_error = (state.velocity_enu - sampled_reference->velocity_enu).norm();
   if (position_error > limits_.tracking_position_tolerance_m +
@@ -1371,6 +1647,12 @@ MotionUpdate MotionExecutor::update(const MotionState &state,
     brake_duration_s_ = braking_duration(brake_start_, limits_);
   }
   bool stop = stop_requested_;
+  if (mode_ == MotionMode::Tracking && limits_.tracking_guard.enabled &&
+      tracking_risk_ratio_ >= limits_.tracking_guard.trigger_ratio) {
+    stop = true;
+    ++tracking_soft_stop_serial_;
+    reason_ = "MOTION_TRACKING_SOFT_BRAKE";
+  }
   if (mode_ == MotionMode::Tracking && plan_) {
     // Newly observed obstacles in an already executed corridor do not revoke
     // a future trajectory. The complete current-state stopping envelope was
@@ -1428,7 +1710,7 @@ MotionUpdate MotionExecutor::update(const MotionState &state,
         checked_map_fresh_ = domain.map_fresh;
       }
     }
-    if ((ros_now - start_ros_ns_) * 1e-9 >= plan_->duration_s) {
+    if (!stop && (ros_now - start_ros_ns_) * 1e-9 >= plan_->duration_s) {
       mode_ = MotionMode::Hold;
       plan_.reset();
       reason_ = "MOTION_GOAL_REACHED";

@@ -165,6 +165,20 @@ def test_all_parameter_defaults_match_retained_python(transport, executable, nod
         assert value == expected, name
 
 
+@pytest.mark.parametrize("profile", ["p2_simulation.yaml", "p2_hardware.yaml"])
+def test_ordinary_motion_profile_loads_idle_without_audited_ground_authority(transport, profile):
+    node, launch, wait = transport
+    statuses = []
+    node.create_subscription(String, "/powerplant/control/mission_status",
+                             lambda m: statuses.append(json.loads(m.data)), 10)
+    config = ROOT / "px4_powerplant_mission/config"
+    launch("offboard_mission_node", "@"+str(config/"powerplant.yaml"),
+           "@"+str(config/profile), "use_sim_time:=false")
+    wait(lambda: bool(statuses))
+    assert statuses[-1]["phase"] == "IDLE"
+    assert not statuses[-1]["takeoff_ground_support_enabled"]
+
+
 def test_mapper_stamp_fields_counts_and_cells(transport):
     node, launch, wait = transport
     clouds, statuses, grids = {}, {}, []
@@ -269,6 +283,9 @@ def test_offboard_services_qos_warmup_commands_and_ned_setpoint(transport):
     land_service = node.create_client(Trigger, "/land_powerplant_mission")
     wait(lambda: start.service_is_ready() and land_service.service_is_ready() and statuses)
     assert statuses[-1]["phase"] == "IDLE" and not commands and not heartbeats
+    assert statuses[-1]["sitl_controller_profile_id"] == ""
+    assert statuses[-1]["home_enu_m"] is None
+    assert not statuses[-1]["motion_tracking_recovery_active"]
     reply = start.call_async(Trigger.Request())
     wait(reply.done)
     assert not reply.result().success
@@ -301,6 +318,15 @@ def test_offboard_services_qos_warmup_commands_and_ned_setpoint(transport):
     reply = start.call_async(Trigger.Request())
     wait(reply.done, pump=pump)
     assert reply.result().success
+    policy_client = AsyncParameterClient(node, "powerplant_offboard_mission")
+    wait(policy_client.services_are_ready, pump=pump)
+    from rclpy.parameter import Parameter
+    change = policy_client.set_parameters_atomically([
+        Parameter("motion_tracking_soft_guard_enabled", value=True),
+        Parameter("sitl_controller_profile_id", value="late-profile")])
+    wait(change.done, pump=pump)
+    assert not change.result().result.successful
+    assert "IDLE" in change.result().result.reason
     # Waiting without a first safe certificate is not Offboard prestream time.
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
@@ -320,6 +346,10 @@ def test_offboard_services_qos_warmup_commands_and_ned_setpoint(transport):
     assert all(np.isfinite(v) for v in setpoints[-1].acceleration)
     assert np.isfinite(setpoints[-1].yawspeed)
     assert statuses[-1]["motion_stop_certificate_valid"]
+    assert statuses[-1]["home_enu_m"] == pytest.approx([1., 2., 10.])
+    assert statuses[-1]["takeoff_target_enu_m"] == pytest.approx([1., 2., 15.])
+    assert statuses[-1]["return_home_target_enu_m"] == pytest.approx([1., 2., 15.])
+    assert "motion_tracking_risk_ratio" in statuses[-1]
     assert len(statuses[-1]["linear_velocity_covariance_enu_m2ps2"]) == 9
     assert all(np.isfinite(v) for v in statuses[-1]["linear_velocity_covariance_enu_m2ps2"])
     envelope = statuses[-1]["motion_stopping_envelope_enu"]

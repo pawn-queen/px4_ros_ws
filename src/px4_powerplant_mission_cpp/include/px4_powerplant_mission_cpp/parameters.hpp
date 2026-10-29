@@ -79,6 +79,9 @@ inline void declare_voxel_mapper_parameters(rclcpp::Node &n) {
 }
 inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<bool>("motion_model_configured", false);
+  n.declare_parameter<bool>("motion_rounded_envelope_enabled", false);
+  n.declare_parameter<std::string>("takeoff_transition_policy_id", "legacy");
+  n.declare_parameter<bool>("takeoff_reference_governor_enabled", false);
   n.declare_parameter<double>("motion_max_horizontal_velocity_mps", .6);
   n.declare_parameter<double>("motion_max_vertical_velocity_mps", .3);
   n.declare_parameter<double>("motion_max_horizontal_acceleration_mps2", .5);
@@ -88,6 +91,13 @@ inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<double>("motion_reaction_time_s", .3);
   n.declare_parameter<double>("motion_tracking_position_tolerance_m", .2);
   n.declare_parameter<double>("motion_tracking_velocity_tolerance_mps", .25);
+  n.declare_parameter<bool>("motion_tracking_soft_guard_enabled", false);
+  n.declare_parameter<double>("motion_tracking_soft_trigger_ratio", .60);
+  n.declare_parameter<double>("motion_tracking_soft_recover_ratio", .35);
+  n.declare_parameter<double>("motion_tracking_recovery_wait_s", 3.);
+  n.declare_parameter<double>("motion_tracking_recovery_dwell_s", .3);
+  n.declare_parameter<int64_t>("motion_tracking_recovery_min_samples", 3);
+  n.declare_parameter<int64_t>("takeoff_tracking_max_recoveries", 2);
   n.declare_parameter<double>("motion_sigma_multiplier", 2.);
   n.declare_parameter<double>("motion_map_margin_m", .05);
   n.declare_parameter<double>("motion_body_radius_m", .35);
@@ -110,6 +120,18 @@ inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
   n.declare_parameter<double>("takeoff_ground_land_max_age_s", 2.0);
   n.declare_parameter<double>("takeoff_ground_transition_timeout_s", 12.0);
   n.declare_parameter<double>("takeoff_ground_max_rise_m", .75);
+  // Explicit opt-in; hardware retains its calibrated strict/default policy.
+  n.declare_parameter<bool>("takeoff_response_sync_enabled", false);
+  n.declare_parameter<bool>("takeoff_transition_budget_enabled", false);
+  n.declare_parameter<std::string>("sitl_controller_profile_id", "");
+  n.declare_parameter<double>("takeoff_transition_hard_limit_s", 35.);
+  n.declare_parameter<double>("takeoff_response_probe_height_m", .20);
+  n.declare_parameter<double>("takeoff_response_clearance_m", .05);
+  n.declare_parameter<double>("takeoff_response_dwell_s", .3);
+  n.declare_parameter<int64_t>("takeoff_response_min_samples", 3);
+  n.declare_parameter<double>("takeoff_handoff_min_rise_m", .25);
+  n.declare_parameter<double>("takeoff_handoff_step_m", .05);
+  n.declare_parameter<double>("takeoff_transition_planning_budget_s", .3);
   n.declare_parameter<double>("motion_input_timeout_s", .3);
   n.declare_parameter<double>("motion_landing_reserve_s", 10.);
   n.declare_parameter<double>("offboard_warmup_min_s", 2.);

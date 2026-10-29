@@ -4,6 +4,8 @@
 
 2026-10-26 软件阶段已按当时范围完成测试和旧日志核查；其 316 项软件通过及 CPU17 飞行失败保留在第 5 节。2026-10-28 的 Issue #3 已新增真实电厂入口、碰撞资产锁和局部任务 ROI；本轮实际物理、性能与飞行结果集中维护在 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)，不能由历史记录或新命令推定通过。
 
+2026-10-29起飞响应同步续改已通过506项直接软件回归，但真实电厂五个允许积分候选全部失败，未生成冻结控制配置，主链仍未通过。仿真控制标定、不可续期的35秒过渡预算、物理离地/返航证据及可重放入口见 [TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)；失败原因、有限实际位移及尚未执行的正式三次主链见最新Issue #3验收记录。代码和测试通过不能替代这部分实际证据。
+
 ## 0. 正式场景与任务范围
 
 正式仿真使用 `/home/pawn/drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf` 及锁定的 include 资产；两个回归房间虽同名为 `world name=powerplant`，内容不同，不能替代实际电厂验收。`--scenario powerplant` 解析真实文件并检查 `config/powerplant_assets.json` 的本地可检出提交和递归哈希；资源缺失或版本改变时拒绝旧验收。
@@ -214,3 +216,9 @@ Manifest 记录两套原始/有效 SDF 路径与 SHA256、相机配置尺寸/频
 实际电厂的资产、传感器和任务ROI验证详见[ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。本机需要显式进程级 `GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA` 才实际选到NVIDIA；runner验证日志真实写入进程，不据环境变量判定。
 
 明确CPU5Hz降载场景达到约1.02实时因子并进入SAFE_TAKEOFF，随后因停止包络最低点越过确认柱体下界约1.03mm触发FAULT。此记录不是初扫或完整飞行通过；未调控制/健康门限或扩大授权域来掩盖失败。实际GPU采样方向的离线传感器一致性通过也不意味着在线LaserScan名义角度误差已消失。
+
+## 2026-10-29：仅SITL起飞过渡的风险/几何/参考管理续改
+
+A—D白名单、45秒固定预算、圆角停止几何、停稳HOLD的1.0/1.25参考选择，以及独立严格策略原子交接已实现。不可变ACK证据绑定同一导航采样及实际NED参考；数值微偏航和ROS/NumPy类型适配已修正。硬件缺省、PX4源码、实际电厂、默认ROI及既有主流程保持。
+
+当前524项直接软件用例通过。实际电厂20候选全部未通过起飞初扫，5次仅通过严格ACK瞬间子项；没有HOVER_SCAN或正式自主主链通过。未冻结参数，未执行通过配置的消融、三次主链或独立ROI接入。此为有界标定失败结论，不能用软件回归或落地COMPLETE替代物理验收。详见[实现原理](TAKEOFF_RESPONSE_SYNC.md)、[完整验收](ISSUE3_VALIDATION.md)与`log/issue3_margin_governor/20261029_1336/`。

@@ -20,7 +20,9 @@ import socket
 import struct
 import time
 
-READ_PARAMETERS = ("NAV_DLL_ACT", "COM_DL_LOSS_T", "COM_SPOOLUP_TIME", "MPC_TKO_RAMP_T", "MPC_THR_HOVER", "MPC_Z_VEL_I_ACC")
+READ_PARAMETERS = ("NAV_DLL_ACT", "COM_DL_LOSS_T", "COM_SPOOLUP_TIME", "MPC_TKO_RAMP_T",
+    "MPC_THR_HOVER", "MPC_Z_VEL_I_ACC", "THR_MDL_FAC", "MPC_THR_MAX") + tuple(
+        f"SIM_GZ_EC_{kind}{i}" for i in range(1,5) for kind in ("MIN","MAX"))
 
 
 def heartbeat_link_healthy(running, received, sent, last_autopilot, now):

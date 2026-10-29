@@ -9,6 +9,8 @@ import copy
 import hashlib
 import json
 import math
+import numbers
+import numpy as np
 import os
 from pathlib import Path
 import re
@@ -159,20 +161,34 @@ class ContactEvidence:
         # Their source-time events delimit the actual interval; a later ground
         # status must not excuse a contact sampled after strict promotion.
         timeline=[(x['mission_status_stamp_ns'],0,x) for x in statuses]
-        timeline.extend((x['event_stamp_ns'],1,x) for x in events
-                        if type(x.get('event_stamp_ns')) is int and x['event_stamp_ns']>0
-                        and x.get('phase') and x.get('localization_epoch') is not None)
+        strict_epochs={}
+        for x in events:
+            sample=x.get('event_stamp_ns')
+            if type(sample) is not int or sample<=0 or not x.get('phase') or x.get('localization_epoch') is None:continue
+            if x.get('event')=='takeoff_strict_handoff_complete':
+                actual=x.get('motion_strict_promotion_stamp_ns')
+                if type(actual) is int and 0<actual<=sample and (sample-actual)*1e-9<=self.maximum_age_s:
+                    sample=actual
+                    strict_epochs[x['localization_epoch']]=min(sample,strict_epochs.get(x['localization_epoch'],sample))
+            timeline.append((sample,1,x))
         statuses=[];previous={}
         for sample,kind,row in sorted(timeline,key=lambda item:(item[0],item[1])):
             if kind:
                 if previous.get('localization_epoch')!=row.get('localization_epoch'):
                     continue
                 row={**previous,**row,'mission_status_stamp_ns':sample}
+            strict_since=strict_epochs.get(row.get('localization_epoch'))
+            if strict_since is not None and sample>=strict_since:
+                row={**row,'takeoff_safety_stage':'AIRBORNE_STRICT'}
             previous=row;statuses.append(row)
         times=[x['mission_status_stamp_ns'] for x in statuses]
         sensors={x['topic']:x for x in self.instrumentation.get('sensors',[])}
         support=set(self.instrumentation.get('support_collision_scopes',[]))
-        positive=0;failure_support=0;positive_samples=[];unsafe=[];unknown=[];excluded=0;counts={}
+        positive=0;failure_support=0;positive_samples=[];unsafe=[];unknown=[];excluded=0;counts={};deferred_clock=0
+        received_steps=sorted((r for r in self.world_steps
+            if isinstance(r.get('receipt_wall'),(int,float)) and math.isfinite(r['receipt_wall']) and type(r.get('sample_ns')) is int
+            and not r.get('paused')),key=lambda r:r['receipt_wall'])
+        received_times=[r['receipt_wall'] for r in received_steps]
         for row in self.rows:
             if row.get('before_monitor_clock') is True:
                 excluded+=1;continue
@@ -186,8 +202,21 @@ class ContactEvidence:
                 unknown.append({**row,'reason':'contact has no fresh phase interval'});continue
             epoch=state.get('localization_epoch');phase=state.get('phase');stage=state.get('takeoff_safety_stage')
             clock=row.get('clock_at_receipt_ns')
-            if (not isinstance(clock,int) or not -.05<=(clock-sample)*1e-9<=self.maximum_age_s
-                    or epoch is None):
+            clock_valid=isinstance(clock,int) and -.05<=(clock-sample)*1e-9<=self.maximum_age_s
+            # Evaluation-only bounded waiting: an early contact callback can
+            # precede ROS /clock. Confirm against a later actual world step in
+            # the same phase epoch, not by changing the original clock sample.
+            if (not clock_valid and isinstance(clock,int) and clock<sample
+                    and isinstance(row.get('receipt_wall'),(int,float)) and math.isfinite(row['receipt_wall'])):
+                i=bisect.bisect_left(received_times,row['receipt_wall'])
+                for step in received_steps[i:]:
+                    if step['receipt_wall']-row['receipt_wall']>self.maximum_age_s:break
+                    j=bisect.bisect_right(times,step['sample_ns'])-1
+                    if (0<=step['sample_ns']-sample<=self.maximum_age_s*1e9 and j>=0
+                            and statuses[j].get('localization_epoch')==epoch
+                            and step['sample_ns']-times[j]<=self.maximum_age_s*1e9):
+                        clock_valid=True;deferred_clock+=1;break
+            if not clock_valid or epoch is None:
                 unknown.append({**row,'reason':'contact sampling clock/epoch is unconfirmed'});continue
             first,second=row.get('collision1'),row.get('collision2')
             if first==sensor['scope']:other=second
@@ -234,6 +263,7 @@ class ContactEvidence:
                 'all_in_window_contacts_classified':not unknown,
                 'no_contact_record_overflow':self.dropped==0}
         return {'passed':all(checks.values()),'checks':checks,'allowed_support_contact_count':positive,
+                'deferred_clock_contacts_confirmed':deferred_clock,
                 'prestrict_failure_support_contact_count':failure_support,
                 'unsafe_contact_count':len(unsafe),'unclassified_contact_count':len(unknown),
                 'excluded_before_monitor_ready':excluded,'dropped_contact_records':self.dropped,
@@ -244,7 +274,7 @@ class ContactEvidence:
                 'scope':'actual contact sensor evidence, sample-time phase association and audited landing-gear support; silence alone is not proof'}
 
 
-def takeoff_handoff_evidence(statuses,events,landed_samples,setpoints,support_model,parameters):
+def takeoff_handoff_evidence(statuses,events,landed_samples,setpoints,support_model,parameters,navigation_samples=()):
     """Check the runtime ACK independently of the top-level phase sequence.
 
     The raw stopping box and simultaneous typed certificate are retained. The
@@ -256,15 +286,18 @@ def takeoff_handoff_evidence(statuses,events,landed_samples,setpoints,support_mo
         and type(e.get('event_stamp_ns')) is int),key=lambda e:e['event_stamp_ns'])
     lift=next((e for e in transitions if e['event']=='takeoff_liftoff_transition'),None)
     strict=next((e for e in transitions if e['event']=='takeoff_strict_handoff_complete'),None)
-    stamp=strict['event_stamp_ns'] if strict else 0
+    ack_sample=strict.get('motion_strict_promotion_stamp_ns') if strict else None
+    stamp=ack_sample if type(ack_sample) is int and ack_sample>0 else 0
     epoch=strict.get('localization_epoch') if strict else None
+    ack=strict.get('motion_strict_ack') if strict else None
+    ack=ack if isinstance(ack,dict) else {}
     current=[s for s in statuses if s.get('localization_epoch')==epoch]
     ground=[s for s in current if s.get('takeoff_safety_stage')=='GROUND_CONTACT'
             and type(s.get('mission_status_stamp_ns')) is int and s['mission_status_stamp_ns']<stamp]
     airborne=[s for s in current if s.get('phase') in
               ('HOVER_SCAN','EXPLORE','TARGETING_CYCLE','RETURN_HOME')]
     model_revision=support_model.get('ground_support_parameters',{}).get('takeoff_ground_model_revision')
-    box=strict.get('motion_stopping_envelope_enu') if strict else None
+    box=ack.get('stopping_envelope_enu')
     lower=box.get('minimum_m') if isinstance(box,dict) else None
     lower_z=lower[2] if isinstance(lower,list) and len(lower)==3 else None
     threshold=float(support_model.get('plane_z_enu_m',0))+float(support_model.get('plane_uncertainty_m',0))+float(parameters['motion_map_margin_m'])
@@ -272,19 +305,56 @@ def takeoff_handoff_evidence(statuses,events,landed_samples,setpoints,support_mo
                     and type(r.get('sample_ns')) is int
                     and 0<=(stamp-r['sample_ns'])*1e-9<=float(parameters['takeoff_ground_land_max_age_s'])]
     refs=sorted((r for r in setpoints if type(r.get('timestamp')) is int),key=lambda r:r['timestamp'])
-    before=next((r for r in reversed(refs) if r['timestamp']*1000<=stamp),None)
-    after=next((r for r in refs if r['timestamp']*1000>stamp),None)
+    before=next((r for r in reversed(refs) if r['timestamp']*1000<stamp),None)
+    after=next((r for r in refs if r['timestamp']*1000>=stamp),None)
     continuity={}
     bracket=bool(before and after and 0<(after['timestamp']-before['timestamp'])*1e-6<=.06)
     if bracket:
         for field in ('position','velocity','acceleration'):
             a,b=before.get(field,[]),after.get(field,[])
-            finite=len(a)==len(b)==3 and all(isinstance(v,(int,float)) and math.isfinite(v) for v in a+b)
+            finite=len(a)==len(b)==3 and all(isinstance(v,numbers.Real)
+                and not isinstance(v,bool) and math.isfinite(v) for v in a+b)
             continuity[field+'_jump']=math.dist(a,b) if finite else None
     continuous=bool(bracket and all(isinstance(v,(int,float)) and math.isfinite(v)
                                    and v<=1e-4 for v in continuity.values()))
+    def finite_vector(value):
+        return isinstance(value,(list,tuple)) and len(value)==3 and all(
+            isinstance(v,numbers.Real) and not isinstance(v,bool) and math.isfinite(v) for v in value)
+    state_sample=ack.get('state_sample_ns')
+    nav=next((r for r in navigation_samples if type(state_sample) is int and state_sample>0
+        and r.get('sample_ns')==state_sample and isinstance(r.get('covariance_valid'),(bool,np.bool_))
+        and bool(r['covariance_valid'])
+        and isinstance(r.get('task_identity'),(list,tuple)) and tuple(r['task_identity'])[:1]==(epoch,)),None)
+    state_matches=bool(nav and finite_vector(ack.get('position_enu_m')) and finite_vector(ack.get('velocity_enu_mps'))
+        and finite_vector(nav.get('position')) and finite_vector(nav.get('velocity'))
+        and math.dist(nav['position'],ack['position_enu_m'])<=1e-5
+        and math.dist(nav['velocity'],ack['velocity_enu_mps'])<=1e-5
+        and math.dist(nav['velocity'],[0,0,0])<=float(parameters.get('motion_settle_speed_mps',.08))
+        and 0<=(stamp-nav['sample_ns'])*1e-9<=min(float(parameters.get('max_localization_age_s',.5)),float(parameters.get('motion_input_timeout_s',.5))))
+    named=parameters.get('takeoff_transition_policy_id','legacy')!='legacy'
+    policy_fields={'position_tolerance_m':parameters.get('motion_tracking_position_tolerance_m',.1),
+        'body_radius_m':parameters.get('motion_body_radius_m',.5),
+        'map_margin_m':parameters.get('motion_map_margin_m',.05),
+        'sigma_multiplier':parameters.get('motion_sigma_multiplier',2.),
+        'soft_trigger_ratio':parameters.get('motion_tracking_soft_trigger_ratio',.6),
+        'recover_ratio':parameters.get('motion_tracking_soft_recover_ratio',.35),
+        'recovery_wait_s':parameters.get('motion_tracking_recovery_wait_s',3.)}
+    ack_policy=bool(ack.get('policy_id')==('airborne-strict-v2' if named else 'strict')
+        and ack.get('policy_revision')==(2 if named else 0)
+        and ack.get('reference_governor_enabled') is False
+        and all(type(ack.get(k)) in (int,float) and math.isfinite(ack[k]) and abs(ack[k]-v)<1e-9 for k,v in policy_fields.items())
+        and type(ack.get('tracking_risk_ratio')) in (int,float)
+        and math.isfinite(ack['tracking_risk_ratio']) and 0<=ack['tracking_risk_ratio']<policy_fields['soft_trigger_ratio'])
+    publication_matches=False
+    if bracket and ack:
+        pairs=(('position','reference_position_enu_m'),('velocity','reference_velocity_enu_mps'),
+               ('acceleration','reference_acceleration_enu_mps2'))
+        publication_matches=all(finite_vector(after.get(field)) and finite_vector(ack.get(key)) and
+            math.dist([after[field][1],after[field][0],-after[field][2]],ack[key])<=1e-4 for field,key in pairs)
     checks={
         'support_model_verified':support_model.get('verified') is True and support_model.get('passed') is True,
+        'executor_ack_timestamp_confirmed':bool(strict and stamp>0 and ack.get('stamp_ns')==stamp
+            and 0<=(strict['event_stamp_ns']-stamp)*1e-9<=.3),
         'audited_ground_stage_observed':bool(ground and model_revision and all(
             s.get('takeoff_ground_model_revision')==model_revision for s in ground)),
         'ordered_liftoff_then_strict_ack':bool(lift and strict and lift['event_stamp_ns']<stamp
@@ -294,10 +364,17 @@ def takeoff_handoff_evidence(statuses,events,landed_samples,setpoints,support_mo
             and strict.get('motion_certificate_kind')=='AIRBORNE_STRICT'
             and strict.get('motion_stop_certificate_valid') is True
             and strict.get('motion_contact_certificate_valid') is False
-            and strict.get('motion_stopped') is True and strict.get('motion_mode')=='HOLD'
+            and ack.get('certificate_kind')=='AIRBORNE_STRICT'
+            and ack.get('stopped') is True and ack.get('mode')=='HOLD'
+            and ack.get('localization_epoch')==epoch and ack.get('survey_revision')==model_revision
+            and type(ack.get('session')) is int and ack['session']>0
             and lift and type(strict.get('motion_authorization_revision')) is int
             and type(lift.get('motion_authorization_revision')) is int
+            and strict['motion_authorization_revision']==ack.get('authorization_revision')
             and strict['motion_authorization_revision']>lift['motion_authorization_revision']),
+        'ack_state_matches_recorded_navigation':state_matches,
+        'ack_uses_target_strict_policy':ack_policy,
+        'published_ack_matches_committed_reference':publication_matches,
         'raw_stop_box_clear_of_support_error_and_map_margin':bool(isinstance(lower_z,(int,float))
             and math.isfinite(lower_z) and lower_z>threshold-5e-7),
         'fresh_independent_airborne_measurement':bool(fresh_airborne),
@@ -309,6 +386,8 @@ def takeoff_handoff_evidence(statuses,events,landed_samples,setpoints,support_mo
     return {'passed':all(checks.values()),'checks':checks,'liftoff_event':lift,'strict_ack_event':strict,
             'support_clearance_threshold_m':threshold,'raw_stop_box_lower_z_m':lower_z,
             'independent_airborne_samples':len(fresh_airborne),
+            'executor_ack_sample_ns':stamp or None,
+            'executor_ack_snapshot':ack or None,
             'handoff_reference_bracket_us':([before['timestamp'],after['timestamp']] if bracket else None),
             'sampled_reference_jumps':continuity,
             'scope':'source-time typed runtime acknowledgement and sampled reference continuity; no contact exception after strict promotion'}

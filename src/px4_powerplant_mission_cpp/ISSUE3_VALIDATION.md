@@ -1,6 +1,8 @@
 # Issue #3：实际电厂验证记录
 
-验证日期：2026-10-28。此前资产/性能证据根目录为 `log/issue3_powerplant/20261027_204849/`；地面保护续改为 `log/issue3_takeoff/20261028_143128/`；最新基础容差0.10m对照为 `log/issue3_tolerance010/20261028_212122/`。仅实际 `powerplant.sdf` 为正式场景；真值与探针只进入评估，不向在线规划注入地图或航点。**目前不能关闭 Issue #3：原1.03mm地面授权问题已用独立支持证书处理，0.10m对照两次仍在真实离地前触发跟踪保护；初扫、ROI接入及正常任务返航尚未通过。** 下方原记录的相对路径仍以此前资产/性能目录为根，最新续改单列于文末。
+最新结论（2026-10-29，A—D队列）：实现与524项直接软件用例通过；20个实际策略/I候选均未通过起飞初扫。5次严格ACK瞬间证据通过，但未进入HOVER_SCAN，不能关闭Issue #3。有效队列为 `log/issue3_margin_governor/20261029_1336/calibration_v6/`；详细范围与额外失败见文末最新章节及该目录上层VALIDATION.md。下列506项/五积分等记录为此前基线。
+
+更新日期：2026-10-29。此前资产/性能证据根目录为 `log/issue3_powerplant/20261027_204849/`；地面保护续改为 `log/issue3_takeoff/20261028_143128/`；基础容差0.10m对照为 `log/issue3_tolerance010/20261028_212122/`。此前起飞响应同步与有限积分标定见 `log/issue3_response_sync/20261029_0150/` 及文末。仅实际 `powerplant.sdf` 为正式场景；真值与探针只进入评估，不向在线规划注入地图或航点。**此前五积分基线：响应同步代码和506项软件回归通过，但五个允许候选均未完成起飞初扫，未冻结配置；本轮最新结论见上方与文末20组合队列。** 下方原记录的相对路径仍以此前资产/性能目录为根，各次续改单列于文末。
 
 ## 资产与几何：通过
 
@@ -160,3 +162,94 @@ Python包构建及4组相关回归通过，93个直接用例零失败/错误/跳
 关键事实：从任务初始化至FAULT，两次Gazebo模型原点分别506/481条真值均完全不变，仍在接地参考z=-0.0130009016m；未真正离地。run1参考已向上推进到ENU约0.1766m。按真实SDF、world重力及ULog故障前电机命令估算，两次理想推力约12.52/12.32N，小于约21.04N机体重量。这是命令角速度下的模型估算，并非实测力，但与持续接地一起支持控制输出/真实响应不足；尚不能唯一归因到某个PID。更大的容差没有消除参考推进与实际不动之间的差距。
 
 两次实际NVIDIA/5Hz传感器、约50Hz发布、原反应预算、P/V/A和物理接触检查通过。未取得严格空中证书，稳定悬停、初扫、ROI自主接入、任务执行及正常返航均未进入；没有以其他参数或状态机修改强行进入后段。详细原理、可复现命令、ULog/真值重建见本证据目录 `VALIDATION.md`、`comparison.json`、`analyze_runs.py`、各运行 `report.json`。Issue #3继续开启。
+
+## 2026-10-29：起飞响应同步与有限控制标定
+
+证据根目录：`log/issue3_response_sync/20261029_0150/`。实现原理和入口见 [TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)。本轮没有修改PX4源码、实机覆盖、实际world、建筑/碰撞资产、默认任务ROI或自主规划；没有提交或推送。原始 `x500_depth` 已有修改保留。
+
+### 软件与集成：通过
+
+- 采样时间对齐的合成/逐轴预测风险，0.60软制动，0.35恢复滞回，3秒固定恢复等待、0.3秒及三个新样本、过渡最多两次恢复；沿用已验证BRAKING→HOLD尾段和连续参考历史，不缩放轨迹时钟，不reset锚定测量位置。
+- 启动意图→反馈探测→单段交接→严格上升；净空证据使用完整姿态、实际起落架、位置误差及相关roll/pitch协方差。预测严格HOLD含实际严格交接的额外地面余量；预测不授予证书。
+- 过渡预算计入三个阶段的准备/解析运动/停稳、两次制动/恢复/重新参数化和交接余量，34.5秒向上取整为固定35秒；不续期。0.75m上限、0.10m基础跟踪容差、硬故障优先级和原停止/占据/时钟检查保留。
+- 新控制YAML只在临时PX4 rootfs解锁前应用；真实展开模型推导悬停初值0.7463305342。完整回读hover、I、spool/ramp、THR_MDL_FAC、4组ESC范围与最大推力；正式冻结要求两次实际阶段通过且代码/二进制/模型一致，禁止继承临时PX4参数覆盖。
+- 普通仿真/硬件profile均能正常启动IDLE。只有真实场景支持审计通过，runner才生成临时运动profile并通过launch显式加载响应模式；硬件缺省关闭此模式，原12秒缺省保持。
+- 新增实际导航/真值独立的起飞悬停、返航停稳及停止过程记录；状态字符串或landed=false不能替代物理证据。
+
+两包最终串行构建通过（`build_final.log`，后续偏航/profile修复增量构建 `build_yaw_profile_fix.log`）。完整CTest24组通过；修复后的六组受影响回归再次通过。最新汇总 **506个直接用例、0失败/错误/跳过**，见 `software_test_summary.json`、`test_results/` 与 `shared_python.xml`；不重复计入CTest外层或重跑。包括原生215、parity26、跨进程ROS9、资产32、GCS20、传感器23、探针3、支持审计12、飞行验收器23、控制profile/物理证据16、共享Python127。
+
+最初并行实现收拢时发生过旧库对象缺少新增符号的链接失败，日志保留 `build.log`；最终收拢后串行重建通过。实际第一轮候选0.5揭示启动目标偏航仍取初始化值，与已发布HOLD稍有差异，导致地面禁止偏航的计划被反复拒绝。已改为锁存**已发布HOLD偏航**，后续不跟随测量漂移；新增公开Runtime回归。第一轮三次失败保留于 `calibration/`、`calibration_round1.json`，不能混入后续冻结。修复后从2.0重启完整网格，五次均无运动计划拒绝。
+
+### 实际电厂标定：全部候选未通过
+
+最终同一份源码/二进制/资源下执行 `calibration_v2/`，积分按2、1、0.5、0.25、0.1串行测试。每个候选第一次失败后即不能构成连续两次通过，因此继续下一候选。真实参数回读全部匹配；没有使用I=0。`calibration_v2/calibration.json` 明确 `passed=false`、`frozen_profile=null`。
+
+| 垂向积分 | 故障/降落前模型原点最大上升 | 直接结束原因 | 离地净空/严格ACK/初扫 |
+|---|---:|---|---|
+| 2.0 | 0 | 两次软恢复后硬跟踪门越界，FAULT收尾 | 均未通过 |
+| 1.0 | 0 | 起飞恢复次数耗尽，受控LAND | 均未通过 |
+| 0.5 | 4.57mm | 当前停止盒越出柱体安全依据，UNKNOWN_MOTION_ENVELOPE，FAULT收尾 | 均未通过 |
+| 0.25 | 79.18mm | 3秒恢复超时，受控LAND | 均未通过 |
+| 0.1 | 20.14mm | 3秒恢复超时，受控LAND | 均未通过 |
+
+上升数字是Gazebo模型原点相对本次SAFE_TAKEOFF初始值的最大变化，**不等于全部起落架离地，更不是5m目标高度或稳定悬停通过**。最终五次都已发送启动意图并进入RESPONSE_PROBE，没有确认净空，也没有严格证书ACK。过渡剩余时间尚未用尽，不是35秒或0.75m上限直接阻断。
+
+低积分日志说明不能只归因于垂向I：
+
+- I=0.25首次观察到软制动时，导航z约0.08m、参考约0.16m，风险0.6179，起落架净空下界仅0.0135m，低于0.05m要求。邻近异步电机命令的理想合力约21.114N，相比21.038N重量只多约0.076N，不能据此假定足够上升响应；这是命令/SDF模型估算，不是实测力。最后安全HOLD参考约0.17m，导航约0.06m，风险约0.873，恢复未成立。
+- I=0.1首个恢复附近的精确采样配对：误差ENU约 `[-0.09755,0.03063,-0.03614]m`，合成0.10844m仍小于硬门0.166m，**该帧硬检查通过**；加入速度误差与反应预算后软风险约0.6712，触发软制动。水平误差是主要分量，同时包含真实横向运动及导航差异，不能全部称为测量噪声。该导航样本与相邻4ms真值的偏差约 `[-0.03375,0.03797,-0.03096]m`。最后风险仍约0.450，大于恢复门0.35，未获得持续0.3秒/三个新样本的恢复证据。
+
+可重放离线核对：`analyze_response.py` → `calibration_diagnosis.json`；完整状态、原始真值、采样配对、PVA、ULog和实际参数在每个运行目录。ULog采用邻近异步样本，保存各自时间偏差，不把它们冒充同一瞬间测量；不把最后通过帧当成硬越界帧。
+
+控制发布实测49.886～50.002Hz，p95最大37.9ms、p99最大62.7ms、最大间隔140.2ms，均满足本轮原判据；当前主要阻断不能归为发布频率不足。五次源码/资源前后哈希一致，实际NVIDIA及5Hz降载校验通过。接触均未观察到建筑/机身/旋翼异常；I=0.5有6条接地接触的采样时钟/epoch未确认，故其完整接触证明仍失败，不删除这些记录或宣称全部接触验收通过。
+
+### 尚未执行及下一步边界
+
+按方案的“全部候选失败”分支停止标定，不生成虚假冻结配置，不扩大门限/柱体，不改PX4，也不自动增加其它PID覆盖。**默认ROI连续三次主链、独立ROI外接入、正常自主视点新增观测、实际返航停稳及正常任务降落均未执行/通过**；无YOLO巡检或全ROI完成结论。故障/受控收尾的新鲜landed+disarmed只证明本次收尾，不能代替主链。
+
+下一轮需要在独立SITL控制/导航响应模型中同时核查垂向有效推力余量、横向保持与导航漂移，以及3秒恢复所需的实际收敛能力。现有日志不支持“只继续减小垂向I即可解决”的结论。本轮允许的有限候选已测试完毕；追加控制器/定位标定范围应另行明确。Issue #3保持OPEN。
+
+本轮已发布至 [Issue #3进度评论](https://github.com/pawn-queen/px4_ros_ws/issues/3#issuecomment-6485665380)，保持OPEN。最新 `delivery_manifest.json` 固定本地修改及原world/资产版本；未提交或推送。
+
+## 2026-10-29：A—D过渡策略、圆角停止几何与参考管理（最新）
+
+本轮完成仅SITL起飞过渡的A—D白名单（0.10/0.12/0.15m，D半径0.48m且通过完整SDF审计），45秒固定预算及1.0/1.25候选参考管理。停止几何采用参考可达盒与圆柱机体的Minkowski和，外层AABB仅作检索；实际相交的未知/占据仍否决。严格ACK原子恢复0.10m、0.50m、0.60/0.35和3秒策略，并保存不可变的实际采样/参考/停止/版本证据。硬件缺省、PX4源码、world/碰撞及默认ROI不变。
+
+修正实际ROS float32、NumPy布尔标志的验收适配，以及起飞规划容许数值微差却仍生成禁止偏航的逻辑不一致。所有修改保持硬跟踪、占据、时钟、0.75m上限和真实停止证明；不重置参考或改写旧失败日志。
+
+最终两包串行构建通过，24组CTest与共享Python共 **524个直接用例通过，零失败、错误或跳过**。实际电厂`calibration_v6`完成20个策略/I组合，全部实际启动、全部参数回读及源码/资源稳定核对通过；**0次通过起飞初扫，未冻结配置**。5次取得严格ACK的11项瞬间证明，但后续4次严格硬跟踪故障、1次严格恢复超时；全部未进入HOVER_SCAN。整体最大模型原点上升约0.931m，不代表到达5m稳定悬停。
+
+主要退出为11次硬跟踪、4次执行器本地时钟停滞、2次过渡恢复次数耗尽、2次45秒交接到期、1次严格恢复超时。接触19/20通过：A/I=0.5保留2条时钟/epoch未确认；18/20通过新鲜落地上锁收尾，C/I=0.1和0.25仍有独立收尾新鲜度失败。导航深度墙面投影检查20/20未通过、真值投影7次未通过，保留为额外输入/标定卡点，不能用扩大飞行容差掩盖。
+
+按所有允许候选失败分支停止。没有governor关闭对照、默认ROI三次主链或独立ROI接入通过证据。实际时长倍率本组均为1.0，1.25及无候选恢复由软件回归覆盖；没有通过消融对，不能声称参数/几何/参考管理已提高任务成功率。Issue #3保持OPEN，代码/模型不提交、不推送。
+
+原理见 [TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)，完整记录见 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 及工作区 `log/issue3_margin_governor/20261029_1336/VALIDATION.md`、`final_summary.json`、`calibration_v6/`。旧35秒/五积分失败保留为历史基线，不混入新队列。
+
+| 策略/I | 故障/降落前模型原点最大上升(m) | 严格ACK瞬间子项 | 首要退出原因 |
+|---|---:|---|---|
+| A/2 | 0.000000 | 未取得 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE` |
+| A/1 | 0.005267 | 未取得 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE` |
+| A/0.5 | 0.004925 | 未取得 | `MOTION_CLOCK_FROZEN` |
+| A/0.25 | 0.476938 | 未取得 | `takeoff response recovery failed: MOTION_TRACKING_RECOVERY_ATTEMPTS_EXHAUSTED` |
+| A/0.1 | 0.487096 | 未取得 | `takeoff response recovery failed: MOTION_TRACKING_RECOVERY_ATTEMPTS_EXHAUSTED` |
+| B/2 | 0.000000 | 未取得 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE` |
+| B/1 | 0.004541 | 未取得 | `MOTION_CLOCK_FROZEN` |
+| B/0.5 | 0.015835 | 未取得 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE` |
+| B/0.25 | 0.493645 | 11项通过 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE` |
+| B/0.1 | 0.497984 | 未取得 | `ground support transition timeout before strict handoff` |
+| C/2 | 0.001193 | 未取得 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE` |
+| C/1 | 0.038602 | 未取得 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE` |
+| C/0.5 | 0.007792 | 未取得 | `MOTION_CLOCK_FROZEN` |
+| C/0.25 | 0.930899 | 11项通过 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE` |
+| C/0.1 | 0.502092 | 未取得 | `ground support transition timeout before strict handoff` |
+| D/2 | 0.000375 | 未取得 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE` |
+| D/1 | 0.003587 | 未取得 | `MOTION_CLOCK_FROZEN` |
+| D/0.5 | 0.797995 | 11项通过 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE` |
+| D/0.25 | 0.560369 | 11项通过 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE` |
+| D/0.1 | 0.910659 | 11项通过 | `takeoff response recovery failed: MOTION_TRACKING_RECOVERY_TIMEOUT` |
+
+5个ACK运行的`takeoff_ground_handoff_evidence.passed`整体仍为false：11项瞬间检查通过，但第12项要求实际初扫/探索持续采用严格阶段，尚未覆盖。不能将“ACK子项通过”写为起飞初扫通过。20次运行使用相同85文件稳定代码锁；当前world SHA仍为`8e8af17b20101cc852610673cbb5267e09c492f66553911bed3f1886a46aeee7`。
+
+发布49.822—50.164Hz；最差p95/p99间隔0.029983/0.062552s，最大0.118678s，符合原发布判据。仍有4次执行器本地ROS时间停滞；发布频率符合不能代替时钟、实际跟踪或停止响应通过。最终24组复核见`ctest_delivery.log`，直接XML见`software_test_summary.json`。早期类型/时间见证/数值偏航修复导致的中断队列、构建和回归失败均保留于`superseded_rounds.json`及对应日志。
+
+远端进度已同步至 [Issue #3 本轮记录](https://github.com/pawn-queen/px4_ros_ws/issues/3#issuecomment-6491765160)，保持OPEN；本地代码与模型未提交/推送。

@@ -79,6 +79,13 @@ void OffboardMissionNode::start(Trigger::Response &response) {
   mission_started_ = ns();
   mission_steady_ = steady_ns();
   reset_takeoff_safety();
+  if (!takeoff_budget_reason_.empty()) {
+    active_ = false;
+    phase_ = Phase::Idle;
+    response.success = false;
+    response.message = takeoff_budget_reason_;
+    return;
+  }
   response.success = true;
   response.message = "mission requested: START";
   publish_status();
@@ -96,6 +103,10 @@ void OffboardMissionNode::initialize() {
   mission_started_ = ns();
   mission_steady_ = steady_ns();
   reset_takeoff_safety();
+  if (!takeoff_budget_reason_.empty()) {
+    fault(takeoff_budget_reason_);
+    return;
+  }
   search_started_ = 0;
   explore_revision_ = return_revision_ = -1;
   explore_plan_stamp_ = return_plan_stamp_ = 0;
@@ -109,6 +120,31 @@ void OffboardMissionNode::initialize() {
   p["home_enu"] = vector_json(*home_);
   event("mission_initialized", p);
 }
+bool OffboardMissionNode::handle_motion_failure(const MotionUpdate &report) {
+  // Hard faults always win over a stale soft-recovery diagnostic. In
+  // particular, failed recovery must never downgrade tracking/clock/epoch
+  // violations to a navigation-dependent landing command.
+  if (report.mode == MotionMode::Fault) {
+    if (phase_ == Phase::Takeoff && b("takeoff_ground_support_enabled") &&
+        takeoff_safety_stage_ != MotionCertificateKind::AirborneStrict &&
+        report.reason.find("GROUND_SUPPORT_") != std::string::npos &&
+        motion_health_reason().empty())
+      enter_landing("takeoff support unavailable: " + report.reason);
+    else
+      fault("motion executor: " + report.reason);
+    return true;
+  }
+  if (!report.tracking_recovery_failed)
+    return false;
+  const bool certified_stop = report.valid &&
+      (report.mode == MotionMode::Hold || report.mode == MotionMode::Braking);
+  if (phase_ == Phase::Takeoff && certified_stop && motion_health_reason().empty())
+    enter_landing("takeoff response recovery failed: " + report.tracking_recovery_reason);
+  else
+    fault("motion tracking recovery failed: " + report.tracking_recovery_reason);
+  return true;
+}
+
 void OffboardMissionNode::tick() {
   observe_clock();
   update_roi_access_budget();
@@ -146,16 +182,7 @@ void OffboardMissionNode::tick() {
     publish_status();
     return;
   }
-  if (motion_ && motion_->report().mode == MotionMode::Fault) {
-    if (phase_ == Phase::Takeoff && b("takeoff_ground_support_enabled") &&
-        takeoff_safety_stage_ != MotionCertificateKind::AirborneStrict &&
-        motion_->report().reason.find("GROUND_SUPPORT_") != std::string::npos &&
-        motion_health_reason().empty()) {
-      enter_landing("takeoff support unavailable: " + motion_->report().reason);
-      publish_status();
-      return;
-    }
-    fault("motion executor: " + motion_->report().reason);
+  if (motion_ && handle_motion_failure(motion_->report())) {
     publish_status();
     return;
   }
@@ -662,13 +689,55 @@ std::pair<Vec3, double> OffboardMissionNode::select_target() {
   if (!position_)
     return {Vec3::Zero(), 0};
   if (phase_ == Phase::Takeoff) {
+    if (b("takeoff_response_sync_enabled") &&
+        takeoff_safety_stage_ != MotionCertificateKind::AirborneStrict) {
+      const auto held = motion_ ? motion_->report() : MotionUpdate{};
+      if (waypoints_.empty()) {
+        if (vehicle_.arming_state != Status::ARMING_STATE_ARMED ||
+            vehicle_.nav_state != Status::NAVIGATION_STATE_OFFBOARD ||
+            !held.valid || !held.stopped || held.mode != MotionMode::Hold)
+          return {held.valid ? held.sample.position_enu : *position_, takeoff_ground_yaw_};
+        Vec3 goal = held.sample.position_enu;
+        if (takeoff_progress_ == TakeoffProgress::StartupIntent) {
+          // The pre-arm navigation yaw can change while this executor already
+          // publishes a certified HOLD. Join that issued reference exactly;
+          // requesting the earlier measured yaw would create forbidden ground
+          // yaw motion. Keep this once-latched heading through all later legs.
+          if (!takeoff_bootstrap_active_)
+            takeoff_ground_yaw_ = held.sample.yaw_rad;
+          goal.z() += d("motion_takeoff_bootstrap_height_m");
+          takeoff_bootstrap_active_ = true;
+        } else if (takeoff_progress_ == TakeoffProgress::ResponseProbe) {
+          goal.z() = takeoff_ground_reference_.z() + d("takeoff_response_probe_height_m");
+          takeoff_bootstrap_active_ = false;
+        } else {
+          goal.z() = takeoff_ground_reference_.z() + takeoff_handoff_rise_m_;
+          takeoff_bootstrap_active_ = false;
+        }
+        // Only a single bounded vertical intent is committed at a time. The
+        // next one is generated after real response/settle evidence arrives.
+        goal.z() = std::min(goal.z(), takeoff_ground_reference_.z() +
+                                       d("takeoff_ground_max_rise_m"));
+        motion_target_yaw_ = takeoff_ground_yaw_;
+        waypoints_ = {goal};
+        waypoint_ = 0;
+        publish_path();
+        auto evidence = object();
+        evidence["takeoff_progress"] = takeoff_progress_name(takeoff_progress_);
+        evidence["reference_enu_m"] = vector_json(goal, 6);
+        evidence["fixed_transition_budget_s"] = takeoff_transition_budget_s_;
+        event("takeoff_intent_generated", evidence);
+      }
+      return {waypoints_.front(), takeoff_ground_yaw_};
+    }
     if (waypoints_.empty()) {
       try {
         const Vec3 origin = home_.value_or(*position_);
         const auto limits = motion_limits();
         const double bootstrap_height = d("motion_takeoff_bootstrap_height_m"),
                      bootstrap_duration = d("motion_takeoff_bootstrap_duration_s");
-        const bool bootstrap = bootstrap_height > 0 || bootstrap_duration > 0;
+        const bool bootstrap = !b("takeoff_response_sync_enabled") &&
+                               (bootstrap_height > 0 || bootstrap_duration > 0);
         if (!std::isfinite(bootstrap_height) || !std::isfinite(bootstrap_duration) ||
             bootstrap_height < 0 || bootstrap_duration < 0 ||
             (bootstrap && (bootstrap_height <= 0 || bootstrap_duration <= 0 ||
@@ -790,8 +859,47 @@ void OffboardMissionNode::update_phase(const Vec3 &target, double heading) {
     if (vehicle_.arming_state != Status::ARMING_STATE_ARMED ||
         vehicle_.nav_state != Status::NAVIGATION_STATE_OFFBOARD ||
         !motion.valid || !motion.stopped || motion.mode != MotionMode::Hold ||
+        motion.tracking_recovery_active || motion.tracking_recovery_failed ||
         (motion.sample.position_enu - target).norm() > 1e-6)
       return;
+    if (b("takeoff_response_sync_enabled") &&
+        takeoff_safety_stage_ != MotionCertificateKind::AirborneStrict) {
+      if (motion.tracking_recovery_active)
+        return;
+      if (takeoff_progress_ == TakeoffProgress::StartupIntent) {
+        // End of the reference is only startup intent, never physical lift.
+        takeoff_progress_ = TakeoffProgress::ResponseProbe;
+        takeoff_bootstrap_active_ = false;
+        waypoints_.clear();
+        waypoint_ = 0;
+        event("takeoff_startup_intent_finished");
+        return;
+      }
+      if (takeoff_progress_ == TakeoffProgress::ResponseProbe) {
+        if (!takeoff_response_confirmed_)
+          return; // Keep this HOLD; fixed deadline bounds absent response.
+        const auto candidate = predict_takeoff_handoff_rise();
+        if (!candidate) {
+          enter_landing("no predicted strict HOLD within bounded handoff height");
+          return;
+        }
+        takeoff_handoff_rise_m_ = *candidate;
+        takeoff_progress_ = TakeoffProgress::HandoffAscent;
+        waypoints_.clear();
+        waypoint_ = 0;
+        event("takeoff_response_probe_complete");
+        return;
+      }
+      if (motion.strict_promotion_ready || takeoff_strict_requested_) {
+        takeoff_strict_requested_ = true;
+        return; // Continuous executor ACK is the only authority handoff.
+      }
+      // The fixed budget contains one handoff ascent. Live uncertainty or
+      // settling can improve while holding, but cannot buy unbudgeted .05 m
+      // retries. Keep the identical reference until strict ACK or expiry.
+      takeoff_handoff_reason_ = motion.strict_promotion_reason;
+      return;
+    }
     if (reached(target, std::min(.1, d("target_acceptance_m")))) {
       takeoff_bootstrap_active_ = false;
       if (b("takeoff_ground_support_enabled") &&

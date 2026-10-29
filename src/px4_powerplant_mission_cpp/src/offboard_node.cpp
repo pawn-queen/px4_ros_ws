@@ -7,10 +7,29 @@
 
 namespace powerplant {
 namespace {
+JsonValue envelope_json(const MotionSafetyBox &box) {
+  auto envelope = object();
+  envelope["minimum_m"] = vector_json(box.minimum, 6);
+  envelope["maximum_m"] = vector_json(box.maximum, 6);
+  envelope["shape"] = box.rounded ? "reference_box_plus_cylinder" : "aabb";
+  if (box.rounded) {
+    envelope["reference_minimum_m"] = vector_json(box.reference_minimum, 6);
+    envelope["reference_maximum_m"] = vector_json(box.reference_maximum, 6);
+    envelope["horizontal_radius_m"] = box.horizontal_radius_m;
+  }
+  return envelope;
+}
+
 void append_motion_evidence(JsonValue &fields, const MotionUpdate &motion) {
   fields["motion_mode"] = motion_mode_name(motion.mode);
   fields["motion_reason"] = motion.reason;
   fields["motion_stopped"] = motion.stopped;
+  fields["motion_tracking_risk_ratio"] = std::isfinite(motion.tracking_risk_ratio)
+      ? JsonValue(motion.tracking_risk_ratio) : JsonValue();
+  fields["motion_tracking_recovery_active"] = motion.tracking_recovery_active;
+  fields["motion_tracking_recovery_failed"] = motion.tracking_recovery_failed;
+  fields["motion_tracking_recovery_attempts"] = motion.tracking_recovery_attempts;
+  fields["motion_tracking_recovery_reason"] = motion.tracking_recovery_reason;
   fields["motion_stop_time_s"] = motion.stop_time_s;
   fields["motion_stop_certificate_valid"] =
       motion.valid && motion.stopping_envelope.has_value() &&
@@ -20,18 +39,68 @@ void append_motion_evidence(JsonValue &fields, const MotionUpdate &motion) {
        motion.certificate_kind == MotionCertificateKind::LiftoffTransition);
   fields["motion_certificate_kind"] = motion_certificate_kind_name(motion.certificate_kind);
   fields["motion_authorization_revision"] = integer(motion.authorization_revision);
+  fields["motion_policy_id"] = motion.policy_id;
+  fields["motion_policy_revision"] = integer(motion.policy_revision);
+  fields["motion_reference_duration_scale"] = motion.reference_duration_scale;
+  fields["motion_effective_position_tolerance_m"] = motion.effective_limits.tracking_position_tolerance_m;
+  fields["motion_effective_body_radius_m"] = motion.effective_limits.body_radius_m;
+  fields["motion_effective_soft_trigger_ratio"] = motion.effective_limits.tracking_guard.trigger_ratio;
+  fields["motion_effective_recover_ratio"] = motion.effective_limits.tracking_guard.recover_ratio;
+  fields["motion_effective_recovery_wait_s"] = motion.effective_limits.tracking_guard.recovery_wait_s;
+  fields["motion_reference_governor_enabled"] = motion.effective_limits.reference_governor;
   fields["takeoff_strict_promotion_ready"] = motion.strict_promotion_ready;
   fields["takeoff_strict_promotion_reason"] = motion.strict_promotion_reason;
+  fields["motion_strict_promotion_stamp_ns"] = integer(motion.strict_promotion_stamp_ns);
+  fields["motion_strict_ack"] = JsonValue();
+  if (motion.strict_ack) {
+    const auto &ack = *motion.strict_ack;
+    auto evidence = object();
+    evidence["stamp_ns"] = integer(ack.ros_stamp_ns);
+    evidence["steady_stamp_ns"] = integer(ack.steady_stamp_ns);
+    evidence["state_sample_ns"] = integer(ack.state.sample_stamp_ns);
+    evidence["state_receipt_steady_ns"] = integer(ack.state.receipt_steady_ns);
+    evidence["localization_epoch"] = integer(ack.state.epoch);
+    evidence["authorization_revision"] = integer(ack.authorization_revision);
+    evidence["session"] = integer(ack.session);
+    evidence["survey_revision"] = integer(ack.survey_revision);
+    evidence["map_epoch"] = integer(ack.map_epoch);
+    evidence["map_revision"] = integer(ack.map_revision);
+    evidence["certificate_kind"] = "AIRBORNE_STRICT";
+    evidence["mode"] = "HOLD";
+    evidence["stopped"] = true;
+    evidence["position_enu_m"] = vector_json(ack.state.position_enu, 9);
+    evidence["velocity_enu_mps"] = vector_json(ack.state.velocity_enu, 9);
+    evidence["reference_position_enu_m"] = vector_json(ack.reference.position_enu, 9);
+    evidence["reference_velocity_enu_mps"] = vector_json(ack.reference.velocity_enu, 9);
+    evidence["reference_acceleration_enu_mps2"] = vector_json(ack.reference.acceleration_enu, 9);
+    evidence["position_sigma_m"] = ack.state.position_sigma_m;
+    evidence["velocity_sigma_mps"] = ack.state.velocity_sigma_mps;
+    for (int row = 0; row < 3; ++row) {
+      evidence["position_covariance_enu_m2"].append(
+          vector_json(ack.state.position_covariance_enu_m2.row(row).transpose(), 9));
+      evidence["velocity_covariance_enu_m2ps2"].append(
+          vector_json(ack.state.linear_velocity_covariance_enu_m2ps2.row(row).transpose(), 9));
+    }
+    evidence["tracking_risk_ratio"] = ack.tracking_risk_ratio;
+    evidence["policy_id"] = ack.limits.policy_id;
+    evidence["policy_revision"] = integer(ack.limits.policy_revision);
+    evidence["position_tolerance_m"] = ack.limits.tracking_position_tolerance_m;
+    evidence["body_radius_m"] = ack.limits.body_radius_m;
+    evidence["map_margin_m"] = ack.limits.map_margin_m;
+    evidence["sigma_multiplier"] = ack.limits.sigma_multiplier;
+    evidence["soft_trigger_ratio"] = ack.limits.tracking_guard.trigger_ratio;
+    evidence["recover_ratio"] = ack.limits.tracking_guard.recover_ratio;
+    evidence["recovery_wait_s"] = ack.limits.tracking_guard.recovery_wait_s;
+    evidence["reference_governor_enabled"] = ack.limits.reference_governor;
+    evidence["stopping_envelope_enu"] = envelope_json(ack.stopping_envelope);
+    fields["motion_strict_ack"] = evidence;
+  }
   fields["motion_stop_margin_lower_bound_m"] =
       motion.stop_margin_lower_bound_m
           ? JsonValue(*motion.stop_margin_lower_bound_m) : JsonValue();
   fields["motion_stopping_envelope_enu"] = JsonValue();
-  if (motion.stopping_envelope) {
-    auto envelope = object();
-    envelope["minimum_m"] = vector_json(motion.stopping_envelope->minimum, 6);
-    envelope["maximum_m"] = vector_json(motion.stopping_envelope->maximum, 6);
-    fields["motion_stopping_envelope_enu"] = envelope;
-  }
+  if (motion.stopping_envelope)
+    fields["motion_stopping_envelope_enu"] = envelope_json(*motion.stopping_envelope);
 }
 } // namespace
 const char *phase_name(Phase p) {
@@ -79,12 +148,14 @@ OffboardMissionNode::OffboardMissionNode()
         result.successful = true;
         bool ground_changed = false;
         for (const auto &parameter : parameters)
-          if (parameter.get_name().rfind("takeoff_ground_", 0) == 0 ||
+          if (parameter.get_name().rfind("takeoff_", 0) == 0 ||
+              parameter.get_name().rfind("motion_", 0) == 0 ||
+              parameter.get_name() == "sitl_controller_profile_id" ||
               parameter.get_name() == "px4_timestamp_domain") {
             ground_changed = true;
             if (active_ || phase_ != Phase::Idle) {
               result.successful = false;
-              result.reason = "ground support calibration may change only in IDLE";
+              result.reason = "takeoff, tracking and controller policy may change only in IDLE";
               return result;
             }
           }
@@ -328,7 +399,14 @@ void OffboardMissionNode::on_odom(const nav_msgs::msg::Odometry &m) {
   };
   xy_variance_ = std::max(variance(0), variance(7));
   z_variance_ = variance(14);
-  tilt_variance_ = std::max(variance(21), variance(28));
+  // Correlated roll/pitch errors can have a larger angular uncertainty than
+  // either diagonal alone. The support-clearance proof needs that bound.
+  Eigen::Matrix2d tilt_covariance;
+  tilt_covariance << variance(21), m.pose.covariance[22],
+                     m.pose.covariance[27], variance(28);
+  const Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> tilt_eigen(tilt_covariance);
+  tilt_variance_ = tilt_eigen.info() == Eigen::Success
+      ? std::max(0., tilt_eigen.eigenvalues().maxCoeff()) : inf;
   yaw_variance_ = variance(35);
   yaw_rate_ = std::abs((orientation_ * Vec3(w.x, w.y, w.z)).z());
   inspection_history_.add({sample, *position_, orientation_});
@@ -710,6 +788,16 @@ void OffboardMissionNode::event(const std::string &name, JsonValue fields) {
   fields["task_roi_revision"] = integer(task_roi_revision_);
   fields["takeoff_safety_stage"] = b("takeoff_ground_support_enabled")
       ? motion_certificate_kind_name(takeoff_safety_stage_) : "STRICT_ONLY";
+  fields["sitl_controller_profile_id"] = s("sitl_controller_profile_id");
+  fields["takeoff_progress"] = takeoff_progress_name(takeoff_progress_);
+  fields["takeoff_transition_fixed_budget_s"] = takeoff_transition_budget_s_;
+  fields["takeoff_ground_remaining_s"] = takeoff_ground_remaining_s();
+  fields["takeoff_support_clearance_lower_bound_m"] =
+      std::isfinite(takeoff_support_clearance_lower_m_)
+          ? JsonValue(takeoff_support_clearance_lower_m_) : JsonValue();
+  fields["takeoff_response_confirmed"] = takeoff_response_confirmed_;
+  fields["takeoff_response_sample_count"] = takeoff_response_samples_;
+  fields["takeoff_handoff_rise_m"] = takeoff_handoff_rise_m_;
   fields["event"] = name;
   fields["phase"] = phase_name(phase_);
   fields["selected_region_id"] = integer(selected_region_id_);
@@ -741,6 +829,21 @@ void OffboardMissionNode::publish_status(std::optional<Vec3> target,
   p["takeoff_safety_stage"] = b("takeoff_ground_support_enabled")
       ? motion_certificate_kind_name(takeoff_safety_stage_) : "STRICT_ONLY";
   p["takeoff_ground_support_enabled"] = b("takeoff_ground_support_enabled");
+  p["sitl_controller_profile_id"] = s("sitl_controller_profile_id");
+  p["takeoff_progress"] = takeoff_progress_name(takeoff_progress_);
+  p["takeoff_transition_fixed_budget_s"] = takeoff_transition_budget_s_;
+  p["takeoff_transition_budget_reason"] = takeoff_budget_reason_;
+  p["takeoff_support_clearance_lower_bound_m"] =
+      std::isfinite(takeoff_support_clearance_lower_m_)
+          ? JsonValue(takeoff_support_clearance_lower_m_) : JsonValue();
+  p["takeoff_response_confirmed"] = takeoff_response_confirmed_;
+  p["takeoff_response_sample_count"] = takeoff_response_samples_;
+  p["takeoff_handoff_rise_m"] = takeoff_handoff_rise_m_;
+  p["home_enu_m"] = home_ ? vector_json(*home_, 6) : JsonValue();
+  p["takeoff_target_enu_m"] = home_
+      ? vector_json(*home_ + Vec3(0, 0, d("takeoff_height_m")), 6) : JsonValue();
+  p["return_home_target_enu_m"] = home_
+      ? vector_json(*home_ + Vec3(0, 0, d("return_home_height_m")), 6) : JsonValue();
   p["takeoff_ground_model_revision"] = integer(get_parameter("takeoff_ground_model_revision").as_int());
   p["takeoff_ground_remaining_s"] = takeoff_ground_remaining_s();
   p["takeoff_strict_handoff_reason"] = takeoff_handoff_reason_;

@@ -48,11 +48,19 @@ WORKSPACE = PACKAGE.parents[1]
 _contact_spec=importlib.util.spec_from_file_location("powerplant_contact_monitor", Path(__file__).with_name("powerplant_contact_monitor.py"))
 contact_support=importlib.util.module_from_spec(_contact_spec)
 _contact_spec.loader.exec_module(contact_support)
+_controller_spec=importlib.util.spec_from_file_location("p2_sitl_controller", Path(__file__).with_name("p2_sitl_controller.py"))
+controller_support=importlib.util.module_from_spec(_controller_spec)
+_controller_spec.loader.exec_module(controller_support)
+_flight_spec=importlib.util.spec_from_file_location("p2_flight_evidence", Path(__file__).with_name("p2_flight_evidence.py"))
+flight_support=importlib.util.module_from_spec(_flight_spec)
+_flight_spec.loader.exec_module(flight_support)
 
 EXPECTED_PHASES = ["START", "SAFE_TAKEOFF", "HOVER_SCAN", "EXPLORE",
                    "TARGETING_CYCLE", "RETURN_HOME", "LANDING", "COMPLETE"]
 
 def controller_profile_evidence(args, observed):
+    profile=getattr(args,"resolved_controller_profile",None)
+    if profile is not None: return controller_support.readback_evidence(profile,observed)
     requested = {name:value for name,value in (
         ("MPC_THR_HOVER", getattr(args,"px4_hover_thrust",None)),
         ("MPC_Z_VEL_I_ACC", getattr(args,"px4_z_velocity_integral",None))) if value is not None}
@@ -60,7 +68,9 @@ def controller_profile_evidence(args, observed):
     matched = all(isinstance(actual[name],(int,float)) and math.isfinite(actual[name])
                   and abs(actual[name]-value)<=1e-5 for name,value in requested.items())
     return {"passed":matched,"requested":requested,"actual_read_only_values":actual,
-            "scope":"explicit isolated SITL controller calibration; safety thresholds and shared hardware config unchanged"}
+            "mode":"diagnostic_overrides" if requested else "stock_defaults",
+            "formal_calibrated_acceptance":False,
+            "scope":"isolated SITL stock/diagnostic comparison; frozen profile required for response-sync formal acceptance"}
 
 
 def takeoff_startup_evidence(parameters, observed_px4_parameters):
@@ -137,6 +147,10 @@ def capture_runtime_identity(args,config_path,local_models,asset_audit):
         source_paths.extend(p for p in folder.rglob('*') if p.is_file()
                             and p.suffix in ('.cpp','.hpp','.py','.yaml'))
     source_paths.extend((PACKAGE/'CMakeLists.txt',Path(config_path)))
+    if getattr(args,'resolved_motion_profile_path',None) is not None:
+        source_paths.append(Path(args.resolved_motion_profile_path))
+    if getattr(args,'controller_profile',None) is not None:
+        source_paths.append(Path(args.controller_profile))
     try:
         from ament_index_python.packages import get_package_prefix
         prefix=Path(get_package_prefix('px4_powerplant_mission_cpp'))
@@ -166,6 +180,7 @@ def capture_runtime_identity(args,config_path,local_models,asset_audit):
 
 def acceptance_scope(args):
     if args.image_chain_only: return "yolo_image_chain_only"
+    if getattr(args,'governor_ablation',False):return "powerplant_takeoff_scan_ablation"
     if args.scenario == "powerplant":
         return {"scan":"powerplant_takeoff_scan", "roi-access":"powerplant_roi_access",
                 "mission":"powerplant_local_roi_mission"}[args.stop_after]
@@ -465,6 +480,13 @@ def parse_args():
                    help="explicit isolated MPC_THR_HOVER calibration; default retains the airframe value")
     p.add_argument("--px4-z-velocity-integral", type=float, default=None,
                    help="explicit isolated MPC_Z_VEL_I_ACC calibration; default retains the airframe value")
+    p.add_argument("--controller-profile", type=Path, default=None,
+                   help="explicit isolated controller YAML; frozen profile required for formal mission")
+    p.add_argument("--takeoff-policy", choices=("legacy","A","B","C","D"),default=None)
+    p.add_argument("--governor-ablation",action="store_true",
+                   help="frozen-profile takeoff/scan comparison with reference governor disabled")
+    p.add_argument("--controller-calibration-candidate", type=float, choices=controller_support.CANDIDATES, default=None,
+                   help="formal nonzero integral calibration candidate; requires profile and stop-after scan")
     p.add_argument("--startup-timeout", type=float, default=90)
     p.add_argument("--ros-domain", type=int, default=25)
     p.add_argument("--agent-port", type=int, default=8889)
@@ -499,6 +521,20 @@ def parse_args():
         p.error("hover thrust must be finite and between zero and one")
     if args.px4_z_velocity_integral is not None and not (math.isfinite(args.px4_z_velocity_integral) and args.px4_z_velocity_integral>=0):
         p.error("vertical velocity integral must be finite and nonnegative")
+    if args.controller_profile is not None:
+        if args.px4_hover_thrust is not None or args.px4_z_velocity_integral is not None:
+            p.error("controller profiles cannot be combined with diagnostic PX4 parameter overrides")
+        if args.scenario!="powerplant" or args.image_chain_only:
+            p.error("controller calibration/profile is restricted to the actual powerplant flight")
+        if args.controller_calibration_candidate is not None and args.stop_after!="scan":
+            p.error("calibration candidates require --stop-after scan")
+        inherited=[name for name in os.environ if name.startswith("PX4_PARAM_")]
+        if inherited: p.error("profile rejects inherited controller parameter overrides: "+", ".join(inherited))
+    elif args.controller_calibration_candidate is not None:
+        p.error("calibration candidate requires --controller-profile")
+    if args.governor_ablation and (args.controller_profile is None or
+            args.controller_calibration_candidate is not None or args.stop_after!='scan'):
+        p.error('governor ablation requires a frozen profile and scan scope')
     if args.image_chain_only and args.inject_obstacle:
         p.error("--image-chain-only does not execute a flight or inject obstacles")
     if args.output_dir is None:
@@ -665,7 +701,19 @@ def prepare(args):
     binary = build / "bin/px4"
     config = yaml.safe_load((WORKSPACE / "src/px4_powerplant_mission/config/powerplant.yaml").read_text())
     mission = config["powerplant_offboard_mission"]["ros__parameters"]
-    profile = yaml.safe_load((WORKSPACE/"src/px4_powerplant_mission/config/p2_simulation.yaml").read_text())["powerplant_offboard_mission"]["ros__parameters"]
+    if getattr(args,"controller_profile",None) is not None:
+        selected=controller_support.load_profile(args.controller_profile,args.controller_calibration_candidate)
+        stored=selected.get('selected_transition_policy','legacy')
+        policy=(args.takeoff_policy or 'A') if args.controller_calibration_candidate is not None else stored
+        if args.controller_calibration_candidate is None and args.takeoff_policy not in (None,stored):
+            raise ValueError('frozen transition policy cannot be overridden')
+        selected['transition_policy']=policy
+        model=controller_support.derive_model(args.px4_root/"Tools/simulation/gz/models",world,selected["expected_readback"])
+        args.resolved_controller_profile=controller_support.resolve_profile(selected,model)
+        mission["sitl_controller_profile_id"]=args.resolved_controller_profile["profile_id"]
+        (output/"sitl_controller_derivation.json").write_text(json_dumps(args.resolved_controller_profile,indent=2,allow_nan=False))
+    motion_profile = yaml.safe_load((WORKSPACE/"src/px4_powerplant_mission/config/p2_simulation.yaml").read_text())
+    profile = motion_profile["powerplant_offboard_mission"]["ros__parameters"]
     body_audit=verified_body_envelope(args.px4_root/"Tools/simulation/gz/models",{**mission,**profile},
                                       PACKAGE/"research_sources/sitl_body_envelope.json")
     mission.update({
@@ -735,12 +783,34 @@ def prepare(args):
                 effective_model_sdf_sha256=hashlib.sha256(effective_camera.read_bytes()).hexdigest())
             sensor_metadata["vehicle_model"].update(effective_directory=str(effective_vehicle.parent),
                 effective_model_sdf_sha256=hashlib.sha256(effective_vehicle.read_bytes()).hexdigest())
+    # The ordinary simulation launch has no independently audited support
+    # model. Grant response mode only in this derived, hash-bound profile.
+    audited_support = bool(ground_support_model and ground_support_model.get("verified")
+                           and ground_support_model.get("passed"))
+    profile["takeoff_response_sync_enabled"] = audited_support
+    profile["takeoff_transition_budget_enabled"] = audited_support
+    policy=getattr(args,'resolved_controller_profile',{}).get('transition_policy',getattr(args,'takeoff_policy',None) or 'legacy')
+    if policy!='legacy':
+        if not audited_support:raise ValueError('transition policy requires actual audited powerplant support')
+        profile.update(takeoff_transition_policy_id=policy,takeoff_transition_hard_limit_s=45.,
+            motion_rounded_envelope_enabled=True,
+            takeoff_reference_governor_enabled=not getattr(args,'governor_ablation',False))
+        if policy=='D':
+            verified_body_envelope(args.px4_root/'Tools/simulation/gz/models',
+                {**mission,**profile,'motion_body_radius_m':.48},PACKAGE/'research_sources/sitl_body_envelope.json')
+    motion_profile_path = runtime / "p2_sitl_motion.yaml"
+    motion_profile_path.write_text(yaml.safe_dump(motion_profile, sort_keys=False))
+    args.resolved_motion_profile_path = motion_profile_path
+    if getattr(args,"resolved_controller_profile",None) is not None:
+        args.resolved_controller_profile["acceptance_policy"]=controller_support.validate_acceptance_policy({**mission,**profile})
     config_path = runtime / "powerplant_p2_sitl.yaml"
     config_path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False))
     if takeoff_audit is not None:
         takeoff_module.bind_actual_configuration(takeoff_audit,config_path,{**mission,**profile})
         takeoff_audit["motion_profile_config_sha256"]=hashlib.sha256(
             (WORKSPACE/"src/px4_powerplant_mission/config/p2_simulation.yaml").read_bytes()).hexdigest()
+        takeoff_audit["resolved_motion_profile_config"] = str(motion_profile_path)
+        takeoff_audit["resolved_motion_profile_sha256"] = hashlib.sha256(motion_profile_path.read_bytes()).hexdigest()
         takeoff_audit_path.write_text(json_dumps(takeoff_audit,indent=2,allow_nan=False))
     rootfs = runtime / "px4_rootfs"
     rootfs.mkdir(exist_ok=True)
@@ -757,6 +827,7 @@ def prepare(args):
         "PX4_GZ_MODELS": str(local_models if local_models else args.px4_root / "Tools/simulation/gz/models"),
         "HEADLESS": "1", "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
         "POWERPLANT_SITL_EFFECTIVE_CONFIG": str(config_path),
+        "POWERPLANT_SITL_MOTION_PROFILE": str(motion_profile_path),
         "PX4_PARAM_UXRCE_DDS_PRT": str(args.agent_port),
         "PX4_PARAM_UXRCE_DDS_SYNCT": "0",
         "PX4_UXRCE_DDS_PORT": str(args.agent_port),
@@ -779,6 +850,8 @@ def prepare(args):
     gz = ["gz", "sim", "-r", "-s"]
     if render_context=="egl": gz.append("--headless-rendering")
     gz.append(str(world))
+    for name,value in (getattr(args,"resolved_controller_profile",{}).get("requested_parameters",{})).items():
+        env["PX4_PARAM_"+name]=str(value)
     for name,value in (("MPC_THR_HOVER",args.px4_hover_thrust),
                        ("MPC_Z_VEL_I_ACC",args.px4_z_velocity_integral)):
         if value is not None: env["PX4_PARAM_"+name]=str(value)
@@ -790,7 +863,7 @@ def prepare(args):
                  "--output-dir", str(output), "--startup-timeout", str(args.startup_timeout)], runtime),
         ("sensors", ["ros2", "launch", "px4_powerplant_mission", "gz_sensor_bridge.launch.py"], runtime),
         ("mission", ["ros2", "launch", "px4_powerplant_mission", "powerplant_system.launch.py",
-                     f"config_file:={config_path}", "localization_profile:=simulation",
+                     f"config_file:={config_path}", f"motion_config_file:={motion_profile_path}", "localization_profile:=simulation",
                      "use_control:=true", f"use_yolo:={'true' if args.detection_mode == 'yolo' else 'false'}"], runtime),
     ]
     if args.gui:
@@ -827,7 +900,7 @@ def prepare(args):
             "navigation_error_envelope_proven":False,"actual_startup_response_proven":False},
         "synthetic_detection_replay": args.detection_mode == "replay",
         "world": str(world), "world_sha256":hashlib.sha256(world.read_bytes()).hexdigest(),
-        "config": str(config_path), "rootfs": str(rootfs),
+        "config": str(config_path), "motion_profile_config":str(motion_profile_path), "rootfs": str(rootfs),
         "task_roi":{axis:[mission[f"explore_min_{axis}_m"],mission[f"explore_max_{axis}_m"]]
                     for axis in "xyz"},
         "ros_domain": args.ros_domain, "agent_port": args.agent_port,
@@ -847,6 +920,7 @@ def prepare(args):
         "contact_instrumentation":contact_instrumentation,
         "isolated_exploration_budget_s":args.explore_duration,
         "isolated_controller_profile":controller_profile_evidence(args,{}),
+        "resolved_controller_profile":getattr(args,"resolved_controller_profile",None),
         "runtime_identity":capture_runtime_identity(args,config_path,local_models,asset_audit),
         "test_only_confirmation": {"radius_m": mission["takeoff_region_radius_m"],
             "height_m":mission["takeoff_region_height_m"],"relative_takeoff_m":mission["takeoff_height_m"]},
@@ -1040,7 +1114,9 @@ def monitor(args, processes):
             self.calibration_frames = 0
             self.last_calibration_time = 0.0
             self.calibration_file = (args.output_dir / "calibration.jsonl").open("w")
-            profile_path = WORKSPACE / "src/px4_powerplant_mission/config/p2_simulation.yaml"
+            profile_path = Path(processes.env.get("POWERPLANT_SITL_MOTION_PROFILE", ""))
+            if not profile_path.is_file():
+                raise RuntimeError("resolved SITL motion profile is missing")
             profile = yaml.safe_load(profile_path.read_text())["powerplant_offboard_mission"]["ros__parameters"]
             shared = yaml.safe_load((WORKSPACE / "src/px4_powerplant_mission/config/powerplant.yaml").read_text())["powerplant_offboard_mission"]["ros__parameters"]
             effective_config=processes.env.get("POWERPLANT_SITL_EFFECTIVE_CONFIG")
@@ -1430,8 +1506,8 @@ def monitor(args, processes):
                             and np.diag(covariance).min()>0
                             and np.max(np.abs(covariance-covariance.T))<=1e-10
                             and np.linalg.eigvalsh(covariance).min()>=-1e-16)
-                covariance_valid=(frame_valid and valid_covariance(pc)
-                                  and valid_covariance(vc_flu) and valid_covariance(vc))
+                covariance_valid=bool(frame_valid and valid_covariance(pc)
+                                     and valid_covariance(vc_flu) and valid_covariance(vc))
                 self.latest_position_sigma=float(np.sqrt(max(0,np.linalg.eigvalsh(pc).max()))) if covariance_valid else None
                 self.latest_velocity_sigma=float(np.sqrt(max(0,np.linalg.eigvalsh(vc).max()))) if covariance_valid else None
                 # Match the executor's outward certificate quantization while
@@ -1490,6 +1566,7 @@ def monitor(args, processes):
             refs=sorted(self.setpoints,key=lambda r:r["timestamp"])
             times=[r["timestamp"]*1000 for r in refs]
             active=[r for r in self.navigation_rows if r["execution_active"]]
+            policy_schedule=controller_support.tracking_policy_schedule(self.status_history,self.motion_parameters)
             certificates=[]
             unmatched=excluded=0
             for row in active:
@@ -1515,13 +1592,16 @@ def monitor(args, processes):
                 velocity_error=np.asarray(row["velocity"])-enu("velocity")
                 pe=float(np.linalg.norm(position_error))
                 ve=float(np.linalg.norm(velocity_error))
-                pb=(self.position_tolerance+self.sigma_multiplier*row["position_sigma_certificate_m"]) if row["covariance_valid"] else None
+                position_tolerance,policy_identity=controller_support.tracking_policy_at(
+                    policy_schedule,sample,row['task_identity'][0],self.motion_parameters)
+                pb=(position_tolerance+self.sigma_multiplier*row["position_sigma_certificate_m"]) if row["covariance_valid"] else None
                 vb=(self.velocity_tolerance+self.sigma_multiplier*row["velocity_sigma_certificate_mps"]) if row["covariance_valid"] else None
-                position_axis_bound=(self.position_tolerance+self.sigma_multiplier*np.asarray(row["position_axis_sigma_certificate_m"])) if row["covariance_valid"] else None
+                position_axis_bound=(position_tolerance+self.sigma_multiplier*np.asarray(row["position_axis_sigma_certificate_m"])) if row["covariance_valid"] else None
                 velocity_axis_bound=(self.velocity_tolerance+self.sigma_multiplier*np.asarray(row["velocity_axis_sigma_certificate_mps"])) if row["covariance_valid"] else None
                 position_axes_accepted=(position_axis_bound is not None and bool(np.all(np.abs(position_error)<=position_axis_bound)))
                 velocity_axes_accepted=(velocity_axis_bound is not None and bool(np.all(np.abs(velocity_error)<=velocity_axis_bound)))
                 certificate={"sample_ns":sample,"wall":row["wall"],"phase":row["phase"],
+                    "position_tolerance_m":position_tolerance,"tracking_policy_id":policy_identity,
                     "position_error_m":pe,"velocity_error_mps":ve,"position_bound_m":pb,
                     "velocity_bound_mps":vb,"position_margin_m":pb-pe if pb is not None else None,
                     "velocity_margin_mps":vb-ve if vb is not None else None,
@@ -2020,8 +2100,13 @@ def monitor(args, processes):
                 (args.output_dir/"world_steps.json").write_text(json_dumps(self.contact_evidence.world_steps,indent=2,allow_nan=False))
                 (args.output_dir/"physical_contacts.json").write_text(json_dumps(contacts,indent=2,allow_nan=False))
                 handoff=contact_support.takeoff_handoff_evidence(self.status_history,self.events,
-                    self.raw_landed_history,self.setpoints,self.ground_support_model,self.motion_parameters)
+                    self.raw_landed_history,self.setpoints,self.ground_support_model,self.motion_parameters,self.navigation_rows)
                 (args.output_dir/"takeoff_ground_handoff.json").write_text(json_dumps(handoff,indent=2,allow_nan=False))
+            self.truth_file.flush()
+            truth_rows=[json.loads(line) for line in (args.output_dir/"truth.jsonl").read_text().splitlines() if line.strip()]
+            flight=flight_support.physical_flight_evidence(self.navigation_rows,truth_rows,self.status_history,self.motion_parameters)
+            phase_policy=controller_support.phase_policy_evidence(self.status_history,self.motion_parameters)
+            (args.output_dir/"physical_flight_evidence.json").write_text(json_dumps(flight,indent=2,allow_nan=False))
             progress=contact_support.exploration_progress_evidence(self.exploration_pairs,self.events,
                 (self.latest.get("localization_epoch"),self.latest.get("task_roi_revision")))
             progress["unpaired_or_invalid_samples"]=self.exploration_pair_drops
@@ -2090,10 +2175,13 @@ def monitor(args, processes):
                 "topology_built": self.max_regions>=1,
             }
             if args.scenario=="powerplant":
+                checks['actual_phase_policy_matches']=phase_policy['passed']
                 checks["actual_physical_contacts_verified"]=bool(contacts and contacts["passed"])
+                checks["actual_takeoff_and_two_second_stable_hover"]=flight["actual_takeoff_and_stable_hover"]["passed"]
                 checks["ground_to_strict_runtime_handoff_verified"]=bool(handoff and handoff["passed"])
                 if not limited:
                     checks["actual_autonomous_viewpoint_and_movement"]=progress["passed"]
+                    checks["actual_return_home_stopped_before_landing"]=flight["actual_return_before_landing"]["passed"]
             if limited:
                 checks["requested_stage_observed"] = bool(self.limited_stage_reached and self.limited_stage_evidence and self.limited_stage_evidence["passed"])
                 checks["stage_landing_service_accepted"] = self.stage_landing_accepted
@@ -2120,6 +2208,8 @@ def monitor(args, processes):
                     "full_scene_exploration_acceptance":False,
                     "inspection_acceptance_executed":bool(args.detection_mode!="none" and not limited),
                     "physical_contact_evidence":contacts,
+                    "physical_flight_evidence":flight,
+                    "phase_policy_evidence":phase_policy,
                     "takeoff_ground_handoff_evidence":handoff,
                     "exploration_progress_evidence":progress,
                     "limited_stage_evidence":self.limited_stage_evidence if limited else None,

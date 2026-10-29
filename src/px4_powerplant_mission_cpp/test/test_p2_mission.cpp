@@ -17,11 +17,12 @@ struct P2MissionTestAccess {
     OffboardMissionNode node;
     node.home_ = Vec3(0, 0, -.04);
     node.position_ = Vec3(0, 0, .03);
+    ASSERT_TRUE(node.set_parameters_atomically({
+        rclcpp::Parameter("takeoff_height_m", 3.0),
+        rclcpp::Parameter("motion_tracking_position_tolerance_m", .03),
+        rclcpp::Parameter("motion_takeoff_bootstrap_height_m", .02),
+        rclcpp::Parameter("motion_takeoff_bootstrap_duration_s", 4.5)}).successful);
     node.phase_ = Phase::Takeoff;
-    node.set_parameter(rclcpp::Parameter("takeoff_height_m", 3.0));
-    node.set_parameter(rclcpp::Parameter("motion_tracking_position_tolerance_m", .03));
-    node.set_parameter(rclcpp::Parameter("motion_takeoff_bootstrap_height_m", .02));
-    node.set_parameter(rclcpp::Parameter("motion_takeoff_bootstrap_duration_s", 4.5));
     node.select_target();
     EXPECT_TRUE(node.waypoints_.empty()); // Prearm is certificate warmup only.
     node.motion_ = std::make_unique<MotionRuntime>(
@@ -57,8 +58,8 @@ struct P2MissionTestAccess {
     OffboardMissionNode node;
     node.home_ = node.position_ = Vec3(1, 2, .1);
     node.yaw_ = node.motion_target_yaw_ = .7;
+    ASSERT_TRUE(node.set_parameter(rclcpp::Parameter("takeoff_height_m", 3.0)).successful);
     node.phase_ = Phase::Takeoff;
-    node.set_parameter(rclcpp::Parameter("takeoff_height_m", 3.0));
     MotionSafetyDomain domain;
     domain.column = ConfirmedColumn{*node.home_, 2, -1, 6, true};
     MotionState state;
@@ -120,9 +121,10 @@ struct P2MissionTestAccess {
   static void tiny_takeoff_references_cannot_skip_before_execution() {
     OffboardMissionNode node;
     node.home_ = node.position_ = Vec3::Zero();
+    ASSERT_TRUE(node.set_parameters_atomically({
+        rclcpp::Parameter("takeoff_height_m", .15),
+        rclcpp::Parameter("motion_max_vertical_velocity_mps", .1)}).successful);
     node.phase_ = Phase::Takeoff;
-    node.set_parameter(rclcpp::Parameter("takeoff_height_m", .15));
-    node.set_parameter(rclcpp::Parameter("motion_max_vertical_velocity_mps", .1));
     const auto [goal, heading] = node.select_target();
     ASSERT_LT(goal.z(), .1);
     node.update_phase(goal, heading);

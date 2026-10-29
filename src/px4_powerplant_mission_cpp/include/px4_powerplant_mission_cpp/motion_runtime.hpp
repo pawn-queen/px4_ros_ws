@@ -10,6 +10,7 @@ struct MotionRuntimeInput {
   MotionState state;
   MotionSafetyDomain domain;
   MotionLimits limits;
+  std::optional<MotionLimits> strict_limits;
   Vec3 target = Vec3::Zero();
   double target_yaw = 0;
   bool enabled = false, permit = false;
@@ -17,6 +18,8 @@ struct MotionRuntimeInput {
   uint64_t generation = 0;
   uint64_t session = 0;
   double settle_dwell_s = .3;
+  // Zero means no count limit; each individual recovery still has a deadline.
+  uint32_t max_tracking_recovery_attempts = 0;
   std::string reason;
 };
 // The mission owns decisions; this module alone owns the 50Hz execution loop.
@@ -49,6 +52,7 @@ private:
     uint64_t session = 0;
     int64_t state_epoch = 0, map_epoch = 0;
     MotionLimits limits;
+    std::optional<MotionLimits> strict_limits;
     std::optional<ConfirmedColumn> column;
     MotionCertificateKind certificate_kind = MotionCertificateKind::AirborneStrict;
     uint64_t authorization_revision = 0;
@@ -63,6 +67,7 @@ private:
     std::optional<ConfirmedColumn> column;
     std::optional<ConfirmedColumn> source_column;
     std::optional<GroundSupportAuthorization> source_ground;
+    std::optional<MotionLimits> source_limits, target_limits;
   };
   std::optional<StrictPromotion> strict_promotion_;
   static bool same_planning_context(const PlanningBudget &, const MotionRuntimeInput &);
@@ -75,6 +80,7 @@ private:
     WorkKind kind = WorkKind::Prepare;
     std::shared_ptr<const MotionRuntimeInput> input;
     MotionState anchor;
+    MotionState preview_state;
     MotionValidationRequest validation;
   };
   struct WorkResult {

@@ -183,10 +183,33 @@ powerplant_offboard_mission:
   ros__parameters:
     # P2 model limits are enabled only by an explicit calibrated profile.
     motion_model_configured: false
+    motion_rounded_envelope_enabled: false
+    takeoff_transition_policy_id: legacy
+    takeoff_reference_governor_enabled: false
     # Zero keeps the legacy ascent setup. Enable only with measured PX4
     # spool/ramp response; simulation supplies its own explicit profile below.
     motion_takeoff_bootstrap_height_m: 0.0
     motion_takeoff_bootstrap_duration_s: 0.0
+    # Optional feedback governor. Hardware remains on the existing strict policy
+    # until its tracking and response bounds are measured independently.
+    motion_tracking_soft_guard_enabled: false
+    motion_tracking_soft_trigger_ratio: 0.60
+    motion_tracking_soft_recover_ratio: 0.35
+    motion_tracking_recovery_wait_s: 3.0
+    motion_tracking_recovery_dwell_s: 0.3
+    motion_tracking_recovery_min_samples: 3
+    takeoff_tracking_max_recoveries: 2
+    takeoff_response_sync_enabled: false
+    takeoff_transition_budget_enabled: false
+    takeoff_transition_hard_limit_s: 35.0
+    takeoff_response_probe_height_m: 0.20
+    takeoff_response_clearance_m: 0.05
+    takeoff_response_dwell_s: 0.3
+    takeoff_response_min_samples: 3
+    takeoff_handoff_min_rise_m: 0.25
+    takeoff_handoff_step_m: 0.05
+    takeoff_transition_planning_budget_s: 0.3
+    sitl_controller_profile_id: ""
     # Shared implementation: keep hardware in strict-only mode until the support
     # plane and actual landing gear have an independently verified calibration.
     # SITL supplies these fields from the locked world/body audit in its overlay.

@@ -38,6 +38,14 @@ struct MotionState {
   int64_t land_sample_stamp_ns = 0, land_receipt_steady_ns = 0;
 };
 
+struct MotionTrackingGuardPolicy {
+  // Off by default so hardware behavior changes only after explicit setup.
+  bool enabled = false;
+  double trigger_ratio = .60, recover_ratio = .35;
+  double recovery_wait_s = 3, recovery_dwell_s = .3;
+  uint32_t recovery_min_samples = 3;
+};
+
 struct MotionLimits {
   double max_horizontal_velocity_mps = .6;
   double max_vertical_velocity_mps = .3;
@@ -59,7 +67,15 @@ struct MotionLimits {
   double max_state_age_s = .5, max_control_gap_s = .3;
   double max_clock_stall_s = .2;
   size_t max_check_voxels = 20000;
+  MotionTrackingGuardPolicy tracking_guard;
+  bool rounded_envelope = false;
+  bool reference_governor = false;
+  // Fixed at plan adoption, never a runtime trajectory-clock multiplier.
+  double reference_duration_scale = 1.;
+  std::string policy_id = "strict";
+  uint64_t policy_revision = 0;
 };
+MotionLimits takeoff_transition_limits(const MotionLimits &, const std::string &);
 
 struct ConfirmedColumn {
   Vec3 center_enu = Vec3::Zero();
@@ -101,6 +117,24 @@ struct MotionSample {
 
 struct MotionSafetyBox {
   Vec3 minimum = Vec3::Zero(), maximum = Vec3::Zero();
+  // Broad-phase AABB above encloses a reference-position box Minkowski-summed
+  // with a horizontal disc. Z already includes the complete body height.
+  bool rounded = false;
+  Vec3 reference_minimum = Vec3::Zero(), reference_maximum = Vec3::Zero();
+  double horizontal_radius_m = 0;
+};
+
+// Immutable proof at the atomic authorization/policy handoff. A later task
+// status may already contain a different measured velocity or reference.
+struct MotionStrictAcknowledgement {
+  int64_t ros_stamp_ns = 0, steady_stamp_ns = 0;
+  uint64_t authorization_revision = 0, session = 0, survey_revision = 0;
+  int64_t map_epoch = 0, map_revision = 0;
+  MotionState state;
+  MotionSample reference;
+  MotionSafetyBox stopping_envelope;
+  MotionLimits limits;
+  double tracking_risk_ratio = 0;
 };
 
 struct QuinticMotionLeg {
@@ -114,6 +148,9 @@ struct MotionPlan {
   std::vector<MotionSafetyBox> safety_boxes;
   Path route;
   double goal_yaw_rad = 0, duration_s = 0;
+  double reference_duration_scale = 1.;
+  std::string policy_id = "strict";
+  uint64_t policy_revision = 0;
   int64_t epoch = 0, revision = 0, state_epoch = 0;
   MotionCertificateKind certificate_kind = MotionCertificateKind::AirborneStrict;
   uint64_t authorization_revision = 0, authorization_session = 0, survey_revision = 0;
@@ -131,6 +168,7 @@ struct MotionValidationRequest {
 };
 
 struct MotionUpdate {
+  MotionLimits effective_limits;
   MotionSample sample;
   MotionMode mode = MotionMode::Hold;
   std::string reason;
@@ -144,6 +182,45 @@ struct MotionUpdate {
   uint64_t authorization_revision = 0;
   bool strict_promotion_ready = false;
   std::string strict_promotion_reason;
+  int64_t strict_promotion_stamp_ns = 0;
+  std::shared_ptr<const MotionStrictAcknowledgement> strict_ack;
+  double tracking_risk_ratio = 0;
+  // A monotonic execution event, never a mission generation. Runtime uses it
+  // to invalidate in-flight planner work once and latch a recovery HOLD.
+  uint64_t tracking_soft_stop_serial = 0;
+  bool tracking_recovery_active = false, tracking_recovery_failed = false;
+  uint32_t tracking_recovery_attempts = 0;
+  std::string tracking_recovery_reason;
+  std::string policy_id;
+  uint64_t policy_revision = 0;
+  double reference_duration_scale = 1.;
+};
+
+// Pure sample-time risk, with the same scalar AND directional uncertainty
+// bounds as the hard certificate. Reference must correspond to state.sample.
+double motion_tracking_risk_ratio(const MotionState &, const MotionSample &,
+                                  const MotionLimits &);
+// Advisory constant-velocity preview only; never supplies motion authority.
+double motion_reference_preview_risk(const MotionPlan &, const MotionState &,
+                                     const MotionLimits &, double sample_age_s);
+
+// A session-scoped latch owned by the 50 Hz runtime. Changing mission goals,
+// map/authorization revisions, or cancelling a worker cannot clear it. Only
+// a new execution session/reset creates a new recovery budget.
+class MotionTrackingRecovery {
+public:
+  void reset();
+  void rebind_execution_serial() { observed_serial_ = 0; }
+  void update(MotionUpdate &, const MotionState &,
+              const MotionTrackingGuardPolicy &, int64_t steady_now_ns,
+              uint32_t maximum_attempts = 0);
+  bool blocked() const { return active_ || failed_; }
+private:
+  uint64_t observed_serial_ = 0;
+  uint32_t attempts_ = 0, stable_samples_ = 0;
+  int64_t wait_started_ns_ = 0, stable_since_ns_ = 0, stable_since_sample_ns_ = 0, last_sample_ns_ = 0;
+  bool active_ = false, failed_ = false;
+  std::string reason_;
 };
 
 // Pure functions shared by candidate timing, worker planning and tests.
@@ -207,9 +284,19 @@ public:
   bool promote_to_strict(const MotionState &, const MotionSafetyDomain &,
                          int64_t ros_now_ns, int64_t steady_now_ns,
                          std::string *reason = nullptr);
+  bool promote_to_strict(const MotionState &, const MotionSafetyDomain &,
+                         const MotionLimits &target_limits,
+                         int64_t ros_now_ns, int64_t steady_now_ns,
+                         std::string *reason = nullptr);
+  bool can_promote_to_strict(const MotionState &, const MotionSafetyDomain &,
+                            const MotionLimits &, int64_t, int64_t,
+                            std::string *reason = nullptr) const;
 
 private:
   friend class MotionRuntime;
+  void request_tracking_hold();
+  std::string strict_target_reason(const MotionState &, const MotionSafetyDomain &,
+      const MotionLimits &, int64_t, int64_t, MotionSafetyBox *) const;
   bool accept_prepared(const MotionPlan &, const MotionState &certified_state,
                        const MotionState &, const MotionSafetyDomain &,
                        const MotionLimits &, int64_t ros_now_ns,
@@ -223,6 +310,8 @@ private:
   std::string reason_;
   int64_t start_ros_ns_ = 0, brake_ros_ns_ = 0, last_ros_ns_ = 0;
   int64_t last_steady_ns_ = 0, clock_progress_steady_ns_ = 0;
+  int64_t strict_promotion_stamp_ns_ = 0;
+  std::shared_ptr<const MotionStrictAcknowledgement> strict_ack_;
   int64_t epoch_ = 0, domain_epoch_ = 0, checked_revision_ = -1;
   bool async_validation_ = false, checked_map_fresh_ = false;
   MotionCertificateKind certificate_kind_ = MotionCertificateKind::AirborneStrict;
@@ -231,6 +320,8 @@ private:
   uint64_t plan_serial_ = 0;
   int64_t validation_pending_since_ = 0;
   double brake_duration_s_ = 0;
+  double tracking_risk_ratio_ = 0;
+  uint64_t tracking_soft_stop_serial_ = 0;
   std::optional<MotionSafetyBox> stopping_envelope_;
   std::optional<double> stop_margin_lower_bound_m_;
   // Exact reference episodes, without maps. Delayed navigation must be

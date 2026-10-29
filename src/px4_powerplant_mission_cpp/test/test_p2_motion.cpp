@@ -1580,6 +1580,36 @@ TEST(P2GroundMotion, LandedMayRemainTrueDuringBoundedMicroAscent) {
   EXPECT_FALSE(build_motion_plan(d,s,{s.position_enu,high},0,l).plan);
 }
 
+TEST(P2GroundMotion, AcceptedRoundoffCannotCreateForbiddenYawOrLateralMotion) {
+  auto s=ground_state();s.position_enu.z()=.2;s.velocity_enu.setZero();refresh_ground(s,0);
+  auto d=ground_domain(s);liftoff_domain(d,s);
+  auto l=takeoff_transition_limits(ground_limits(),"A");l.minimum_leg_duration_s=4.5;
+  const Vec3 goal=s.position_enu+Vec3(5e-7,-3e-7,.02);
+  auto built=build_motion_plan(d,s,{s.position_enu,goal},s.yaw_rad+8e-7,l);
+  ASSERT_TRUE(built.plan)<<built.reason;
+  MotionExecutor executor;executor.reset(s,l);
+  std::string reason;
+  ASSERT_TRUE(executor.accept(*built.plan,s,d,l,start_ros,start_steady,&reason))<<reason;
+  const auto initial=s.position_enu;
+  for (int i=0;i<=100;++i) {
+    const double t=built.plan->duration_s*i/100.;
+    const auto ref=sample_motion_plan(*built.plan,t);
+    EXPECT_DOUBLE_EQ(ref.position_enu.x(),initial.x());
+    EXPECT_DOUBLE_EQ(ref.position_enu.y(),initial.y());
+    EXPECT_DOUBLE_EQ(ref.velocity_enu.x(),0.);
+    EXPECT_DOUBLE_EQ(ref.velocity_enu.y(),0.);
+    EXPECT_DOUBLE_EQ(ref.yaw_rate_radps,0.);
+    s.position_enu=ref.position_enu;s.velocity_enu=ref.velocity_enu;
+    s.yaw_rad=ref.yaw_rad;s.yaw_rate_radps=ref.yaw_rate_radps;refresh_ground(s,t);
+    const auto report=executor.update(s,d,s.sample_stamp_ns,s.receipt_steady_ns);
+    EXPECT_TRUE(report.valid)<<report.reason;
+  }
+  const Vec3 invalid=initial+Vec3(2e-6,0,.02);
+  s.position_enu=initial;s.velocity_enu.setZero();refresh_ground(s,0);
+  EXPECT_FALSE(build_motion_plan(d,s,{initial,invalid},s.yaw_rad,l).plan);
+  EXPECT_FALSE(build_motion_plan(d,s,{initial,initial+Vec3(0,0,.02)},s.yaw_rad+2e-6,l).plan);
+}
+
 TEST(P2GroundMotion, ExpiredTransitionCannotBeRenewedByFreshNavigation) {
   auto s=ground_state();s.velocity_enu.setZero();refresh_ground(s,0);
   auto d=ground_domain(s);liftoff_domain(d,s);d.ground_support->max_transition_s=.1;
@@ -1643,14 +1673,22 @@ TEST(P2GroundRuntime, StrictAckLatchesUntilTaskAcknowledgesAndNeverRegresses) {
   input.domain.authorization_revision=2;input.domain.ground_support->armed_ros_ns=monotonic_now();
   input.domain.ground_support->armed_steady_ns=input.domain.ground_support->armed_ros_ns;
   input.session=42;input.enabled=true;input.permit=false;input.request_strict_promotion=true;
-  input.limits=ground_limits();input.settle_dwell_s=.05;input.target=input.state.position_enu;
+  auto strict=ground_limits();strict.tracking_position_tolerance_m=.1;
+  strict.policy_id="airborne-strict-v2";strict.policy_revision=2;
+  input.strict_limits=strict;
+  input.limits=takeoff_transition_limits(strict,"C");input.settle_dwell_s=.05;input.target=input.state.position_enu;
   auto feed=[&]{const auto now=monotonic_now();input.state.sample_stamp_ns=now;
     input.state.receipt_steady_ns=now;input.state.land_sample_stamp_ns=now;
     input.state.land_receipt_steady_ns=now;runtime.input(input);};
   ASSERT_TRUE(eventually([&]{feed();return runtime.report().certificate_kind==MotionCertificateKind::AirborneStrict;}));
   EXPECT_EQ(runtime.report().authorization_revision,3u);
+  ASSERT_TRUE(runtime.report().strict_ack);
+  const auto committed=runtime.report().strict_ack;
+  EXPECT_EQ(committed->limits.policy_id,"airborne-strict-v2");
   for(int i=0;i<6;++i){feed();std::this_thread::sleep_for(std::chrono::milliseconds(20));}
   EXPECT_EQ(runtime.report().certificate_kind,MotionCertificateKind::AirborneStrict);
+  EXPECT_EQ(runtime.report().strict_ack,committed);
+  EXPECT_EQ(runtime.report().policy_id,"airborne-strict-v2");
   EXPECT_GT(publications,0);
   input.domain.authorization_revision=9; // a new ground policy is not an old ACK
   ASSERT_TRUE(eventually([&]{feed();return runtime.report().mode==MotionMode::Fault;}));
@@ -1709,4 +1747,370 @@ TEST(P2GroundRuntime, ProvenReserveAbsorbsAxisBinJitterWithoutRestartingBootstra
   EXPECT_EQ(runtime.report().mode,MotionMode::Tracking)<<runtime.report().reason;
   EXPECT_EQ(preparations.load(),accepted_preparations);
   EXPECT_DOUBLE_EQ(input.state.position_covariance_enu_m2(2,2),.0348*.0348);
+}
+
+TEST(P2TrackingGuard, PredictiveRiskUsesNormAndEveryDirectionalBound) {
+  auto state = state_at();
+  MotionLimits limits;
+  limits.tracking_position_tolerance_m = .10;
+  limits.tracking_velocity_tolerance_mps = .25;
+  MotionSample reference;
+  reference.position_enu = state.position_enu + Vec3(.03, .04, 0);
+  reference.velocity_enu = Vec3(0, 0, .10);
+  EXPECT_NEAR(motion_tracking_risk_ratio(state, reference, limits), .8, 1e-12);
+  // Correlated uncertainty may provide a large scalar bound while a vertical
+  // projection stays narrow. The soft guard must honor that narrow axis too.
+  state.position_sigma_m = .05;
+  state.position_covariance_enu_m2 = Vec3(.0025, .0025, .0001).asDiagonal();
+  reference.position_enu = state.position_enu + Vec3(0, 0, .06);
+  EXPECT_NEAR(motion_tracking_risk_ratio(state, reference, limits), .75, 1e-12);
+}
+
+TEST(P2TrackingGuard, GroundedVehicleBrakesBeforeHardGateWithoutReanchoring) {
+  auto state = state_at();
+  auto domain = free_domain();
+  MotionLimits limits;
+  limits.tracking_position_tolerance_m = .10;
+  limits.minimum_leg_duration_s = 4.5;
+  limits.tracking_guard.enabled = true;
+  const auto plan = make_plan(domain, state, state.position_enu + Vec3(0, 0, .20), limits);
+  MotionExecutor executor;
+  executor.reset(state, limits);
+  ASSERT_TRUE(executor.accept(plan, state, domain, limits, start_ros, start_steady));
+  bool braked = false, held = false;
+  uint64_t serial = 0;
+  double hold_height = 0;
+  for (int step = 1; step <= 500; ++step) {
+    const double time = step * .02;
+    const auto out = update_at(executor, state, domain, time);
+    ASSERT_TRUE(out.valid) << out.reason;
+    ASSERT_NE(out.mode, MotionMode::Fault) << out.reason;
+    if (!braked && out.mode == MotionMode::Braking) {
+      braked = true;
+      serial = out.tracking_soft_stop_serial;
+      EXPECT_EQ(serial, 1u);
+      EXPECT_GE(out.tracking_risk_ratio, .60);
+      EXPECT_LT((out.sample.position_enu - state.position_enu).norm(), .10);
+      const auto nominal = sample_motion_plan(plan, time);
+      EXPECT_TRUE(out.sample.position_enu.isApprox(nominal.position_enu, 1e-12));
+      EXPECT_TRUE(out.sample.velocity_enu.isApprox(nominal.velocity_enu, 1e-12));
+    }
+    if (braked && out.mode == MotionMode::Hold) {
+      if (!held) hold_height = out.sample.position_enu.z();
+      held = true;
+      EXPECT_DOUBLE_EQ(out.sample.position_enu.z(), hold_height);
+      EXPECT_GT(hold_height, state.position_enu.z());
+      EXPECT_EQ(out.tracking_soft_stop_serial, serial);
+      EXPECT_TRUE(out.sample.velocity_enu.isZero());
+    }
+  }
+  EXPECT_TRUE(braked);
+  EXPECT_TRUE(held);
+  // The original hard gate remains active during recovery HOLD.
+  state.position_enu.z() -= .11;
+  const auto fault = update_at(executor, state, domain, 10.02);
+  EXPECT_EQ(fault.mode, MotionMode::Fault);
+  EXPECT_EQ(fault.reason, "MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE");
+}
+
+TEST(P2TrackingGuard, RecoveryNeedsNewLowRiskSamplesAndNeverRenewsDeadline) {
+  MotionTrackingRecovery recovery;
+  MotionTrackingGuardPolicy policy;
+  auto state = state_at();
+  MotionUpdate report;
+  report.valid = true;
+  report.mode = MotionMode::Braking;
+  report.tracking_soft_stop_serial = 1;
+  recovery.update(report, state, policy, start_steady, 2);
+  ASSERT_TRUE(recovery.blocked());
+  EXPECT_EQ(report.tracking_recovery_attempts, 1u);
+  report.mode = MotionMode::Hold;
+  report.stopped = true;
+  report.tracking_risk_ratio = .2;
+  recovery.update(report, state, policy, start_steady + 100000000, 2);
+  // Many loop ticks carrying the same navigation sample are one observation.
+  recovery.update(report, state, policy, start_steady + 600000000, 2);
+  EXPECT_TRUE(recovery.blocked());
+  state.sample_stamp_ns += 100000000;
+  recovery.update(report, state, policy, start_steady + 700000000, 2);
+  state.sample_stamp_ns += 300000000;
+  recovery.update(report, state, policy, start_steady + 800000000, 2);
+  EXPECT_FALSE(recovery.blocked());
+  EXPECT_EQ(report.tracking_recovery_reason, "MOTION_TRACKING_RECOVERED_REPLAN");
+  report.tracking_soft_stop_serial = 2;
+  report.tracking_risk_ratio = .5;
+  recovery.update(report, state, policy, start_steady + 1000000000, 2);
+  state.sample_stamp_ns += 100000000;
+  recovery.update(report, state, policy, start_steady + 3900000000, 2);
+  EXPECT_FALSE(report.tracking_recovery_failed);
+  // A fresh sample or new planner/mission generation cannot refresh the wait.
+  state.sample_stamp_ns += 100000000;
+  recovery.update(report, state, policy, start_steady + 4100000000, 2);
+  EXPECT_TRUE(report.tracking_recovery_failed);
+  EXPECT_EQ(report.tracking_recovery_reason, "MOTION_TRACKING_RECOVERY_TIMEOUT");
+  report.tracking_risk_ratio = 0;
+  state.sample_stamp_ns += 1000000000;
+  recovery.update(report, state, policy, start_steady + 6000000000, 2);
+  EXPECT_TRUE(recovery.blocked());
+  EXPECT_TRUE(report.valid); // Trusted navigation permits controlled landing.
+}
+
+TEST(P2TrackingGuard, ThirdRecoveryCannotAcquireANewTakeoffBudget) {
+  MotionTrackingRecovery recovery;
+  MotionTrackingGuardPolicy policy;
+  policy.recovery_dwell_s = 0;
+  auto state = state_at();
+  MotionUpdate report;
+  report.valid = report.stopped = true;
+  report.mode = MotionMode::Hold;
+  for (uint64_t serial = 1; serial <= 3; ++serial) {
+    report.tracking_soft_stop_serial = serial;
+    for (int sample = 0; sample < 3; ++sample) {
+      state.sample_stamp_ns += 10000000;
+      recovery.update(report, state, policy,
+                      start_steady + int64_t(serial * 100000000 + sample * 10000000), 2);
+    }
+    EXPECT_EQ(report.tracking_recovery_attempts, serial);
+    EXPECT_EQ(report.tracking_recovery_failed, serial == 3);
+  }
+  EXPECT_EQ(report.tracking_recovery_reason,
+            "MOTION_TRACKING_RECOVERY_ATTEMPTS_EXHAUSTED");
+}
+
+TEST(P2TrackingGuard, RuntimeCannotRestartGroundedGoalAcrossRecoveryLatch) {
+  std::atomic<int> preparations{0};
+  MotionRuntime runtime(monotonic_now, [](const MotionSample &, int64_t) {},
+      [&](const MotionSafetyDomain &domain, const MotionState &state, const Path &path,
+          double yaw, const MotionLimits &limits, const Cancel &cancel) {
+        ++preparations;
+        return build_motion_plan(domain, state, path, yaw, limits, cancel);
+      });
+  MotionRuntimeInput input;
+  input.state = state_at();
+  input.domain = free_domain();
+  input.target = input.state.position_enu + Vec3(0, 0, .20);
+  input.enabled = input.permit = true;
+  input.session = 42;
+  input.generation = 1;
+  input.settle_dwell_s = 0;
+  input.max_tracking_recovery_attempts = 2;
+  input.limits.tracking_position_tolerance_m = .10;
+  input.limits.tracking_guard.enabled = true;
+  input.limits.tracking_guard.recovery_wait_s = .4;
+  input.limits.tracking_guard.recovery_dwell_s = .3;
+  bool saw_recovery = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+  while (std::chrono::steady_clock::now() < deadline) {
+    input.state.sample_stamp_ns = input.state.receipt_steady_ns = monotonic_now();
+    const auto report = runtime.report();
+    if (report.tracking_recovery_active) {
+      saw_recovery = true;
+      input.generation = 2; // A new task cannot bypass the execution latch.
+    }
+    runtime.input(input);
+    if (report.tracking_recovery_failed) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  const auto failed = runtime.report();
+  EXPECT_TRUE(saw_recovery);
+  EXPECT_TRUE(failed.valid) << failed.reason;
+  EXPECT_EQ(failed.mode, MotionMode::Hold);
+  EXPECT_TRUE(failed.tracking_recovery_failed);
+  EXPECT_EQ(failed.tracking_recovery_attempts, 1u);
+  EXPECT_EQ(preparations.load(), 1);
+  EXPECT_GT(failed.sample.position_enu.z(), input.state.position_enu.z());
+  runtime.disable();
+}
+
+TEST(P2TrackingGuard, RebindingExecutionCannotClearFailedSessionRecovery) {
+  MotionTrackingRecovery recovery;
+  MotionTrackingGuardPolicy policy;
+  policy.recovery_wait_s = .3;
+  auto state = state_at();
+  MotionUpdate report;
+  report.valid = true;
+  report.mode = MotionMode::Hold;
+  report.tracking_soft_stop_serial = 1;
+  report.tracking_risk_ratio = .6;
+  recovery.update(report, state, policy, start_steady, 2);
+  recovery.update(report, state, policy, start_steady + 400000000, 2);
+  ASSERT_TRUE(report.tracking_recovery_failed);
+  recovery.rebind_execution_serial();
+  report.tracking_soft_stop_serial = 0;
+  report.tracking_risk_ratio = 0;
+  report.stopped = true;
+  recovery.update(report, state, policy, start_steady + 500000000, 2);
+  EXPECT_TRUE(recovery.blocked());
+  EXPECT_TRUE(report.tracking_recovery_failed);
+  EXPECT_EQ(report.tracking_recovery_attempts, 1u);
+  recovery.reset(); // Only a new task session is allowed to do this.
+  recovery.update(report, state, policy, start_steady + 600000000, 2);
+  EXPECT_FALSE(recovery.blocked());
+  EXPECT_EQ(report.tracking_recovery_attempts, 0u);
+}
+
+TEST(P2RoundedEnvelope, RemovesOnlyFictitiousCornersAndStillRejectsRealContact) {
+  auto map = std::make_shared<PlanningMap>();
+  map->resolution = .05;
+  MotionSafetyDomain domain;
+  domain.map = map;
+  domain.column = ConfirmedColumn{Vec3::Zero(), 1.5, 0., 4., true};
+  MotionSafetyBox box{Vec3(-1.15, -1.15, 1.5), Vec3(1.15, 1.15, 2.5)};
+  EXPECT_FALSE(motion_box_is_authorized(domain, box, 300000));
+  box.rounded = true;
+  box.reference_minimum = Vec3(-.6, -.6, 2);
+  box.reference_maximum = Vec3(.6, .6, 2);
+  box.horizontal_radius_m = .55;
+  // Farthest physical point: sqrt(.6^2+.6^2)+.55 < 1.5.
+  EXPECT_TRUE(motion_box_is_authorized(domain, box, 300000));
+  map->occupied.insert({-23,-23,40}); // nearest disc distance sqrt(.5^2+.5^2) > .55
+  EXPECT_TRUE(motion_box_is_authorized(domain, box, 300000));
+  map->occupied.insert({22,0,40}); // real swept footprint reaches x=1.15
+  EXPECT_FALSE(motion_box_is_authorized(domain, box, 300000));
+  map->occupied.clear();
+  domain.column->radius_m = 1.3; // genuinely insufficient, even after removing corners
+  EXPECT_FALSE(motion_box_is_authorized(domain, box, 300000));
+}
+
+TEST(P2RoundedEnvelope, ClosedTangencyAndUnknownAreNotRoundedAway) {
+  auto map = std::make_shared<PlanningMap>(); map->resolution = .25;
+  MotionSafetyDomain domain; domain.map = map;
+  domain.column = ConfirmedColumn{Vec3::Zero(), 1.5, 0, 4, true};
+  MotionSafetyBox box{Vec3(-.5,-.5,1.5),Vec3(.5,.5,2.5)};
+  box.rounded = true; box.reference_minimum = box.reference_maximum = Vec3(0,0,2);
+  box.horizontal_radius_m = .5;
+  ASSERT_TRUE(motion_box_is_authorized(domain,box,20000));
+  map->occupied.insert({2,0,8}); // closed tangency at x=.5
+  EXPECT_FALSE(motion_box_is_authorized(domain,box,20000));
+  map->occupied.clear(); domain.column.reset();
+  EXPECT_FALSE(motion_box_is_authorized(domain,box,20000));
+  box.horizontal_radius_m = .2; // inconsistent broad-phase metadata cannot shrink checks
+  EXPECT_FALSE(motion_box_is_authorized(domain,box,20000));
+}
+
+TEST(P2TransitionPolicy, NamedProfilesDoNotAlterStrictDefaultsOrMeasurements) {
+  MotionLimits strict; strict.tracking_position_tolerance_m=.1;strict.body_radius_m=.5;
+  strict.policy_id="airborne-strict-v2";strict.policy_revision=2;
+  for (const auto &id : {"A","B","C","D"}) {
+    const auto transition=takeoff_transition_limits(strict,id);
+    EXPECT_DOUBLE_EQ(transition.tracking_guard.trigger_ratio,.8);
+    EXPECT_DOUBLE_EQ(transition.tracking_guard.recover_ratio,.55);
+    EXPECT_DOUBLE_EQ(transition.tracking_guard.recovery_wait_s,5.);
+    EXPECT_DOUBLE_EQ(transition.sigma_multiplier,strict.sigma_multiplier);
+    EXPECT_DOUBLE_EQ(transition.map_margin_m,strict.map_margin_m);
+    EXPECT_GE(transition.body_radius_m,.48);
+  }
+  EXPECT_DOUBLE_EQ(strict.tracking_position_tolerance_m,.1);
+  EXPECT_DOUBLE_EQ(strict.tracking_guard.trigger_ratio,.6);
+  EXPECT_THROW(takeoff_transition_limits(strict,"unbounded"),std::invalid_argument);
+}
+
+TEST(P2TransitionPolicy, StrictAckRecertifiesTighterPolicyWithoutReferenceJump) {
+  auto s=ground_state();s.position_enu.z()=.7;s.velocity_enu.setZero();s.landed=false;
+  refresh_ground(s,0);auto domain=ground_domain(s);liftoff_domain(domain,s);
+  auto strict=ground_limits();strict.tracking_position_tolerance_m=.1;
+  strict.policy_id="airborne-strict-v2";strict.policy_revision=2;
+  auto relaxed=takeoff_transition_limits(strict,"C");
+  MotionExecutor executor;executor.reset(s,relaxed);
+  const auto first=executor.update(s,domain,start_ros,start_steady);
+  ASSERT_TRUE(first.valid)<<first.reason;
+  s.position_enu.x()+=.14;refresh_ground(s,.02);
+  const auto shifted=executor.update(s,domain,s.sample_stamp_ns,s.receipt_steady_ns);
+  ASSERT_TRUE(shifted.valid)<<shifted.reason;
+  std::string error;
+  EXPECT_FALSE(executor.can_promote_to_strict(s,domain,strict,s.sample_stamp_ns,s.receipt_steady_ns,&error));
+  EXPECT_EQ(executor.mode(),MotionMode::Hold);
+  s.position_enu.x()-=.14;refresh_ground(s,.04);
+  ASSERT_TRUE(executor.update(s,domain,s.sample_stamp_ns,s.receipt_steady_ns).valid);
+  ASSERT_TRUE(executor.promote_to_strict(s,domain,strict,s.sample_stamp_ns,s.receipt_steady_ns,&error))<<error;
+  auto airborne=domain;airborne.certificate_kind=MotionCertificateKind::AirborneStrict;
+  ++airborne.authorization_revision;airborne.ground_support.reset();airborne.column->z_min_m=.01;
+  refresh_ground(s,.06);
+  const auto ack=executor.update(s,airborne,s.sample_stamp_ns,s.receipt_steady_ns);
+  ASSERT_TRUE(ack.valid)<<ack.reason;
+  EXPECT_EQ(ack.policy_id,strict.policy_id);
+  EXPECT_EQ(ack.strict_promotion_stamp_ns, start_ros + 40000000);
+  EXPECT_DOUBLE_EQ(ack.effective_limits.tracking_position_tolerance_m,.1);
+  EXPECT_TRUE(ack.sample.position_enu.isApprox(first.sample.position_enu,1e-14));
+  EXPECT_TRUE(ack.sample.velocity_enu.isApprox(first.sample.velocity_enu,1e-14));
+  EXPECT_TRUE(ack.sample.acceleration_enu.isApprox(first.sample.acceleration_enu,1e-14));
+  ASSERT_TRUE(ack.strict_ack);
+  const auto proof=ack.strict_ack;
+  EXPECT_EQ(proof->ros_stamp_ns,start_ros+40000000);
+  EXPECT_EQ(proof->state.sample_stamp_ns,start_ros+40000000);
+  EXPECT_EQ(proof->authorization_revision,airborne.authorization_revision);
+  EXPECT_TRUE(proof->reference.position_enu.isApprox(first.sample.position_enu,1e-14));
+  s.velocity_enu.x()=strict.stop_speed_mps+.01;refresh_ground(s,.08);
+  const auto later=executor.update(s,airborne,s.sample_stamp_ns,s.receipt_steady_ns);
+  ASSERT_TRUE(later.valid)<<later.reason;
+  EXPECT_FALSE(later.stopped);
+  EXPECT_EQ(later.strict_ack,proof);
+  EXPECT_TRUE(proof->state.velocity_enu.isZero());
+  executor.reset(s,strict);
+  EXPECT_FALSE(executor.update(s,airborne,s.sample_stamp_ns,s.receipt_steady_ns).strict_ack);
+}
+
+TEST(P2ReferenceGovernor, PreviewIsAdvisoryAndTimesAreFixedWithConsistentDerivatives) {
+  auto state=state_at(); MotionLimits limits;
+  limits.minimum_leg_duration_s=4.5;limits.tracking_position_tolerance_m=.1;
+  auto nominal=make_plan(free_domain(),state,state.position_enu+Vec3(0,0,.2),limits);
+  limits.reference_duration_scale=1.25;
+  auto slow=make_plan(free_domain(),state,state.position_enu+Vec3(0,0,.2),limits);
+  EXPECT_NEAR(slow.duration_s,nominal.duration_s*1.25,1e-12);
+  const auto n=sample_motion_plan(nominal,nominal.duration_s*.3);
+  const auto s=sample_motion_plan(slow,slow.duration_s*.3);
+  EXPECT_TRUE(n.position_enu.isApprox(s.position_enu,1e-12));
+  EXPECT_TRUE((n.velocity_enu/1.25).isApprox(s.velocity_enu,1e-12));
+  EXPECT_TRUE((n.acceleration_enu/(1.25*1.25)).isApprox(s.acceleration_enu,1e-12));
+  EXPECT_LT(motion_reference_preview_risk(slow,state,limits,0),
+            motion_reference_preview_risk(nominal,state,limits,0));
+  auto stale_policy=limits;stale_policy.policy_revision=1;
+  EXPECT_FALSE(motion_plan_is_authorized(free_domain(),slow,0,stale_policy));
+}
+
+TEST(P2ReferenceGovernor, NoCandidateUsesBoundedRecoveryAndKeepsIssuedHold) {
+  std::atomic<int> preparations{0};
+  MotionRuntime runtime(monotonic_now, [](const MotionSample &, int64_t) {},
+      [&](const MotionSafetyDomain &domain, const MotionState &state, const Path &path,
+          double yaw, const MotionLimits &limits, const Cancel &cancel) {
+        ++preparations;
+        return build_motion_plan(domain, state, path, yaw, limits, cancel);
+      });
+  MotionRuntimeInput in;
+  in.state = ground_state();
+  in.state.velocity_enu.setZero();
+  in.state.armed = true;
+  in.domain = ground_domain(in.state);
+  in.domain.certificate_kind = MotionCertificateKind::LiftoffTransition;
+  in.domain.ground_support->armed_ros_ns = monotonic_now();
+  in.domain.ground_support->armed_steady_ns = in.domain.ground_support->armed_ros_ns;
+  in.session = 42;
+  in.enabled = in.permit = true;
+  in.generation = 1;
+  in.settle_dwell_s = 0.;
+  in.max_tracking_recovery_attempts = 2;
+  in.target = in.state.position_enu + Vec3(0, 0, .2);
+  in.limits = takeoff_transition_limits(ground_limits(), "A");
+  in.limits.reference_governor = true;
+  // Force both advisory previews to reject while the stationary HOLD remains
+  // valid. An unattainable sample count tests the finite recovery deadline.
+  in.limits.tracking_guard.trigger_ratio = .0001;
+  in.limits.tracking_guard.recover_ratio = .00001;
+  in.limits.tracking_guard.recovery_wait_s = .2;
+  in.limits.tracking_guard.recovery_dwell_s = .1;
+  in.limits.tracking_guard.recovery_min_samples = 1000;
+  ASSERT_TRUE(eventually([&] {
+    const auto now = monotonic_now();
+    in.state.sample_stamp_ns = in.state.receipt_steady_ns = now;
+    in.state.land_sample_stamp_ns = in.state.land_receipt_steady_ns = now;
+    runtime.input(in);
+    return runtime.report().tracking_recovery_failed;
+  }));
+  const auto failed = runtime.report();
+  EXPECT_TRUE(failed.valid) << failed.reason;
+  EXPECT_EQ(failed.mode, MotionMode::Hold);
+  EXPECT_EQ(failed.tracking_recovery_attempts, 1u);
+  EXPECT_EQ(preparations.load(), 2); // Exactly the two fixed-duration previews.
+  EXPECT_TRUE(failed.sample.position_enu.isApprox(in.state.position_enu, 1e-12));
+  EXPECT_TRUE(failed.sample.velocity_enu.isZero());
 }
