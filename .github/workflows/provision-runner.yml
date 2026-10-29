@@ -41,7 +41,12 @@ jobs:
           set -uo pipefail
           echo "host=$(hostname)"
           echo "root=$PX4_ROOT"
-          df -h "$(dirname "$PX4_ROOT")" | tail -1
+          # /home/pawn 在这台机器上可能不存在（runner 用户是 gh-runner），
+          # 所以从最近的已存在祖先取磁盘信息，而不是直接 df 父目录。
+          probe="$PX4_ROOT"
+          while [ ! -d "$probe" ]; do probe="$(dirname "$probe")"; done
+          echo "disk probe=$probe"
+          df -h "$probe" | tail -1
           if sudo -n true 2>/dev/null; then
             echo "sudo: passwordless OK"
           else
@@ -58,7 +63,8 @@ jobs:
             echo ""
             echo "- px4_root: $( [ -d "$PX4_ROOT" ] && echo present || echo MISSING )"
             echo "- px4_bin: $( [ -x "$PX4_ROOT/build/px4_sitl_default/bin/px4" ] && echo present || echo MISSING )"
-            echo "- free disk: $(df -h "$(dirname "$PX4_ROOT")" | awk 'NR==2{print $4}')"
+            __probe="$PX4_ROOT"; while [ ! -d "$__probe" ]; do __probe="$(dirname "$__probe")"; done
+            echo "- free disk: $(df -h "$__probe" | awk 'NR==2{print $4}') on $__probe"
             for c in git cmake ninja make gcc g++ python3 pip3 MicroXRCEAgent; do
               printf -- '- %s: %s\n' "$c" "$(command -v "$c" || echo MISSING)"
             done
@@ -96,6 +102,14 @@ jobs:
         if: inputs.action == 'clone-px4'
         run: |
           set -eo pipefail
+          parent="$(dirname "$PX4_ROOT")"
+          if [ ! -d "$parent" ]; then
+            # 仓库内脚本（run_p2_sitl.py、simulation.yml）都默认这个路径，
+            # 所以在这里把它创建出来并交给 runner 用户，而不是换个位置。
+            echo "creating $parent and chowning to $(id -un)"
+            sudo mkdir -p "$parent"
+            sudo chown "$(id -u):$(id -g)" "$parent"
+          fi
           if [ -d "$PX4_ROOT/.git" ]; then
             echo "already cloned at $PX4_ROOT"
             git -C "$PX4_ROOT" rev-parse HEAD
