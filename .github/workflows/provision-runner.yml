@@ -148,7 +148,15 @@ jobs:
             python3 -m pip install --user --break-system-packages \
               kconfiglib jinja2 empy packaging toml numpy pyros-genmsg
           fi
-          python3 -c "import kconfiglib, jinja2, empy; print('PX4 python build deps OK')"
+          # Debian 的 python3-empy 3.3.4 提供的模块名是 `em`，不是 `empy`；
+          # PX4 本身也是 `import em`。检查真实模块名，缺了才失败。
+          python3 - <<'PYCHECK'
+          import importlib.util as u
+          need = ("kconfiglib", "jinja2", "em")
+          missing = [m for m in need if u.find_spec(m) is None]
+          print("PX4 python build deps:", "missing=" + ",".join(missing) if missing else "OK")
+          raise SystemExit(1 if missing else 0)
+          PYCHECK
           echo "--- building px4_sitl_default (parallel=$PARALLEL) ---"
           make px4_sitl_default -j"$PARALLEL" 2>&1 | tail -40
           ls -l build/px4_sitl_default/bin/px4
