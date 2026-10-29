@@ -1,0 +1,130 @@
+name: Provision runner (manual)
+
+# 一次性运维作业：给自托管 runner 补齐 PX4 SITL 环境。
+# 只有 workflow_dispatch 一个入口，且只在本仓库触发 —— 任何 PR 都不会调用它。
+# 每一步都先检查再动手，缺什么报什么，不做静默回退。
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "执行哪种操作"
+        type: choice
+        options: [check, python-deps, clone-px4, build-sitl]
+        default: check
+      px4_root:
+        description: "PX4 树目标路径"
+        default: /home/pawn/drone-simulation
+      px4_repo:
+        description: "PX4 仓库地址"
+        default: https://github.com/pawn-queen/drone-simulation.git
+      parallel:
+        description: "编译并行度"
+        default: "12"
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    name: Provision (${{ inputs.action }})
+    if: github.repository == 'pawn-queen/px4_ros_ws'
+    runs-on: [self-hosted, sim-heavy]
+    timeout-minutes: 120
+    env:
+      PX4_ROOT: ${{ inputs.px4_root }}
+      PX4_REPO: ${{ inputs.px4_repo }}
+      PARALLEL: ${{ inputs.parallel }}
+    steps:
+      - name: Preflight (sudo / disk)
+        run: |
+          set -uo pipefail
+          echo "host=$(hostname)"
+          echo "root=$PX4_ROOT"
+          df -h "$(dirname "$PX4_ROOT")" | tail -1
+          if sudo -n true 2>/dev/null; then
+            echo "sudo: passwordless OK"
+          else
+            echo "::error::runner 用户没有免密 sudo，无法自动安装系统依赖。请在生产机上手动执行 docs/CI_ARCHITECTURE.md 里的命令。"
+            exit 1
+          fi
+
+      - name: Report state
+        if: inputs.action == 'check'
+        run: |
+          set -uo pipefail
+          {
+            echo "### Provision check"
+            echo ""
+            echo "- px4_root: $( [ -d "$PX4_ROOT" ] && echo present || echo MISSING )"
+            echo "- px4_bin: $( [ -x "$PX4_ROOT/build/px4_sitl_default/bin/px4" ] && echo present || echo MISSING )"
+            echo "- free disk: $(df -h "$(dirname "$PX4_ROOT")" | awk 'NR==2{print $4}')"
+            for c in git cmake ninja make gcc g++ python3 pip3 MicroXRCEAgent; do
+              printf -- '- %s: %s\n' "$c" "$(command -v "$c" || echo MISSING)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report ROS and Python modules
+        if: inputs.action == 'check'
+        run: |
+          set -uo pipefail
+          if [ ! -f /opt/ros/jazzy/setup.bash ]; then
+            echo "::error::/opt/ros/jazzy/setup.bash missing"
+            exit 1
+          fi
+          set +u; . /opt/ros/jazzy/setup.bash; set -u
+          echo "- ros2: $(command -v ros2 || echo MISSING)" >> "$GITHUB_STEP_SUMMARY"
+          python3 -m pip --version >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+          python3 - "$GITHUB_STEP_SUMMARY" <<'PY'
+          import importlib.util as u, sys
+          out = open(sys.argv[1], "a")
+          for m in ("rclpy", "numpy", "yaml", "pymavlink", "scipy",
+                    "vtkmodules", "gz.transport13", "gz.msgs10"):
+              out.write(f"- py {m}: {'ok' if u.find_spec(m) else 'MISSING'}\n")
+          out.close()
+          PY
+          cat "$GITHUB_STEP_SUMMARY" | tail -20
+
+      - name: Install Python deps
+        if: inputs.action == 'python-deps'
+        run: |
+          set -eo pipefail
+          python3 -m pip install --user --break-system-packages pymavlink
+          python3 -c "import pymavlink, pymavlink.dialects.v20.common as c; print('pymavlink OK', pymavlink.__file__)"
+
+      - name: Clone PX4 (with submodules)
+        if: inputs.action == 'clone-px4'
+        run: |
+          set -eo pipefail
+          if [ -d "$PX4_ROOT/.git" ]; then
+            echo "already cloned at $PX4_ROOT"
+            git -C "$PX4_ROOT" rev-parse HEAD
+            git -C "$PX4_ROOT" log -1 --format='%h %s'
+          else
+            mkdir -p "$(dirname "$PX4_ROOT")"
+            git clone --recursive "$PX4_REPO" "$PX4_ROOT"
+          fi
+          echo "--- uninitialized submodules (want 0) ---"
+          git -C "$PX4_ROOT" submodule status | awk '$1 ~ /^-/ {print}' | tee /tmp/uninit.txt
+          if [ -s /tmp/uninit.txt ]; then
+            echo "::error::some submodules are not initialized; see the list above"
+            exit 1
+          fi
+          du -sh "$PX4_ROOT"
+
+      - name: Build SITL
+        if: inputs.action == 'build-sitl'
+        run: |
+          set -eo pipefail
+          cd "$PX4_ROOT"
+          if [ ! -f Tools/setup/ubuntu.sh ]; then
+            echo "::error::Tools/setup/ubuntu.sh missing; is PX4_ROOT correct?"
+            exit 1
+          fi
+          echo "--- installing PX4 build dependencies (needs sudo) ---"
+          sudo DEBIAN_FRONTEND=noninteractive bash Tools/setup/ubuntu.sh --no-nuttx 2>&1 | tail -20 \
+            || sudo DEBIAN_FRONTEND=noninteractive bash Tools/setup/ubuntu.sh 2>&1 | tail -20
+          echo "--- building px4_sitl_default (parallel=$PARALLEL) ---"
+          make px4_sitl_default -j"$PARALLEL" 2>&1 | tail -40
+          ls -l build/px4_sitl_default/bin/px4
+          echo "SITL binary built"
