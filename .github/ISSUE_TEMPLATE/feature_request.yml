@@ -1,0 +1,71 @@
+name: Feature Request
+description: 提出新功能、新能力或行为扩展
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        功能请求先描述"为什么"，再描述"怎么做"。如果只是内部结构调整、不改变外部行为，请改用 Refactor Request 模板。
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 功能背景
+      description: 当前缺什么能力？它挡住了哪个任务或哪条验证链路？
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标
+      description: 用可判定的句子描述目标状态，避免"更好""更快"这类无法验收的词。
+    validations:
+      required: true
+
+  - type: textarea
+    id: modules
+    attributes:
+      label: 涉及模块
+      description: 列出预计改动的包、节点、launch 或配置文件。
+      placeholder: |
+        - src/px4_powerplant_mission/px4_powerplant_mission/nodes/...
+        - src/px4_powerplant_mission_cpp/src/...
+        - config/powerplant.yaml
+
+  - type: textarea
+    id: interface_change
+    attributes:
+      label: 接口或架构变更
+      description: 是否新增/修改 ROS topic、消息类型、参数、launch 参数或 C++ 公共头文件？写清兼容性影响。
+      placeholder: |
+        新增 topic: /powerplant/xxx (std_msgs/msg/String)
+        新增参数: foo_timeout_s (double, 默认 1.0)
+        破坏性变更: 无 / 见下
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: 可能的风险
+      description: 重点说明对 offboard 控制链路、坐标系、QoS、实机安全的影响。
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 至少包含一条可自动化的判据（测试名、topic 断言、SITL 场景）。
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 确认
+      options:
+        - label: 我已搜索现有 Issue，未发现重复
+          required: true
+        - label: 本功能不要求 Agent 自动执行实机解锁或起飞
+          required: true

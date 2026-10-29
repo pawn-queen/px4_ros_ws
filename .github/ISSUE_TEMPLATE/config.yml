@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 贡献流程（CONTRIBUTING）
+    url: https://github.com/pawn-queen/px4_ros_ws/blob/main/docs/CONTRIBUTING.md
+    about: 分支创建、提交信息、PR、Review 与合并的完整流程
+  - name: 分支规范（BRANCHING）
+    url: https://github.com/pawn-queen/px4_ros_ws/blob/main/docs/BRANCHING.md
+    about: main / legacy/* / feat/* / fix/* / refactor/* / docs/* / chore/* 的职责
+  - name: 发布流程（RELEASE_PROCESS）
+    url: https://github.com/pawn-queen/px4_ros_ws/blob/main/docs/RELEASE_PROCESS.md
+    about: 如何选择已验证的 commit、打 annotated tag、发布 Release

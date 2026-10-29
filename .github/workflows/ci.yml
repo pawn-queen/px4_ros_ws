@@ -1,0 +1,158 @@
+name: CI
+
+# 只做三件事：Python 静态语法、纯逻辑单元测试、真实 ROS 2 构建 + C++ 测试。
+# 仿真链路在 simulation.yml（self-hosted），理由见 docs/CI_ARCHITECTURE.md。
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-syntax:
+    name: Python syntax
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile all Python sources
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/pyc
+        run: |
+          set -euo pipefail
+          python3 --version
+          python3 -m compileall -q src/px4_powerplant_mission/px4_powerplant_mission
+          python3 -m compileall -q src/px4_powerplant_mission/test
+          python3 -m compileall -q src/px4_powerplant_mission_cpp/test
+          echo "compileall OK"
+
+  python-unit:
+    name: Python unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-numpy python3-pytest
+
+      - name: Run pure-logic tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONPATH: src/px4_powerplant_mission
+        run: |
+          set -euo pipefail
+          python3 -m pytest -p no:cacheprovider -q \
+            src/px4_powerplant_mission/test/test_core_math.py \
+            src/px4_powerplant_mission/test/test_frontier_3d.py \
+            src/px4_powerplant_mission/test/test_uwb_quality_solver.py
+
+  package-metadata:
+    name: ROS package metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Validate package.xml files and submodules
+        run: |
+          set -euo pipefail
+          for d in src/px4_msgs src/px4_ros_com; do
+            if [ ! -f "$d/package.xml" ]; then
+              echo "::error::submodule $d is not populated; .gitmodules or the gitlink is broken"
+              exit 1
+            fi
+          done
+          python3 - <<'PY'
+          import glob, sys, xml.etree.ElementTree as ET
+
+          required = ("name", "version", "description", "maintainer", "license")
+          errors = []
+          pkgs = sorted(glob.glob("src/*/package.xml"))
+          if not pkgs:
+              sys.exit("no package.xml found under src/")
+
+          for path in pkgs:
+              root = ET.parse(path).getroot()
+              name = (root.findtext("name") or "").strip()
+              if not name:
+                  errors.append(f"{path}: missing <name>")
+                  continue
+              if root.tag != "package":
+                  errors.append(f"{path}: root element is <{root.tag}>, expected <package>")
+              if not root.get("format"):
+                  errors.append(f"{path}: <package> has no format attribute")
+              for tag in required:
+                  if not (root.findtext(tag) or "").strip():
+                      errors.append(f"{path}: missing <{tag}>")
+              print(f"ok  {name:<32} format={root.get('format')}")
+
+          if errors:
+              for e in errors:
+                  print(f"::error::{e}")
+              sys.exit(1)
+          print(f"{len(pkgs)} package.xml files OK")
+          PY
+
+  ros2-build-tests:
+    name: ROS 2 build and C++ tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.8
+        with:
+          required-ros-distributions: jazzy
+
+      - name: rosdep install
+        run: |
+          set -euo pipefail
+          source /opt/ros/jazzy/setup.bash
+          sudo rosdep init 2>/dev/null || true
+          rosdep update --rosdistro jazzy
+          # ros_gz_bridge 只在仿真运行期需要，拉进来会多装一整套 Gazebo；
+          # iceoryx 的两个 key 在 Jazzy 的 rosdep 里不稳定，测试用的是默认 RMW。
+          rosdep install -y --rosdistro jazzy --ignore-src \
+            --from-paths src/px4_powerplant_mission src/px4_powerplant_mission_cpp src/px4_msgs \
+            --skip-keys "ros_gz_bridge iceoryx_posh iceoryx_hoofs"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          source /opt/ros/jazzy/setup.bash
+          colcon build \
+            --packages-up-to px4_powerplant_mission_cpp px4_powerplant_mission \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+
+      - name: Run C++ tests (gtest only)
+        run: |
+          set -euo pipefail
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          # ^test_ 只匹配 15 个 ament_add_gtest 目标；下面 9 个 ament_add_pytest_test
+          # 依赖 gz / pymavlink / DDS 发现，留给 simulation.yml。
+          colcon test \
+            --packages-select px4_powerplant_mission_cpp \
+            --executor sequential \
+            --ctest-args -j1 -R "^test_" --output-on-failure
+          colcon test-result --test-result-base build/px4_powerplant_mission_cpp --verbose
