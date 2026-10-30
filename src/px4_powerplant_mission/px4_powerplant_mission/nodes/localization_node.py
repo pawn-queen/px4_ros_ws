@@ -33,6 +33,7 @@ from px4_powerplant_mission.common.frames import (
     yaw_ned_to_enu,
 )
 from px4_powerplant_mission.common.qos import px4_qos_profile, reliable_qos_profile, sensor_qos_profile
+from px4_powerplant_mission.mission_contract import LOCALIZATION_STATUS_VERSION
 from px4_powerplant_mission.localization.fusion import FusionState
 from px4_powerplant_mission.localization.inputs import UwbInput, declare_input_parameters, set_stamp, stamp_ns
 
@@ -610,6 +611,7 @@ class LocalizationNode(Node):
             if self._has_independent_position():
                 variance = np.asarray(self.navigation_odom.pose.covariance)[[0, 7, 14]]
         return {
+            "contract_version": LOCALIZATION_STATUS_VERSION,
             "status_stamp_ns": now_ns,
             "status_sequence": self.status_sequence,
             "localization_epoch": getattr(self, "localization_epoch", 0),

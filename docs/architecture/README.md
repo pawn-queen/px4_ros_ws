@@ -81,7 +81,7 @@ flowchart LR
 | 判断 | 结论 | 证据 |
 |---|---|---|
 | 两个业务包可构建、可安装 | `[事实]` 本机 `install/` 有 Python 包、C++ 可执行；C++ 可执行是指向 `build/` 的符号链接 | `install/px4_powerplant_mission_cpp/lib/px4_powerplant_mission_cpp/`；`src/px4_powerplant_mission/README.md:32-39` |
-| 单元/契约测试 | `[事实]` 删除 legacy 后本机 runtime C++ 244 项、validation 148 项、Python 77 项，均 0 失败 | 本机 `colcon test-result`；`pytest validation/tests`；`pytest src/px4_powerplant_mission/test` |
+| 单元/契约测试 | `[事实]` 删除 legacy 后本机 runtime C++ 247 项、validation 148 项、Python 83 项，均 0 失败 | 本机 `colcon test-result`；`pytest validation/tests`；`pytest src/px4_powerplant_mission/test` |
 | 完整 SITL 飞行 | `[事实]` 2026-10-29 实际电厂 20 个 A–D/I 候选均未通过起飞初扫，未进入 `HOVER_SCAN` | `docs/validation/issue3-actual-plant.md:3`；`docs/design/takeoff-response-sync.md:106-112` |
 | 原始传感器负载 SITL | `[事实]` 文档称原始渲染负载未通过健康启动，CPU 档 10 Hz 仍慢于实时；2.5 Hz CPU 档接近实时，但完整流程未通过 | `docs/history/migration-status.md:32`；`docs/validation/sitl-acceptance.md:56-70` |
 | 实机 UWB → EV → PX4 | `[未证实]` Host 测试仅假串口/PTY/mock，未接实板；README 明确“不声称已经执行无线测距” | `Host/README.md:102-111`；`C:\Users\pawn-\UWB-loaclization\AGENTS.md:36` |

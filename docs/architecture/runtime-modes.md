@@ -272,8 +272,8 @@ flowchart LR
 
 | 检查 | 结果 | 证据 |
 |---|---|---|
-| runtime C++/契约测试 | 244 项，0 失败 | 本机 `colcon test-result --test-result-base build/px4_powerplant_mission_cpp` |
-| Python 回归 | 77 项，0 失败（删除 legacy 后） | 本机 `pytest src/px4_powerplant_mission/test` |
+| runtime C++/契约测试 | 247 项，0 失败 | 本机 `colcon test-result --test-result-base build/px4_powerplant_mission_cpp` |
+| Python 回归 | 83 项，0 失败（删除 legacy 后） | 本机 `pytest src/px4_powerplant_mission/test` |
 | validation 回归 | 148 项，0 失败 | 本机 `pytest validation/tests` |
 | 最新完整 SITL | **未通过**：`passed=false`，`exit_reason=mission_fault`；阶段 `IDLE→START→SAFE_TAKEOFF→FAULT` | `log/p2_sitl_cpu_17/report.json` |
 | 失败原因 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE`，在起飞段触发安全停止 | `log/p2_sitl_cpu_17/events.jsonl` |

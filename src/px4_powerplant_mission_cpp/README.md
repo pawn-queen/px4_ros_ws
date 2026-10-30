@@ -63,6 +63,8 @@ CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 colcon build --symlink-install \
 
 正常探索默认要求实际匹配的 CameraInfo；P2 巡检还要求真实 RGB 标定和 YOLO 源曝光。硬件运动参数必须显式配置。`/powerplant/map/observed_voxels` 仍使用四个 float32 字段（`x,y,z,state`）；未知/缺失和不确定（`state=-1`）单元不能承载飞行路径，截断快照不能授权探索。launch 给定位、建图、YOLO 和控制传入同一个 `use_sim_time`。消息头使用 ROS 时间；墙钟定时器和单调接收时限也能检测仿真时钟冻结。
 
+Python/C++ 的定位状态和 YOLO 检测仍是 `String` JSON，但字段和版本已收进 [mission contract](../../docs/design/mission-contract.md)：新消息写 `contract_version=1`，旧字段保留；两端常量和契约测试共同防止静默漂移。
+
 C++ 的算法平局是确定性的（体素键字典序），所以完全相等的候选优先级可能选择与 Python set 迭代不同的等价视点。轨迹检查已知空闲净空，不要求路径消息逐字节相同；体素发布顺序不是接口保证。数值计算使用 double，地图线格式使用 float32，与已退役的 Python 线格式一致。
 
 图像保存已改为异步；照片事件和计数按后续控制周期的写入结果更新。只有新图像成功写入后才计数。落地完成需要新鲜的 PX4 landed 和 disarmed；超时保持未确认。无效导航会锁定 `FAULT` 并停止 heartbeat/setpoint，让配置的 PX4 Offboard-loss 行为接管；恢复不会自动重新解锁。

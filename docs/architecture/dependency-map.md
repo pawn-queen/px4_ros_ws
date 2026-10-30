@@ -189,7 +189,7 @@ flowchart LR
 | 运动配置 | 操作者 | mapper/controller | 外参、包络、制动/时延、`motion_model_configured` | `src/px4_powerplant_mission/README.md:405-413`；`src/px4_powerplant_mission/config/p2_hardware.yaml:1-10` |
 | Host 配置 | 操作者 | Host | 串口、Tag ID、Anchor ENU、`coordinates_measured`、噪声/门限 | `Host/uwb_hardware_bridge/config.py:27-80` |
 
-`[事实]` 地图/定位健康协议是跨进程的**字符串 JSON 契约**，不是 ROS 消息字段；字段缺失/旧版本会被 C++ 控制器拒绝（`docs/validation/input-map-health.md:58`）。`[推断]` 这类契约没有 `.msg`/schema 文件，升级时容易漏改一端。
+`[事实]` 定位状态/YOLO 检测的跨进程字符串 JSON 契约由 [mission contract](../design/mission-contract.md)、`config/mission_contract.json` 和两端常量维护；地图健康协议仍是另一条 C++/mapper 契约。字段缺失/旧版本会被 C++ 控制器拒绝（`docs/validation/input-map-health.md:58`）。`[推断]` 这类契约没有 `.msg`/schema 文件，升级时容易漏改一端。
 
 ## 4. 跨仓库版本耦合
 

@@ -10,6 +10,7 @@
 | 构建/运行仿真 | [C++ runtime README](../src/px4_powerplant_mission_cpp/README.md)、[运行模式](architecture/runtime-modes.md) |
 | 跑验证/SITL | [validation/README](../validation/README.md) |
 | 改 runtime/validation 边界 | [ADR-0001](adr/0001-runtime-validation-seam.md) |
+| 改 Python/C++ JSON 契约 | [mission contract](design/mission-contract.md)、[ADR-0002](adr/0002-mission-contract.md) |
 | 查历史 P0/P1/P2 | [设计文档](design)、[验证记录](validation)、[历史](history) |
 | 做研究/实验 | [研究文档](research) |
 | 参与开发/CI/发布 | [CONTRIBUTING](CONTRIBUTING.md)、[CI 架构](CI_ARCHITECTURE.md)、[分支规范](BRANCHING.md)、[发布流程](RELEASE_PROCESS.md) |

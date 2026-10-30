@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "contracts": {
+    "localization_status": {
+      "version": 1,
+      "required": [
+        "status_stamp_ns",
+        "status_sequence",
+        "localization_epoch",
+        "navigation_sample_ns",
+        "uwb_input_healthy",
+        "has_independent_position",
+        "position_variance_enu_m2"
+      ]
+    },
+    "yolo_detection": {
+      "version": 1,
+      "required": [
+        "stamp",
+        "frame_id",
+        "image_width",
+        "image_height",
+        "detections"
+      ],
+      "item_required": ["class_name", "confidence", "bbox_xyxy"]
+    }
+  }
+}
