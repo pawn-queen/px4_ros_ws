@@ -113,6 +113,13 @@ jobs:
     name: ROS 2 build and C++ tests
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+      # PX4 的构建会用到 __DATE__ 之类的宏；不放开这两个，命中率会很低。
+      CCACHE_SLOPPINESS: time_macros,include_file_mtime,include_file_ctime
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -149,6 +156,24 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "px4_msgs gitlink: $sha"
 
+      - name: Install ccache
+        run: |
+          set -eo pipefail
+          sudo apt-get install -y --no-install-recommends ccache
+          ccache --version | head -1
+          ccache --max-size="$CCACHE_MAXSIZE" --show-stats
+
+      - name: Cache ccache
+        id: ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          # 每个 commit 一个新 key，但 restore-keys 会把上一个 commit 的缓存
+          # 捞回来做底子：只改一个文件时，其余目标文件全部命中。
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
       # px4_msgs 的构建占整个作业的一半以上（246 条消息的 rosidl 代码生成，
       # 不是编译器，所以 ccache 对它无效）。只缓存这一个包的 build/install，
       # 让 CMake 做增量：命中时 466s 会降到 ~20s。
@@ -172,6 +197,8 @@ jobs:
           colcon build \
             --packages-up-to px4_powerplant_mission_cpp px4_powerplant_mission \
             --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+          echo "--- ccache stats after build ---"
+          ccache --show-stats
 
       - name: Run C++ tests (gtest only)
         run: |
