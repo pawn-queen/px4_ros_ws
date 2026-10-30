@@ -148,7 +148,10 @@ jobs:
                  python3-colcon-common-extensions python3-rosdep python3-vcstool
           set +u; . /opt/ros/jazzy/setup.bash; set -u
           command -v ros2 rosdep colcon
-          ros2 --version
+          rosdep --version
+          # ros2 没有 --version 子命令，用 pkg list 证明 CLI 真的能跑。
+          ros2 pkg list > /dev/null
+          echo "ros2 CLI OK"
           echo "ros-jazzy packages installed: $(dpkg -l 2>/dev/null | grep -c 'ros-jazzy')"
 
       - name: rosdep install
