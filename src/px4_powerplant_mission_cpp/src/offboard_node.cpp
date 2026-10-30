@@ -1,4 +1,5 @@
 #include "px4_powerplant_mission_cpp/input_validation.hpp"
+#include "px4_powerplant_mission_cpp/mission_contract.hpp"
 #include "px4_powerplant_mission_cpp/offboard.hpp"
 #include "px4_powerplant_mission_cpp/parameters.hpp"
 #include "px4_powerplant_mission_cpp/planning_index.hpp"
@@ -447,20 +448,22 @@ void OffboardMissionNode::on_localization_status(const std::string &text) {
     return;
   try {
     auto p = parse(text);
-    for (const auto *key : {"status_stamp_ns", "status_sequence",
-                            "localization_epoch", "navigation_sample_ns"})
+    for (const auto *key : {mission_contract::kStatusStampNs,
+                            mission_contract::kStatusSequence,
+                            mission_contract::kLocalizationEpoch,
+                            mission_contract::kNavigationSampleNs})
       if (!p[key].isInt64())
         throw std::invalid_argument(
             "missing localization health timestamp/epoch");
-    const auto epoch = p["localization_epoch"].asInt64();
-    const auto sequence = p["status_sequence"].asInt64();
-    if (epoch <= 0 || sequence <= 0 || !p["uwb_input_healthy"].isBool() ||
-        !p["has_independent_position"].isBool())
+    const auto epoch = p[mission_contract::kLocalizationEpoch].asInt64();
+    const auto sequence = p[mission_contract::kStatusSequence].asInt64();
+    if (epoch <= 0 || sequence <= 0 || !p[mission_contract::kUwbInputHealthy].isBool() ||
+        !p[mission_contract::kHasIndependentPosition].isBool())
       throw std::invalid_argument("invalid localization health schema");
     if (retired_localization_epochs_.count(epoch) ||
         (epoch == localization_epoch_ && sequence <= localization_sequence_))
       return;
-    if (!stamp_reason(p["status_stamp_ns"].asInt64(), ns(),
+    if (!stamp_reason(p[mission_contract::kStatusStampNs].asInt64(), ns(),
                       d("max_localization_age_s"), d("max_future_stamp_skew_s"))
              .empty())
       return;
@@ -476,13 +479,13 @@ void OffboardMissionNode::on_localization_status(const std::string &text) {
             "localization coordinate epoch changed; explicit restart required");
     }
     if (epoch != localization_epoch_)
-      localization_boundary_sample_ = p["navigation_sample_ns"].asInt64();
+      localization_boundary_sample_ = p[mission_contract::kNavigationSampleNs].asInt64();
     localization_epoch_ = epoch;
     localization_sequence_ = sequence;
     localization_stamp_ = ns();
     localization_steady_ = steady_ns();
-    independent_healthy_ = p["uwb_input_healthy"].asBool() &&
-                           p["has_independent_position"].asBool();
+    independent_healthy_ = p[mission_contract::kUwbInputHealthy].asBool() &&
+                           p[mission_contract::kHasIndependentPosition].asBool();
     if (!independent_healthy_ && active_ && phase_ != Phase::Start)
       fault("independent localization health lost");
   } catch (const std::exception &e) {
@@ -904,7 +907,7 @@ void OffboardMissionNode::publish_status(std::optional<Vec3> target,
   p["pre_flight_checks_pass"] = vehicle_.pre_flight_checks_pass;
   p["accepts_offboard_setpoints"] = vehicle_.accepts_offboard_setpoints;
   p["localization_ready"] = localization_ready();
-  p["localization_epoch"] = integer(localization_epoch_);
+  p[mission_contract::kLocalizationEpoch] = integer(localization_epoch_);
   p["localization_health_age_s"] = number(age(localization_stamp_), 3);
   p["independent_localization_healthy"] = independent_healthy_;
   p["health_fault_reason"] = fault_reason_;

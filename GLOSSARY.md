@@ -13,6 +13,7 @@
 | **viewpoint** | 为观察 frontier 而选择的已知空闲位姿；需要可见性、净空和返航预算。 | 目标本身、拍照点 |
 | **ROI_ACCESS / ROI_WORK** | EXPLORE 内“到达任务区域”和“在任务区域工作”的两个子模式。 | 独立任务阶段、PX4 飞行模式 |
 | **takeoff domain** | 起飞点周围的竖直安全柱体；由确认区域、净空和地面支持共同约束。 | 普通起飞高度、任意圆柱 |
+| **mission contract** | Python 与 C++ 之间通过 JSON 字符串传递的字段、版本和必填规则；由 `mission_contract.json`、Python 常量、C++ 常量和契约测试共同维护。 | JSON 字符串本身、ROS 消息类型 |
 | **runtime profile** | `config/runtime_profiles.json` 中的一个命名组合，决定本地化配置、运动配置和 use_* 默认值；`profile` 是新入口，`localization_profile` 是兼容入口。 | 单个 YAML 文件、单个 launch 参数 |
 | **P0 / P1 / P2** | 2026-10 的历史工作阶段名；当前只用于历史文档和迁移记录，不再作为脚本或新模块名。 | 当前模块名、能力等级 |
 | **ADR** | Architecture Decision Record，记录已做出的结构决策和后果。 | 设计草稿、会议记录 |

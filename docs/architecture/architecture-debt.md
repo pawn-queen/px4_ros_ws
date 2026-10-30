@@ -197,7 +197,7 @@ flowchart TB
 - 最新完整 SITL 报告：`log/p2_sitl_cpu_17/report.json`，`passed=false`，`exit_reason=mission_fault`；阶段 `IDLE→START→SAFE_TAKEOFF→FAULT`；失败项包括 `all_required_phases`、`phase_order`、`landed_and_disarmed_completion`、`no_mission_fault`、`topology_built`、`inspection_result_explicit`、`actual_photo_and_surface_evidence`。
 - `events.jsonl`：`safety_stop` / `mission_fault` 原因为 `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE`。
 - 文档记录：原始渲染负载未通过健康启动；CPU 10 Hz 仍慢于实时；2.5 Hz CPU 档接近实时但完整流程未通过（`docs/history/migration-status.md:32`）。
-- 单元/契约测试：删除 legacy 后本机 runtime C++ 244 项、validation 148 项、Python 77 项均 0 失败；这不等于飞行验收。
+- 单元/契约测试：删除 legacy 后本机 runtime C++ 247 项、validation 148 项、Python 83 项均 0 失败；这不等于飞行验收。
 - 实机：Host 仅假串口/PTY/mock；主工作区没有真实传感器驱动；无实飞记录（`Host/README.md:102-111`；`docs/validation/input-map-health.md:78`）。
 
 **影响**

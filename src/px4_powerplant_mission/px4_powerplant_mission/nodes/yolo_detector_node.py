@@ -16,6 +16,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 from px4_powerplant_mission.common.qos import reliable_qos_profile, sensor_qos_profile
+from px4_powerplant_mission.mission_contract import YOLO_DETECTION_VERSION
 
 
 class YoloDetectorNode(Node):
@@ -161,6 +162,7 @@ class YoloDetectorNode(Node):
 
     def _result_to_json(self, result: Any, msg: Image) -> dict[str, Any]:
         payload: dict[str, Any] = {
+            "contract_version": YOLO_DETECTION_VERSION,
             "stamp": {
                 "sec": int(msg.header.stamp.sec),
                 "nanosec": int(msg.header.stamp.nanosec),

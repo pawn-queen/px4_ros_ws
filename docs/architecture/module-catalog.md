@@ -84,6 +84,7 @@
 | `launch/visualization.launch.py` | Python launch | RViz + 预置配置 | `use_sim_time=true` | `:10-27` |
 | `config/powerplant.yaml` | YAML | 共享参数总表 | 话题、UWB anchors、建图、控制、巡检、坐标 | `:1-419` |
 | `config/runtime_profiles.json` | JSON | profile → localization/motion 配置和 use_* 默认值 | `simulation` / `hardware` | 新增 profile manifest |
+| `config/mission_contract.json` | JSON | Python/C++ JSON 字段、版本和必填清单 | `localization_status` / `yolo_detection` | 新增 contract schema |
 | `config/localization_simulation.yaml` | YAML | 仿真 UWB 源/姿态开关 | `/uwb/pose`，允许真值姿态 | `:1-13` |
 | `config/localization_hardware.yaml` | YAML | 实机 UWB 源/姿态开关 | `/uwb/hardware/*`，禁止姿态 | `:1-13` |
 | `config/p2_simulation.yaml` | YAML | SITL 相机/雷达外参、机体包络、起飞 bootstrap | `motion_model_configured=true` | `:1-26` |

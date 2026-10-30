@@ -1,4 +1,5 @@
 #include "px4_powerplant_mission_cpp/input_validation.hpp"
+#include "px4_powerplant_mission_cpp/mission_contract.hpp"
 #include "px4_powerplant_mission_cpp/offboard.hpp"
 
 namespace powerplant {
@@ -134,15 +135,15 @@ void OffboardMissionNode::try_registered_observation() {
     if (registration_busy_ || !pending_detection_ || !localization_ready())
       return;
     const auto p = *pending_detection_;
-    if (!p["stamp"].isObject() || !p["stamp"]["sec"].isIntegral() ||
-        !p["stamp"]["nanosec"].isIntegral() ||
-        p["stamp"]["sec"].asInt64() < 0 ||
-        p["stamp"]["sec"].asInt64() > std::numeric_limits<int32_t>::max() ||
-        p["stamp"]["nanosec"].asInt64() < 0 ||
-        p["stamp"]["nanosec"].asInt64() >= 1000000000LL)
+    if (!p[mission_contract::kStamp].isObject() || !p[mission_contract::kStamp][mission_contract::kSec].isIntegral() ||
+        !p[mission_contract::kStamp][mission_contract::kNanosec].isIntegral() ||
+        p[mission_contract::kStamp][mission_contract::kSec].asInt64() < 0 ||
+        p[mission_contract::kStamp][mission_contract::kSec].asInt64() > std::numeric_limits<int32_t>::max() ||
+        p[mission_contract::kStamp][mission_contract::kNanosec].asInt64() < 0 ||
+        p[mission_contract::kStamp][mission_contract::kNanosec].asInt64() >= 1000000000LL)
       return;
-    const int64_t sample = p["stamp"]["sec"].asInt64() * 1000000000LL +
-                           p["stamp"]["nanosec"].asInt64();
+    const int64_t sample = p[mission_contract::kStamp][mission_contract::kSec].asInt64() * 1000000000LL +
+                           p[mission_contract::kStamp][mission_contract::kNanosec].asInt64();
     if (sample <= submitted_observation_ ||
         !stamp_reason(sample, ns(), d("inspection_max_observation_age_s"),
                       d("max_future_stamp_skew_s"))
@@ -196,20 +197,20 @@ void OffboardMissionNode::try_registered_observation() {
           "waiting for matched RGB/depth calibration and bracketing poses";
       return;
     }
-    if (!p["image_width"].isInt() || !p["image_height"].isInt() ||
-        p["image_width"].asInt() != int(source->width) ||
-        p["image_height"].asInt() != int(source->height) ||
-        p.get("frame_id", "").asString() != source->header.frame_id ||
-        !p["detections"].isArray())
+    if (!p[mission_contract::kImageWidth].isInt() || !p[mission_contract::kImageHeight].isInt() ||
+        p[mission_contract::kImageWidth].asInt() != int(source->width) ||
+        p[mission_contract::kImageHeight].asInt() != int(source->height) ||
+        p.get(mission_contract::kFrameId, "").asString() != source->header.frame_id ||
+        !p[mission_contract::kDetections].isArray())
       return;
     const JsonValue *selected = nullptr;
     double best = 0;
-    for (const auto &det : p["detections"]) {
-      if (!det.isObject() || !det["confidence"].isNumeric() ||
-          !det["bbox_xyxy"].isArray() || det["bbox_xyxy"].size() != 4)
+    for (const auto &det : p[mission_contract::kDetections]) {
+      if (!det.isObject() || !det[mission_contract::kConfidence].isNumeric() ||
+          !det[mission_contract::kBboxXyxy].isArray() || det[mission_contract::kBboxXyxy].size() != 4)
         continue;
-      const double confidence = det["confidence"].asDouble();
-      if (det.get("class_name", "").asString() != s("target_class_name") ||
+      const double confidence = det[mission_contract::kConfidence].asDouble();
+      if (det.get(mission_contract::kClassName, "").asString() != s("target_class_name") ||
           !std::isfinite(confidence) || confidence < d("min_target_confidence"))
         continue;
       if (confidence > best) {
@@ -246,9 +247,9 @@ void OffboardMissionNode::try_registered_observation() {
     if (inspection_.confirmed())
       input.predicted_center = inspection_.center();
     for (int j = 0; j < 4; ++j) {
-      if (!(*selected)["bbox_xyxy"][j].isNumeric())
+      if (!(*selected)[mission_contract::kBboxXyxy][j].isNumeric())
         return;
-      input.bbox[j] = (*selected)["bbox_xyxy"][j].asDouble();
+      input.bbox[j] = (*selected)[mission_contract::kBboxXyxy][j].asDouble();
     }
     RegistrationConfig cfg;
     cfg.max_skew_s = d("inspection_sync_tolerance_s");

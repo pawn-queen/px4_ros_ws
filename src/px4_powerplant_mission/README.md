@@ -91,6 +91,8 @@ ros2 launch px4_powerplant_mission powerplant_system.launch.py
 ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
 ```
 
+Python 与 C++ 的定位状态/YOLO 检测 JSON 字段由 [mission contract](../../docs/design/mission-contract.md) 统一；新消息写 `contract_version=1`，旧字段保留。
+
 建图与控制由 `px4_powerplant_mission_cpp` 提供，沿用原节点名、YAML、话题、消息类型、QoS 和服务接口。C++ 已增加 P0 健康协议、[P1 建图/观测改进](../../docs/design/mapping-and-frontier.md) 和 [P2 轨迹/巡检闭环](../../docs/design/motion-and-inspection.md)。原 Python mapper/controller 已移除，不再提供 `mapping_package`/`control_package` 回退开关。
 
 控制仍默认关闭，`auto_start=false` 保持不变。C++ 算法与接口测试不能替代 PX4/Gazebo 完整飞行验收；完整巡检、避障和返航仍需在仿真中验证。
