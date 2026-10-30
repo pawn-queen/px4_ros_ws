@@ -24,6 +24,7 @@ from px4_powerplant_mission.runtime_profile import (
 
 
 PACKAGE = "px4_powerplant_mission"
+PROFILES = load_manifest(Path(get_package_share_directory(PACKAGE)))
 PX4_VERSIONED_TOPICS = [
     (base, f"{base}_v{message.MESSAGE_VERSION}")
     for base, message in (
@@ -35,15 +36,14 @@ PX4_VERSIONED_TOPICS = [
 ]
 
 
-def _profile_bool(profile, localization_profile) -> PythonExpression:
-    """Return true for the simulation profile, false for hardware.
-
-    The expression keeps the legacy argument defaults observable while still
-    honoring the new ``profile`` entry when it is set.
-    """
+def _profile_default(key: str, profile, localization_profile) -> PythonExpression:
+    """Build a launch default from the manifest, not from a second mapping."""
+    simulation = PROFILES["simulation"].defaults[key]
+    hardware = PROFILES["hardware"].defaults[key]
     return PythonExpression([
-        "'true' if (('", profile, "' == 'simulation') or ('", profile,
-        "' == '' and '", localization_profile, "' == 'simulation')) else 'false'",
+        f"'{simulation}' if (('", profile, "' == 'simulation') or ('", profile,
+        "' == '' and '", localization_profile, "' == 'simulation')) else '",
+        hardware, "'",
     ])
 
 
@@ -53,7 +53,7 @@ def _arg(context, name: str) -> str:
 
 def _launch_setup(context, *args, **kwargs):
     share = Path(get_package_share_directory(PACKAGE))
-    profiles = load_manifest(share)
+    profiles = PROFILES
     selected = resolve_profile(_arg(context, "profile"), _arg(context, "localization_profile"), profiles)
     defaults = resolve_defaults(
         selected,
@@ -189,10 +189,10 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument("use_localization", default_value="true"),
             DeclareLaunchArgument("use_external_vision", default_value="true"),
-            DeclareLaunchArgument("use_uwb", default_value=_profile_bool(profile, localization_profile)),
-            DeclareLaunchArgument("use_gazebo_truth_bridge", default_value=_profile_bool(profile, localization_profile)),
-            DeclareLaunchArgument("use_gazebo_clock_bridge", default_value=_profile_bool(profile, localization_profile)),
-            DeclareLaunchArgument("use_sim_time", default_value=_profile_bool(profile, localization_profile)),
+            DeclareLaunchArgument("use_uwb", default_value=_profile_default("use_uwb", profile, localization_profile)),
+            DeclareLaunchArgument("use_gazebo_truth_bridge", default_value=_profile_default("use_gazebo_truth_bridge", profile, localization_profile)),
+            DeclareLaunchArgument("use_gazebo_clock_bridge", default_value=_profile_default("use_gazebo_clock_bridge", profile, localization_profile)),
+            DeclareLaunchArgument("use_sim_time", default_value=_profile_default("use_sim_time", profile, localization_profile)),
             DeclareLaunchArgument("use_mapping", default_value="true"),
             DeclareLaunchArgument("use_yolo", default_value="false"),
             DeclareLaunchArgument("use_control", default_value="false"),
