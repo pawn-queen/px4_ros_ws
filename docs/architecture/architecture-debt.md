@@ -23,26 +23,26 @@
 
 | ID | 严重度 | 问题 | 直接影响 | 证据 |
 |---|---|---|---|---|
-| D1 | **S1** | P2 工作未提交，当前运行状态不可复现 | 干净检出只含已提交版本（不含 P2）；报告无法对应提交 | 33 M + 29 ??；P2 源文件 `??` |
+| D1 | **S2** | 本次 Python legacy 删除改动未提交 | 干净检出仍是删除前版本；fixture/入口变更无法复现 | `git status` 的删除/修改/`?? fixtures` |
 | D2 | **S1** | PX4/Gazebo/消息版本靠人工同步 | `FailsafeFlags` 字段漂移；雷达偏移/世界依赖未提交修改 | `px4_msgs` vs PX4；gz `M model.sdf` |
 | D3 | **S1** | Jetson/实机部署路径缺失 | 无法回答“上机怎么启动/回滚/监控” | 无 aarch64/Docker/systemd；`.p0_deps` 仅 amd64 |
 | D4 | **S1** | DDS 依赖本机 Cyclone+LOCALHOST 临时配置 | 跨机/Windows Host/Jetson 通信未证明 | `src/px4_powerplant_mission_cpp/P0_VALIDATION.md:62-78` |
-| D5 | **S2** | Python 与 C++ 双实现并存 | 误启旧栈/协议不兼容；维护双倍 | `src/px4_powerplant_mission_cpp/CMakeLists.txt:26`；`src/px4_powerplant_mission/README.md:94-100` |
-| D6 | **S1** | 完整 SITL/实机验收未通过 | 不能宣称可飞/可交付 | `log/p2_sitl_cpu_17/report.json`；`log/p2_sitl_cpu_17/events.jsonl` |
+| D5 | **已关闭** | Python legacy 已删除 | 双栈/回退风险关闭；新增 fixture oracle 维护责任 | 删除文件/入口；`test/fixtures/` |
+| D6 | **S1** | 完整 SITL/实机验收未通过 | 不能宣称可飞/可交付 | `src/px4_powerplant_mission_cpp/ISSUE3_VALIDATION.md:3`；`TAKEOFF_RESPONSE_SYNC.md:106-112` |
 | D7 | **S2** | UWB 工作区可复现性差 | 152 项 EOL 噪声；SDK 无 `.gitmodules`；无实板验证 | `git diff --ignore-cr-at-eol`；SDK gitlink |
 | D8 | **S2** | 绝对路径 + 双时间域 | 换机/换用户失效；静默拒绝 UWB | `yolo_python`、照片目录、`px4_timestamp_domain` |
 | D9 | **S1** | 真实传感器驱动/标定缺失 | 硬件建图/控制不可直接运行 | `src/` 仅 4 个 `package.xml`；`src/px4_powerplant_mission/config/p2_hardware.yaml:1-10` |
 | D10 | **S2** | 大地图/DDS 性能未验收 | 控制周期/健康超时风险 | `src/px4_powerplant_mission/config/powerplant.yaml:150`；`src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:66` |
-| D11 | **S3** | CI 与仓库卫生不足 | 回归靠人工；仓库膨胀 | 无 workflows；18 个 tracked `.pyc`；7.6 GB build |
+| D11 | **S3** | CI 与仓库卫生仍需维护 | 回归依赖 CI 配置；仓库膨胀 | `.github/workflows/` 已存在；18 个 tracked `.pyc` 已删除；7.6 GB build |
 | D12 | **S3** | 文档/可观测性漂移 | 决策者高估成熟度；排障慢 | `src/px4_powerplant_mission/README.md`（413 行）；`src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:20-32` |
 
 ```mermaid
 flowchart TB
-  D1["D1 未提交 P2"] --> R1["不可复现"]
+  D1["D1 删除改动未提交"] --> R1["不可复现"]
   D2["D2 版本/模型漂移"] --> R2["标定/反序列化风险"]
   D3["D3 无 Jetson 部署"] --> R3["无法上机"]
   D4["D4 DDS 临时配置"] --> R4["跨机通信未证"]
-  D5["D5 双栈并存"] --> R5["误配置/维护成本"]
+  D5["D5 legacy 已删除"] --> R5["fixture 维护"]
   D6["D6 SITL/实机未过"] --> R6["不能宣称可飞"]
   D7["D7 UWB 可复现性"] --> R7["固件/评审风险"]
   D8["D8 绝对路径/时钟"] --> R8["换机失效/静默拒绝"]
@@ -52,28 +52,26 @@ flowchart TB
 
 ## 3. 详细条目
 
-### D1 P2 工作仍未提交
+### D1 本次删除改动未提交
 
 **事实**
 
-- `git status`：33 个已修改、29 个未跟踪（普查开始时）；`main` 比 `origin/main` 多 5 个提交，`origin/main` 多 1 个提交（`44fbb40e` README），本地未推送。
-- P2 的核心**新增**源文件/头文件/测试/世界/文档均未跟踪（另有 33 个已修改文件）：`src/inspection.cpp`、`src/motion.cpp`、`src/motion_runtime.cpp`、`src/topology.cpp`、`src/offboard_p2_*.cpp`、`include/inspection.hpp`、`motion*.hpp`、`topology.hpp`、`test_p2_*.cpp`、`test/worlds/p2_*.sdf`、`P2_IMPLEMENTATION.md`、`P2_VALIDATION.md`、`config/p2_*.yaml`、`run_p2_sitl.py` 等。
-- `CMakeLists.txt` 也已修改，引用上述未跟踪文件（`:26`）；`git show HEAD:src/px4_powerplant_mission_cpp/CMakeLists.txt` 的库源列表只到 P1（无 `motion.cpp`、`topology.cpp`、`inspection.cpp`、`offboard_p2_*`）。
-- 最新完整 SITL 报告来自这个工作树：`log/p2_sitl_cpu_17/report.json`，`passed=false`。
+- 删除前仓库为 `9931daf7` 且工作树干净。
+- 删除完成后工作树包含：Python legacy 源码/测试的删除、`setup.py`/launch/CI/README 修改，以及 `test/fixtures/` 新增文件。
+- 尚未提交；干净检出仍是删除前版本。
 
 **影响**
 
-- `[推断]` 在干净 `e5f795d2` 检出上，CMakeLists 仍是旧版，不引用 P2 文件，因此只能构建提交中已有的版本，不包含 P2 新增文件；P2 的行为、测试和报告**无法从提交复现**。
-- `[推断]` 代码评审、回滚、交接和 CI 都缺少稳定基线；一旦工作树丢失，P2 证据链断裂。
-- `[事实]` 报告中的测试数量/结论（`src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:20-30`）不能直接对应任何提交。
+- `[推断]` 在提交前，删除结果、fixture 和测试迁移无法从仓库历史复现。
+- `[事实]` 若现在切回 HEAD，Python legacy 和新 fixture 都不会同时存在，测试/文档状态不一致。
 
 **建议**
 
-1. 先把 P2 源码、测试、世界、配置、脚本和文档作为一个可构建提交；再打 tag。
-2. 在干净 clone 上重跑 `run_p0_baseline.sh` 与 `run_p2_sitl.py`，把报告与提交 SHA 绑定。
-3. 处理 `origin/main` 的 README 提交（合并或明确分叉），避免“当前基线”歧义。
+1. 将删除、fixture、测试迁移和文档作为一个可构建提交。
+2. 在干净 clone 上重跑 C++/Python 测试与 `run_p0_baseline.sh`。
+3. 在提交信息中注明 Q9=A 已被用户明确豁免，避免把删除误读为飞行验收。
 
-**置信度**：事实（工作树/CMake 引用）；影响为推断。
+**置信度**：事实。
 
 ---
 
@@ -166,28 +164,28 @@ flowchart TB
 
 ---
 
-### D5 Python 与 C++ 双实现并存
+### D5 Python legacy 删除
 
 **事实**
 
-- 两个包都提供同名可执行：`voxel_mapper_node`、`offboard_mission_node`；launch 通过 `mapping_package`、`control_package` 选择（`src/px4_powerplant_mission/launch/powerplant_system.launch.py:57-66`）。
-- Python 版 `offboard_mission_node.py` 2322 行、`voxel_mapper_node.py` 787 行；C++ 版是默认（`src/px4_powerplant_mission/README.md:94`）。
-- 新 P0/P1/P2 健康/地图协议只在 C++ 版；Python 版仍用旧协议，不能与新 C++ 控制器混用（`src/px4_powerplant_mission/README.md:94-100`；`src/px4_powerplant_mission/AGENTS.md:11`）。
-- C++ 测试反向依赖 Python 参考实现（`CMakeLists.txt:98-109`）。
+- Python `nodes/voxel_mapper_node.py`、`nodes/offboard_mission_node.py`、`mapping/voxel_grid.py`、`path_planning/frontier_3d.py`、`path_planning/grid_astar.py`、`common/initial_scan.py` 已删除。
+- `setup.py` 只保留 localization/EV/UWB/YOLO 四个入口；launch 移除了 `mapping_package`/`control_package`。
+- C++ 测试改用 `test/fixtures/` 的冻结 oracle；`test_ros_contract.py` 不再 AST 解析 Python 源码，`test_reference_parity.py` 不再 import Python。
+- `test/fixtures/` 含 `parameter_defaults.json`、`mapper_case.json`、`ray_cases.json`、`route_cases.json`、`planner_cases.json`。
 
 **影响**
 
-- `[推断]` 运维/开发误启旧栈时，节点名/话题名看起来正常，但地图健康协议/行为不同；可能被新控制器拒绝，或产生难以解释的探索失败。
-- `[事实]` 同一算法/参数/话题有两份实现；`[推断]` 修复需要双改，Python 版长期会成为“半废弃代码”。
-- `[推断]` 新成员无法从文件名判断哪套是生产路径，只能读 README/launch。
+- `[事实]` 双栈/回退风险关闭；不会再出现“误启 Python mapper/controller”。
+- `[推断]` 新的风险转为 fixture 与 C++ 行为漂移：fixture 更新必须评审，不能静默改期望值。
+- `[事实]` `ros_contract` 仍启动 Python localization/EV；Python 包仍保留，不是“删除整个 Python 包”。
 
 **建议**
 
-1. 明确标记 Python mapper/controller 为“仅对照/待删除”，在 launch 中加显式 `deprecated` 警告或拒绝与 C++ 控制器混用。
-2. 为两套实现建立共享契约测试（话题/消息/健康字段），或直接删除旧路径。
-3. 中长期只保留一个入口，减少参数组合。
+1. 在 CI 中固定运行 C++ fixture 测试；fixture 变更单独提交并说明来源。
+2. 不再新增 `mapping_package`/`control_package` 回退。
+3. 保持 `test_ros_contract` 对 Python 定位/EV 的跨进程覆盖。
 
-**置信度**：事实；误用后果为推断。
+**置信度**：事实；fixture 漂移为推断。
 
 ---
 
@@ -198,7 +196,7 @@ flowchart TB
 - 最新完整 SITL 报告：`log/p2_sitl_cpu_17/report.json`，`passed=false`，`exit_reason=mission_fault`；阶段 `IDLE→START→SAFE_TAKEOFF→FAULT`；失败项包括 `all_required_phases`、`phase_order`、`landed_and_disarmed_completion`、`no_mission_fault`、`topology_built`、`inspection_result_explicit`、`actual_photo_and_surface_evidence`。
 - `events.jsonl`：`safety_stop` / `mission_fault` 原因为 `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE`。
 - 文档记录：原始渲染负载未通过健康启动；CPU 10 Hz 仍慢于实时；2.5 Hz CPU 档接近实时但完整流程未通过（`src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:32`）。
-- 单元/契约测试：本机 204 项 CTest 0 失败、Python 127 项 0 失败；这不等于飞行验收。
+- 单元/契约测试：删除 legacy 后本机 C++ 400 项、Python 72 项均 0 失败；这不等于飞行验收。
 - 实机：Host 仅假串口/PTY/mock；主工作区没有真实传感器驱动；无实飞记录（`Host/README.md:102-111`；`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:78`）。
 
 **影响**
@@ -322,8 +320,8 @@ flowchart TB
 
 **事实**
 
-- 仓库没有 `.github/workflows`；测试靠人工脚本（`run_p0_baseline.sh`、`run_p2_sitl.py`）。
-- `git ls-files` 中有 18 个 `.pyc`（`src/.../__pycache__/*.pyc`），尽管 `.gitignore` 有 `__pycache__/`。
+- `.github/workflows/` 已存在；完整 SITL 仍由 `run_p2_sitl.py` 人工触发。
+- 18 个 tracked `.pyc` 已随本次删除移除；`.gitignore` 已有 `__pycache__/`。
 - `px4_ros_com` 已安装但业务包未引用；`src/px4_msgs`、`src/px4_ros_com` 同时被 `.gitignore` 和 `.gitmodules` 管理。
 - `drone-simulation` 的 `build/` 7.6 GB 未跟踪；`UWB/build` 94 MB；gz 子模块有 30 MB STL 和 Windows `:Zone.Identifier` 文件；未发现 Git LFS 配置。
 - `drone-simulation` 的构建版本宏 `v1.17.0-alpha1-1643-g31136c9043` 落后 HEAD 的 1645。
@@ -331,13 +329,13 @@ flowchart TB
 **影响**
 
 - `[推断]` 回归依赖人工执行，跨提交/跨机器容易漏测。
-- `[事实]` tracked `.pyc` 会随源码变化产生无意义 diff；旧字节码可能误导调试。
+- `[事实]` tracked `.pyc` 曾随源码产生无意义 diff；本次已清理。
 - `[事实]` 大二进制/构建产物增加 clone/备份成本；`Zone.Identifier` 是无意义元数据。
 - `[推断]` 版本宏滞后会让“二进制对应哪个源码”变得不可信。
 
 **建议**
 
-1. 建 CI：干净 clone → 子模块 → 构建 → C++/Python/契约测试；至少 nightly 跑 SITL 准备检查。
+1. 保持 CI：干净 clone → 子模块 → 构建 → C++/Python/契约测试；至少 nightly 跑 SITL 准备检查。
 2. 移除 tracked `.pyc`，加 `__pycache__/` 检查；用 `git lfs` 管理大模型/网格，或明确不入库。
 3. 修复 `.gitmodules`/`.gitignore` 冲突；`px4_ros_com` 若不用则移出构建。
 4. 重新构建 PX4 或清理 build，确保版本宏与 HEAD 一致。
@@ -373,11 +371,11 @@ flowchart TB
 
 | 阶段 | 动作 | 对应债务 |
 |---|---|---|
-| **P0（本周）** | 提交 P2 工作树；修复 `.gitmodules`/`.gitattributes`；提交/回退 gz 雷达偏移；在干净 clone 重跑构建与 SITL | D1、D2、D7、D11 |
+| **P0（本周）** | 提交本次 Python legacy 删除/fixture/测试迁移；修复 `.gitmodules`/`.gitattributes`；提交/回退 gz 雷达偏移；在干净 clone 重跑构建与 SITL | D1、D2、D7、D11 |
 | **P0（本周）** | 确定 Jetson 目标环境；在目标机验证 DDS/UWB 串口/Agent 最小链路 | D3、D4、D8 |
 | **P1（下一阶段）** | 解决 SITL tracking/certificate 失败；建立“单元/SITL/实机”三态看板 | D6、D12 |
 | **P1** | 真实传感器驱动 + 标定模板；硬件首飞检查表 | D9 |
-| **P2** | 大地图/DDS 性能基准；双栈退出策略；CI 与 LFS | D5、D10、D11 |
+| **P2** | 大地图/DDS 性能基准；fixture/CI 维护；LFS | D5、D10、D11 |
 
 ## 5. 接受为设计约束、暂不算债务
 

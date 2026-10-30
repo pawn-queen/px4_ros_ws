@@ -2,8 +2,8 @@
 
 > **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…`、`scripts/…` 相对于 `src/px4_powerplant_mission_cpp/`；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
 
-> 证据基线：2026-10-26 工作树。行数为当前文件行数（`wc -l`），用于判断模块体量，不代表质量。  
-> 标签：`[事实]` / `[推断]` / `[建议]` / `[待核实]`。  
+> 证据基线：2026-10-30。Python mapper/controller 已删除；行数为当前文件行数（`wc -l`），用于判断模块体量，不代表质量。
+> 标签：`[事实]` / `[推断]` / `[建议]` / `[待核实]`。
 > 相关文档：[总览](README.md) · [仓库映射](repository-map.md) · [运行模式](runtime-modes.md) · [依赖图](dependency-map.md) · [架构债务](architecture-debt.md)
 
 ## 1. 状态图例
@@ -14,7 +14,7 @@
 | **可选** | launch 参数显式打开（YOLO/控制/传感器桥/RViz） |
 | **仿真专用** | 只在 SITL/Gazebo 路径使用 |
 | **实机专用** | 只在 hardware profile 使用 |
-| **旧实现** | 保留用于算法对照/回退，默认不执行 |
+| **已删除** | 历史实现已移除，仅保留在 git 历史/冻结 fixture 中 |
 | **外部** | 不在主工作区，需单独构建/部署 |
 
 ## 2. Python 模块（`px4_powerplant_mission`）
@@ -23,15 +23,11 @@
 |---|---:|---|---|---|---|---|
 | `common/frames.py` | 209 | Python | NED/FRD ↔ ENU/FLU、四元数、yaw、地理坐标转换 | 所有节点 | 共享 | `common/frames.py:1-12` |
 | `common/qos.py` | 36 | Python | PX4（best-effort/transient-local）、传感器、可靠话题的 QoS | 所有节点 | 共享 | `common/qos.py:11-35` |
-| `common/initial_scan.py` | 53 | Python | 初扫偏航步进与“已观测栅格”判据 | Python 控制器 | 旧实现/共享判据 | `common/initial_scan.py:1-53` |
 | `localization/inputs.py` | 168 | Python | UWB 输入契约：frame/协方差/时间/重复/健康事件/坐标变换 | localization、EV 桥 | 共享 | `localization/inputs.py:1-5,80-168` |
 | `localization/uwb.py` | 334 | Python | Anchor 解析、测距模拟、鲁棒三边/多边解算、质量 | UWB 仿真器、Host | 共享 | `localization/uwb.py:12-29,135-265` |
 | `localization/fusion.py` | 161 | Python | 导航侧自适应融合/倾角修正；不进入 EV | localization（`adaptive`） | 旧实现/可选 | `localization/fusion.py:1-6`；`localization_node.py:51-53` |
-| `mapping/voxel_grid.py` | 217 | Python | Python 体素 log-odds、快照、2D 投影 | Python mapper、测试 | 旧实现 | `mapping/voxel_grid.py:13-26` |
-| `path_planning/frontier_3d.py` | 669 | Python | 三维已知空闲路径、前沿/视点评分 | Python 控制器、测试 | 旧实现 | `path_planning/frontier_3d.py:1-7,495` |
-| `path_planning/grid_astar.py` | 146 | Python | 2D 栅格 A* | Python 控制器、测试 | 旧实现 | `path_planning/grid_astar.py:14-34,79` |
 
-`[事实]` Python 节点只通过 `common/`、`localization/`、`mapping/`、`path_planning/` 组合；没有跨包 import（除测试）。见 `nodes/*.py` 的 import 段（例如 `localization_node.py:24-37`，`offboard_mission_node.py:32-47`）。
+`[事实]` Python 节点只通过 `common/`、`localization/` 组合；`mapping/` 与 `path_planning/` 已随 legacy mapper/controller 删除。见 `nodes/*.py` 的 import 段。
 
 ## 3. Python 节点
 
@@ -40,11 +36,9 @@
 | `localization_node` | 777 | **默认** | `/fmu/out/vehicle_imu`、`vehicle_local_position`、`vehicle_odometry`、`/uwb/*`、`/depth_camera` | `/powerplant/localization/odom`、`/pose`、`/status`、TF | PX4 完整位姿 → ENU/FLU 导航；UWB 健康/独立位置检查 | `localization_node.py:43-139,238-314,486-525` |
 | `external_vision_bridge_node` | 121 | **默认** | `/uwb/pose`、`/uwb/quality`、`/uwb/status`（硬件为 `/uwb/hardware/*`） | `/fmu/in/vehicle_visual_odometry` | 独立 UWB → PX4 EV；单 Tag 不伪造姿态/速度 | `external_vision_bridge_node.py:60-106` |
 | `uwb_simulator_node` | 493 | **默认（仿真）** | Gazebo 真值 `/world/powerplant/dynamic_pose/info`、`/model/.../odometry_with_covariance`、PX4 local position | `/uwb/pose`、`/uwb/quality`、`/uwb/range/<anchor>`、`/uwb/anchors` | 逐锚测距 + 解算 + 质量 | `uwb_simulator_node.py:232-299,319-390` |
-| `voxel_mapper_node`（Python） | 787 | 可选（`mapping_package` 切换） | 定位、深度、雷达、点云、CameraInfo | 地图点云/栅格/marker/状态 | 旧 Python 建图，算法对照 | `voxel_mapper_node.py:114-203`；`src/px4_powerplant_mission/launch/powerplant_system.launch.py:57-60` |
 | `yolo_detector_node` | 204 | 可选（`use_yolo`） | `/camera` | JSON 检测、标注图、源图 | Ultralytics 推理与检测框 | `yolo_detector_node.py:21-56,126-192` |
-| `offboard_mission_node`（Python） | 2322 | 可选（`control_package` 切换） | 定位、地图、YOLO、PX4 状态 | setpoint/command/status/path | 旧 Python 任务控制，算法对照 | `offboard_mission_node.py:128-360` |
 
-`[事实]` Python 版 `voxel_mapper_node` 与 C++ 版**同名、同话题、同 YAML**，通过 `mapping_package` 选择；Python 版没有 P0/P1/P2 的新健康/地图协议，不能与 C++ 控制器混用（`src/px4_powerplant_mission/README.md:94-100`；`src/px4_powerplant_mission/AGENTS.md:11`）。`[推断]` 这是最容易被“看起来启动了”掩盖的运行风险。
+`[事实]` C++ `voxel_mapper_node` 与 `offboard_mission_node` 现在是唯一建图/控制入口；Python 版本及 `mapping_package`/`control_package` 回退参数已删除。
 
 ## 4. C++ 库与可执行文件（`px4_powerplant_mission_cpp`）
 
@@ -79,7 +73,7 @@
 | `parameters.hpp` / `ros_support.hpp` | 参数声明、QoS、JSON、点云工具 | `parameters.hpp:6-80`；`ros_support.hpp:95-145` |
 | `offboard.hpp` | `OffboardMissionNode` 状态与接口 | `offboard.hpp:86-205` |
 
-`[事实]` 头文件 `mission_motion_proof.hpp`、`inspection.hpp`、`motion.hpp`、`motion_runtime.hpp`、`topology.hpp` 在本次工作树中**未跟踪**（`git status` 的 `??` 列表），但它们已被 `CMakeLists.txt` 引用。见 [D1](architecture-debt.md#d1-p2-工作仍未提交)。
+`[事实]` 这些 P2 头文件已在 `4800616b` 进入仓库；当前未提交的是本次 Python legacy 删除与 fixture 迁移。见 [D1](architecture-debt.md#d1-本次删除改动未提交)。
 
 ## 5. launch、配置与脚本
 
@@ -162,10 +156,10 @@
 
 | 语言/层 | 主要文件数 | 说明 |
 |---|---:|---|
-| Python 节点/库 | 6 节点 + 9 库模块 | 定位/UWB/EV/YOLO + 旧建图/控制 |
+| Python 节点/库 | 4 节点 + 5 库模块 | 定位/UWB/EV/YOLO |
 | C++ | 21 `.cpp` + 16 `.hpp` | 2 库 + 2 可执行 |
 | C/C++ 固件 | App 2 + BSP 5 + Middleware 4 + 厂家驱动 | STM32F103，GCC/Keil 双构建 |
 | Python Host | 9 模块 + 5 测试文件 | 串口协议/时间/记录/ROS |
 | SDF | `powerplant` world + `x500_depth` + `power-plant` + 2 个测试世界 | Gazebo 资源 |
 
-`[事实]` 最大的单文件是 Python `offboard_mission_node.py`（2322 行）和 C++ `motion.cpp`（1140 行）；两者都是高复杂度核心，修改时应优先依赖现有测试/契约，而不是只看文件局部。
+`[事实]` 当前最大的单文件是 C++ `motion.cpp`（1140 行）；Python 侧最大文件为 `localization_node.py`（777 行）。修改高复杂度核心时应优先依赖现有测试/契约。

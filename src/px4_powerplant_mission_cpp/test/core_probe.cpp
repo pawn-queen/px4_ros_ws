@@ -1,5 +1,5 @@
 // Test-only line-delimited JSON bridge to compare native algorithms with the
-// retained Python oracle.
+// frozen pre-deletion oracle fixtures.
 #include "px4_powerplant_mission_cpp/ros_support.hpp"
 #include "px4_powerplant_mission_cpp/motion.hpp"
 #include <iostream>

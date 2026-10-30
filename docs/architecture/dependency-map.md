@@ -1,5 +1,7 @@
 # 依赖方向与接口关系
 
+> **2026-10-30 更新**：Python mapper/controller 已删除；`mapping_package`/`control_package` 已移除，建图/控制固定为 C++。本文中“Python 回退/双栈”段落是删除前历史。
+
 > **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…`、`scripts/…` 相对于 `src/px4_powerplant_mission_cpp/`；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
 
 > 证据基线：2026-10-26 工作树。本文把依赖分成**构建期**、**运行期**、**测试期**和**部署期**，避免把“package.xml 声明”“import”“DDS 话题”混为一谈。  
@@ -28,14 +30,10 @@ flowchart TB
   subgraph PY["px4_powerplant_mission（ament_python）"]
     FR["common/frames"]
     QOS["common/qos"]
-    SCAN["common/initial_scan"]
     INP["localization/inputs"]
     UWB["localization/uwb"]
     FUS["localization/fusion"]
-    VG["mapping/voxel_grid"]
-    F3["path_planning/frontier_3d"]
-    GA["path_planning/grid_astar"]
-    NODES["6 个 nodes"]
+    NODES["4 个 nodes"]
   end
 
   ROS["rclpy / ROS msgs / cv_bridge / NumPy"]
@@ -44,21 +42,17 @@ flowchart TB
 
   FR --> INP
   FR --> FUS
-  FR --> SCAN
   FR --> NODES
   QOS --> NODES
   INP --> NODES
   UWB --> NODES
   FUS --> NODES
-  VG --> NODES
-  F3 --> NODES
-  GA --> NODES
   ROS --> NODES
   PX4M --> NODES
   YOLO --> NODES
 ```
 
-`[事实]` 包内模块没有循环 import；`nodes/*.py` 只依赖 `common/`、`localization/`、`mapping/`、`path_planning/`。`[事实]` Python 包不 import C++ 包；`package.xml` 的 `exec_depend px4_powerplant_mission_cpp`（`:11`）只表达“默认执行器可切换”。
+`[事实]` 包内模块没有循环 import；`nodes/*.py` 只依赖 `common/`、`localization/`。`[事实]` Python 包不 import C++ 包；`package.xml` 的 `exec_depend px4_powerplant_mission_cpp` 表示组合 launch 仍需要 C++ 包。
 
 ### 2.2 C++ 库
 
@@ -112,13 +106,13 @@ flowchart TB
 ```mermaid
 flowchart LR
   CT["C++ gtest / pytest 契约测试"] --> CPP["powerplant_mission / powerplant_core"]
-  CT --> PY["Python 参考实现（PYTHONPATH）"]
+  CT --> FIX["test/fixtures 冻结 oracle"]
   HT["Host pytest"] --> HS["Host 运行时"]
   HS --> PY2["px4_powerplant_mission.localization.uwb"]
   CT --> SDF["p2_room.sdf / p2_two_rooms.sdf"]
 ```
 
-`[事实]` C++ 的 `reference_parity` 与 `ros_contract` 测试把 `../px4_powerplant_mission` 加入 `PYTHONPATH`（`CMakeLists.txt:98-109`），并设置 `ROS_DOMAIN_ID=173`；Host 测试通过 `PYTHONPATH:.:/home/pawn/px4_ros_ws/src/px4_powerplant_mission` 复用解算器（`Host/README.md:95-100`）。`[推断]` 两个仓库的测试都依赖主工作区源码，无法独立在干净环境运行。
+`[事实]` `reference_parity` 现在读取 `test/fixtures`，不再 import Python legacy；`ros_contract` 仍启动 Python localization/EV 节点，并设置 `ROS_DOMAIN_ID=173`。Host 测试通过 `PYTHONPATH:.:/home/pawn/px4_ros_ws/src/px4_powerplant_mission` 复用解算器（`Host/README.md:95-100`）。`[推断]` 跨仓库测试仍依赖主工作区源码/install。
 
 ## 3. 运行期 ROS 接口
 
@@ -174,8 +168,8 @@ flowchart LR
 
 | 服务 | 类型 | 提供者 | 消费者 | 证据 |
 |---|---|---|---|---|
-| `/start_powerplant_mission` | `std_srvs/Trigger` | C++/Python controller | 操作者/测试脚本 | `offboard_node.cpp:102-105` |
-| `/land_powerplant_mission` | `std_srvs/Trigger` | C++/Python controller | 操作者/测试脚本 | `:106-112` |
+| `/start_powerplant_mission` | `std_srvs/Trigger` | C++ controller | 操作者/测试脚本 | `offboard_node.cpp:102-105` |
+| `/land_powerplant_mission` | `std_srvs/Trigger` | C++ controller | 操作者/测试脚本 | `:106-112` |
 | `/uwb_hardware_bridge/start` | `std_srvs/Trigger` | Host | 操作者 | `Host/uwb_hardware_bridge/ros_node.py:101` |
 | `/uwb_hardware_bridge/stop` | `std_srvs/Trigger` | Host | 操作者 | `:102` |
 
@@ -216,7 +210,7 @@ flowchart LR
 |---|---|---|
 | EV 只能接独立 UWB，不能接导航里程计 | 代码满足：EV 不订阅 `localized_odom_topic` | `external_vision_bridge_node.py:34-38,41`；`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:20` |
 | 单 Tag 不得伪造姿态/速度 | 代码满足：`q=NaN`、速度 `NaN`、姿态方差 `NaN` | `external_vision_bridge_node.py:81-105` |
-| 旧 Python mapper 不能驱动新 C++ controller | 文档明确；代码用健康协议版本拒绝 | `src/px4_powerplant_mission/README.md:94-100`；`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:58` |
+| Python legacy 已不能驱动 C++ controller | 源码/入口已删除；只剩 C++ 健康协议 | `src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md` |
 | 仿真源不得在硬件 profile 打开 | launch 默认按 profile 关闭 UWB 仿真/真值/时钟桥 | `src/px4_powerplant_mission/launch/powerplant_system.launch.py:52-55` |
 | 同一 UWB pose 话题只能有一个发布者 | Host 检测 `count_publishers>1` 并拒绝 | `Host/uwb_hardware_bridge/ros_node.py:133-137` |
 | 定位/mapper/控制共享同一 `use_sim_time` | launch 给四个节点传同一参数 | `src/px4_powerplant_mission/launch/powerplant_system.launch.py:78,86,130,148` |
@@ -228,10 +222,9 @@ flowchart LR
 | 反模式 | 表现 | 影响 | 证据 |
 |---|---|---|---|
 | 跨仓库源码 import | Host 直接 import 主工作区包 | 部署必须同时安装/`source` 两个工作区；版本漂移不可见 | `Host/uwb_hardware_bridge/solver.py:12`；`Host/package.xml:18` |
-| 测试反向依赖 | C++ 测试依赖 Python 参考实现 | 不能只发布 C++ 包；测试环境必须带 Python 源码 | `CMakeLists.txt:98-109` |
+| 冻结 oracle 维护 | C++ `reference_parity` 读 `test/fixtures`；`ros_contract` 仍启动 Python 定位/EV | fixture 与 C++ 行为漂移需评审；Python 只保留运行节点 | `test/test_reference_parity.py`；`test/test_ros_contract.py` |
 | 字符串 JSON 契约 | 定位/地图/UWB 质量均为 `String` | 无 schema、无编译期检查；一端字段变更另一端静默拒绝 | `src/px4_powerplant_mission_cpp/P0_VALIDATION.md:42-58`；`localization/inputs.py:80-118` |
 | 绝对路径 | YOLO Python、照片目录、P2 PX4 根目录 | 换用户/换机器（Jetson）即失效 | `src/px4_powerplant_mission/launch/powerplant_system.launch.py:69`；`src/px4_powerplant_mission/config/powerplant.yaml:363`；`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:106` |
-| 双实现同话题 | Python/C++ 同名节点/话题 | 误启旧栈会被新控制器拒绝，或被旧协议误导 | `src/px4_powerplant_mission/README.md:94-100`；`src/px4_powerplant_mission/package.xml:11` |
 | 子模块 URL 自引用 | `.gitmodules` 的 `./src/...` | 干净 clone 无法按文档取子模块 | `.gitmodules:1-6`；`.gitignore:12-13` |
 
 ## 7. 依赖验收建议

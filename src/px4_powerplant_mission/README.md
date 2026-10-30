@@ -4,14 +4,14 @@
 
 ## 包结构
 
-原有 Python 节点与算法文件保留；下列 `nodes/` 路径均为原实现。C++ 模块划分、接口差异与验证命令见 [原生包说明](../px4_powerplant_mission_cpp/README.md)。
+Python 包保留定位、UWB、外部视觉和 YOLO；建图与控制由独立的 C++ 包提供，原 Python mapper/controller 已移除。C++ 模块划分、接口差异与验证命令见 [原生包说明](../px4_powerplant_mission_cpp/README.md)。
 
 - `nodes/localization_node.py`：默认把 PX4 完整 odometry 转为 ROS ENU/FLU 的 `/powerplant/localization/odom`，同时独立检查 UWB 健康；旧自适应融合保留为导航侧可选模式。
 - `nodes/external_vision_bridge_node.py`：直接把独立 UWB 位姿转成 PX4 NED 下的 `/fmu/in/vehicle_visual_odometry`，不再订阅融合里程计，供 PX4 EKF 室内解锁和 Offboard 位置控制使用。
 - `nodes/uwb_simulator_node.py`：用 Gazebo `dynamic_pose` 真值生成带采样时间的逐锚模拟测距，经有效性、残差和锚点几何检查后发布 `/uwb/pose` 与 `/uwb/quality`。
-- `nodes/voxel_mapper_node.py`：按传感器采样时间插值定位位姿，从深度图、`LaserScan`、`PointCloud2` 生成体素占据地图、2D occupancy grid 和 RViz marker。
 - `nodes/yolo_detector_node.py`：加载包内 `models/yolo/best.pt`，发布 JSON 检测结果和标注图。
-- `nodes/offboard_mission_node.py`：PX4 Offboard 状态机，负责安全起飞区上升、悬停初扫、三维前沿自主探索、YOLO 目标巡检和已知空闲路径返航。
+- C++ 包 `voxel_mapper_node`：体素建图节点（默认建图器）。
+- C++ 包 `offboard_mission_node`：任务状态机、Offboard 控制、探索/巡检/返航（默认控制器）。
 - `config/powerplant.yaml`：所有话题名、坐标系、UWB anchor、建图分辨率和探索边界参数。
 - `launch/powerplant_system.launch.py`：启动任务栈。
 - `launch/gz_sensor_bridge.launch.py`：可选启动 Gazebo sensor 到 ROS2 的桥接。
@@ -91,15 +91,9 @@ ros2 launch px4_powerplant_mission powerplant_system.launch.py
 ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
 ```
 
-建图与控制默认使用 C++ 可执行程序，沿用原节点名、YAML、话题、消息类型、QoS 和服务接口。C++ 已增加 P0 健康协议、[P1 建图/观测改进](../px4_powerplant_mission_cpp/P1_IMPLEMENTATION.md) 和 [P2 轨迹/巡检闭环](../px4_powerplant_mission_cpp/P2_IMPLEMENTATION.md)；保留的 Python mapper/controller 用于旧算法对照，应成对回退，不能把旧 mapper 的健康消息接入新 C++ 控制器授权探索。回退参数为：
+建图与控制由 `px4_powerplant_mission_cpp` 提供，沿用原节点名、YAML、话题、消息类型、QoS 和服务接口。C++ 已增加 P0 健康协议、[P1 建图/观测改进](../px4_powerplant_mission_cpp/P1_IMPLEMENTATION.md) 和 [P2 轨迹/巡检闭环](../px4_powerplant_mission_cpp/P2_IMPLEMENTATION.md)。原 Python mapper/controller 已移除，不再提供 `mapping_package`/`control_package` 回退开关。
 
-```bash
-ros2 launch px4_powerplant_mission powerplant_system.launch.py \
-  mapping_package:=px4_powerplant_mission control_package:=px4_powerplant_mission \
-  use_control:=true
-```
-
-控制仍默认关闭，`auto_start=false` 保持不变。C++ 迁移的算法与接口测试不能替代 PX4/Gazebo 完整飞行验收；完整巡检、避障和返航仍需在仿真中验证。
+控制仍默认关闭，`auto_start=false` 保持不变。C++ 算法与接口测试不能替代 PX4/Gazebo 完整飞行验收；完整巡检、避障和返航仍需在仿真中验证。
 
 起飞响应同步使用同一 C++ 执行核心：参考领先时执行已验证制动，在实际响应恢复后从 HOLD 重新规划；启动 2cm 参考不能冒充已经离地。隔离验收入口在实际场景地面审计通过后，生成临时运动配置开启反馈探测与一次性过渡预算，严格阶段基础位置容差仍为 0.10m；经实际支持审计的SITL过渡可选择A—D白名单（0.10/0.12/0.15m，D半径0.48m），固定预算上限45秒，地面过渡限高仍为0.75m。普通 launch 在没有该审计时保持严格模式并可正常等待授权；硬件缺省不启用这些仿真专用选项，原 12s 缺省不变。独立 `config/p2_sitl_controller.yaml` 由隔离验收脚本读取，仅在临时 PX4 rootfs 解锁前应用，不能作为硬件 ROS 参数文件。流程、标定次序和实际验收范围见 [起飞响应说明](../px4_powerplant_mission_cpp/TAKEOFF_RESPONSE_SYNC.md) 与 [Issue #3 验收记录](../px4_powerplant_mission_cpp/ISSUE3_VALIDATION.md)。
 
@@ -195,7 +189,7 @@ export ROS2CLI_ENABLE_DAEMON=0
 
 RViz 只负责显示，不会主动创建地图或路径。先按正常流程启动 PX4/Gazebo 和任务栈。若需要看到
 `/powerplant/control/planned_path`，任务栈必须带 `use_control:=true`，因为该 topic 由
-`offboard_mission_node` 发布（默认 C++，可选 Python）；仅运行默认 `ros2 launch px4_powerplant_mission powerplant_system.launch.py`
+`offboard_mission_node` 发布（C++）；仅运行默认 `ros2 launch px4_powerplant_mission powerplant_system.launch.py`
 时不会启动飞控节点，也就不会有路径 topic。
 
 ```bash
@@ -313,7 +307,7 @@ sudo apt install ros-jazzy-rviz2 ros-jazzy-rqt-image-view ros-jazzy-image-view
 
 ### 点云
 
-点云显示依赖三件事：定位 `/powerplant/localization/odom` 正常、`voxel_mapper_node.py` 正在运行、
+点云显示依赖三件事：定位 `/powerplant/localization/odom` 正常、`voxel_mapper_node` 正在运行、
 至少一个建图传感器 topic 正常发布。先检查：
 
 ```bash
@@ -333,7 +327,7 @@ ros2 topic echo /powerplant/map/occupied_voxels sensor_msgs/msg/PointCloud2 --on
 - `PointCloud2`：topic 选 `/powerplant/map/occupied_voxels`
 - `MarkerArray`：topic 选 `/powerplant/map/voxel_markers`
 
-建议 `PointCloud2` 的 `Style` 设为 `Points`，`Size (m)` 设为 `0.05~0.12`。如果 Gazebo 原始点云也已经桥接到 ROS，可以再添加 `PointCloud2` topic `/points`。当前 `voxel_mapper_node.py` 会把深度图、`mapping_lidar` 和 `/points` 融合后发布 `/powerplant/map/occupied_voxels`，所以通常看这个融合后的 topic 更直观。
+建议 `PointCloud2` 的 `Style` 设为 `Points`，`Size (m)` 设为 `0.05~0.12`。如果 Gazebo 原始点云也已经桥接到 ROS，可以再添加 `PointCloud2` topic `/points`。当前 `voxel_mapper_node` 会把深度图、`mapping_lidar` 和 `/points` 融合后发布 `/powerplant/map/occupied_voxels`，所以通常看这个融合后的 topic 更直观。
 
 ## Gazebo 相机/深度图桥接
 

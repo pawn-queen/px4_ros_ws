@@ -1,5 +1,4 @@
 """Sequential, bounded ROS wire checks. No PX4/Gazebo or vehicle is started."""
-import ast
 import json
 import os
 from pathlib import Path
@@ -21,9 +20,9 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleStatus, VehicleLandDetected, VehicleOdometry
-from px4_powerplant_mission.mapping.voxel_grid import VoxelGrid
 
 ROOT = Path(__file__).resolve().parents[2]
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 BUILD = Path(os.environ.get("POWERPLANT_CPP_BUILD", ROOT.parent / "build/px4_powerplant_mission_cpp"))
 SENSOR = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
 PX4 = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -100,68 +99,36 @@ def health(node, publisher, sample_ns, sequence, epoch=1, healthy=True):
     })))
 
 
-def insert_exact_rays(grid, origin, endpoints):
-    """Small independent segment/AABB oracle for ROS wire geometry checks."""
-    origin = np.asarray(origin, dtype=float)
-    hits = {tuple(np.floor(np.asarray(hit)/grid.resolution).astype(int)) for hit in endpoints}
-    free = set()
-    for endpoint in endpoints:
-        endpoint = np.asarray(endpoint, dtype=float)
-        delta = endpoint-origin
-        if np.all(delta == 0):
-            continue
-        lo = np.floor(np.minimum(origin, endpoint)/grid.resolution).astype(int)
-        hi = np.floor(np.maximum(origin, endpoint)/grid.resolution).astype(int)
-        for x in range(lo[0], hi[0]+1):
-            for y in range(lo[1], hi[1]+1):
-                for z in range(lo[2], hi[2]+1):
-                    key = (x,y,z)
-                    enter, leave, possible = 0., 1., True
-                    for axis in range(3):
-                        lower, upper = key[axis]*grid.resolution, (key[axis]+1)*grid.resolution
-                        if delta[axis] == 0:
-                            possible = possible and lower <= origin[axis] < upper
-                        else:
-                            a, b = sorted(((lower-origin[axis])/delta[axis], (upper-origin[axis])/delta[axis]))
-                            enter, leave = max(enter,a), min(leave,b)
-                    if possible and leave > enter:
-                        free.add(key)
-    for key in free-hits:
-        grid.cells[key] = float(np.clip(grid.cells.get(key,0.)+grid.miss_log_odds,grid.min_log_odds,grid.max_log_odds))
-    for key in hits:
-        grid.cells[key] = float(np.clip(grid.cells.get(key,0.)+grid.hit_log_odds,grid.min_log_odds,grid.max_log_odds))
-    if hits:
-        grid.revision += 1
-
-
 @pytest.mark.parametrize("executable,node_name", [
     ("voxel_mapper_node", "powerplant_voxel_mapper"),
     ("offboard_mission_node", "powerplant_offboard_mission"),
 ])
-def test_all_parameter_defaults_match_retained_python(transport, executable, node_name):
+def test_all_parameter_defaults_match_frozen_baseline(transport, executable, node_name):
+    fixture = json.loads((FIXTURES / "parameter_defaults.json").read_text())["nodes"][executable]
+    assert fixture["node"] == node_name
+    defaults = fixture["parameters"]
     node, launch, wait = transport
     launch(executable)
     client = AsyncParameterClient(node, node_name)
     wait(client.services_are_ready)
-    source = ROOT / "px4_powerplant_mission/px4_powerplant_mission/nodes" / f"{executable}.py"
-    tree = ast.parse(source.read_text())
-    declaration = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_declare_parameters")
-    defaults = {ast.literal_eval(stmt.value.args[0]): ast.literal_eval(stmt.value.args[1]) for stmt in declaration.body}
-    if executable == "offboard_mission_node":
-        defaults["require_image_for_photo"] = True  # P0 intentional safety change.
     future = client.get_parameters(list(defaults))
     wait(future.done)
-    for (name, expected), actual in zip(defaults.items(), future.result().values):
-        if isinstance(expected, bool):
+    for (name, spec), actual in zip(defaults.items(), future.result().values):
+        expected = spec["value"]
+        if spec["type"] == "bool":
             value = actual.bool_value
-        elif isinstance(expected, int):
+        elif spec["type"] == "int":
             value = actual.integer_value
-        elif isinstance(expected, float):
+        elif spec["type"] == "double":
             value = actual.double_value
-        elif isinstance(expected, str):
+        elif spec["type"] == "string":
             value = actual.string_value
-        else:
+        elif spec["type"] == "double_array":
             value = list(actual.double_array_value)
+        elif spec["type"] == "string_array":
+            value = list(actual.string_array_value)
+        else:
+            raise AssertionError(f"unsupported fixture type {spec['type']} for {name}")
         assert value == expected, name
 
 
@@ -241,22 +208,17 @@ def test_mapper_stamp_fields_counts_and_cells(transport):
     assert cloud.header.frame_id == "map"
     assert [(f.name, f.offset, f.datatype, f.count) for f in cloud.fields] == [
         (name, j*4, PointField.FLOAT32, 1) for j, name in enumerate(("x", "y", "z", "state"))]
-    expected = VoxelGrid(.25)
-    origin = np.array([0., 0., 5.])
-    insert_exact_rays(expected, origin, [origin + [2., 0., 0.], origin + [3*np.cos(.5), 3*np.sin(.5), 0.]])
-    camera = origin + [.12, -.03, .24]
-    insert_exact_rays(expected, camera, [camera + [2., 0., 0.]])
+    expected = json.loads((FIXTURES / "mapper_case.json").read_text())
     actual = point_cloud2.read_points_numpy(cloud, field_names=("x", "y", "z", "state"))
-    exp = expected.observed_snapshot().points
-    assert sorted(map(tuple, actual.tolist())) == sorted(map(tuple, exp.tolist()))
-    assert status["observed_voxels_complete"]
-    assert status["observed_voxel_count"] == len(expected.cells)
+    assert sorted(map(tuple, actual.tolist())) == sorted(map(tuple, expected["expected_points"]))
+    assert status["observed_voxels_complete"] == expected["expected_complete"]
+    assert status["observed_voxel_count"] == expected["expected_observed_count"]
     sample = scan.header.stamp.sec * 10**9 + scan.header.stamp.nanosec
     assert status["depth_last_sample_stamp_ns"] == sample
     assert status["lidar_last_sample_stamp_ns"] == sample
     assert status["localization_healthy"] and status["map_epoch"] > 0
     assert status["observed_cloud_fingerprint"]
-    assert status["map_revision"] == expected.revision
+    assert status["map_revision"] == expected["expected_revision"]
     assert status["camera_intrinsics"]["camera_info_valid"]
     assert status["camera_intrinsics"]["fx"] == 100.
     observation = status["depth_observations"][-1]

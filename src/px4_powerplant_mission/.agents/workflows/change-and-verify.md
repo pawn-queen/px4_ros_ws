@@ -11,13 +11,13 @@ cd /home/pawn/px4_ros_ws
 git status --short -- src/px4_powerplant_mission
 ```
 
-常见链路如下，表中的 Python 路径相对于 `px4_powerplant_mission/`：
+常见链路如下。Python 文件相对于 `px4_powerplant_mission/`，C++ 文件相对于 `px4_powerplant_mission_cpp/`：
 
 | 任务 | 主要文件 | 关键输出 |
 | --- | --- | --- |
 | 定位与外部视觉 | `nodes/localization_node.py`、`nodes/uwb_simulator_node.py`、`nodes/external_vision_bridge_node.py` | `/uwb/pose`、`/powerplant/localization/odom`、`/fmu/in/vehicle_visual_odometry` |
-| 建图与规划 | `nodes/voxel_mapper_node.py`、`mapping/voxel_grid.py`、`path_planning/grid_astar.py` | `/powerplant/map/occupancy_grid`、`/powerplant/control/planned_path` |
-| 检测与任务 | `nodes/yolo_detector_node.py`、`nodes/offboard_mission_node.py` | `/powerplant/perception/yolo_detections`、`/powerplant/control/mission_status` |
+| 建图与规划 | `src/voxel_mapper_node.cpp`、`src/voxel_grid.cpp`、`src/frontier_planner.cpp`、`src/planning_index.cpp` | `/powerplant/map/occupancy_grid`、`/powerplant/control/planned_path` |
+| 检测与任务 | `nodes/yolo_detector_node.py`、`src/offboard_node.cpp`、`src/mission_state_machine.cpp`、`src/inspection.cpp` | `/powerplant/perception/yolo_detections`、`/powerplant/control/mission_status` |
 
 同时核对 `config/powerplant.yaml`、相关 launch 文件和 `setup.py`。不要仅凭节点内默认参数判断实际启动配置。
 

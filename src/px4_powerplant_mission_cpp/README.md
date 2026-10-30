@@ -1,9 +1,9 @@
 # Native powerplant mapping and mission control
 
-ROS 2 Jazzy C++17 implementation of the retained `px4_powerplant_mission`
-voxel mapper, conservative 3D planner and Offboard controller. It does not embed
-Python or execute the Python nodes. Localization, UWB simulation and YOLO remain
-in the original Python package.
+ROS 2 Jazzy C++17 native voxel mapper, conservative 3D planner and Offboard
+controller. The Python mapper/controller were removed on 2026-10-30; the Python
+package now provides only localization, UWB simulation/external vision and YOLO
+perception. This package does not embed or execute Python nodes.
 
 Current results and remaining integration checks: [migration status](MIGRATION_STATUS.md).
 
@@ -139,7 +139,7 @@ exactly equal candidate priorities may choose a different equivalent viewpoint
 than a Python set iteration. Trajectories are checked for known-free clearance
 rather than requiring byte-identical path messages. Voxel publication order is
 not an API guarantee. Numeric calculations use doubles and wire map fields use
-float32, matching the Python pipeline.
+float32, matching the retired Python wire layout.
 
 Image saving now completes asynchronously; photo events and counters follow the
 write result on a later control cycle. A photo is counted only after a fresh image is written successfully. Landing
@@ -177,7 +177,7 @@ view confirmation, planning dependencies, setpoint limits and cancellation.
 The test-only `core_probe` performs JSON input/output for original planning
 invariants and random obstacle routes. Legacy planning comparisons explicitly
 neutralize new turn/dwell costs; native P1 tests exercise the production model.
-Exact ray updates intentionally differ from the old Python fixed-step sampler
+Exact ray updates intentionally differ from the retired Python fixed-step sampler
 and are checked against independent segment geometry oracles. The ROS
 contract tests start only one native process at a time, inject synthetic sensor
 and PX4 messages, and verify parameter defaults, publications and services;

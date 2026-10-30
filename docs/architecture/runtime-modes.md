@@ -1,5 +1,7 @@
 # 仿真与实机运行拓扑
 
+> **2026-10-30 更新**：Python mapper/controller 已删除；launch 不再接受 `mapping_package`/`control_package`，mapper/controller 固定为 `px4_powerplant_mission_cpp`。本文中“Python 回退/双栈”段落是删除前历史。
+
 > **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…`、`scripts/…` 相对于 `src/px4_powerplant_mission_cpp/`；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
 
 > 证据基线：2026-10-26。本文区分**代码支持的运行方式**、**本机实际观察到的运行方式**和**目标但未证实的运行方式**。  
@@ -84,10 +86,8 @@ flowchart LR
 | `use_gazebo_clock_bridge` | `simulation`（true） | 桥接 `/clock` |
 | `use_sim_time` | `simulation`（true） | 所有节点统一仿真时钟 |
 | `use_mapping` | `true` | 启动建图 |
-| `mapping_package` | `px4_powerplant_mission_cpp` | 默认 C++ mapper |
 | `use_yolo` | `false` | 默认不启 YOLO |
 | `use_control` | `false` | 默认不启 Offboard |
-| `control_package` | `px4_powerplant_mission_cpp` | 默认 C++ controller |
 | `yolo_python` | `/home/pawn/px4_ros_ws/.venv/bin/python` | 绝对路径 |
 
 `[事实]` launch 本身**不启动** Gazebo 传感器桥；它只启动 `/clock` 和真值桥（`:90-116`）。传感器桥需要单独 `gz_sensor_bridge.launch.py`，P2 脚本把它作为独立的 `sensors` 进程启动（`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:325`）。`[推断]` 只运行 `powerplant_system.launch.py` 时，`/depth_camera`、`/camera`、`/mapping_lidar` 可能为空，建图不会产生有效地图。
@@ -271,8 +271,8 @@ flowchart LR
 
 | 检查 | 结果 | 证据 |
 |---|---|---|
-| C++/契约测试 | 204 项，0 失败 | 本机 `colcon test-result --test-result-base build/px4_powerplant_mission_cpp` |
-| Python 回归 | 127 项，0 失败 | `log/p2_baseline/python_health.xunit.xml` |
+| C++/契约测试 | 400 项，0 失败 | 本机 `colcon test-result --test-result-base build/px4_powerplant_mission_cpp` |
+| Python 回归 | 72 项，0 失败（删除 legacy 后） | 本机 `pytest src/px4_powerplant_mission/test` |
 | 最新完整 SITL | **未通过**：`passed=false`，`exit_reason=mission_fault`；阶段 `IDLE→START→SAFE_TAKEOFF→FAULT` | `log/p2_sitl_cpu_17/report.json` |
 | 失败原因 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE`，在起飞段触发安全停止 | `log/p2_sitl_cpu_17/events.jsonl` |
 | 原始传感器负载 | 未通过健康启动；CPU 10 Hz 仍慢于实时 | `src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:32` |
