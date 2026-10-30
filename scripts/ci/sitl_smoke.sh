@@ -115,13 +115,19 @@ note "=== start PX4 SITL ==="
 note "=== wait for /fmu/out/vehicle_status (budget ${TIMEOUT_S}s) ==="
 deadline=$(( $(date +%s) + TIMEOUT_S ))
 found=0
+attempt=0
+# 用 60s 而不是 10s：ROS2CLI_ENABLE_DAEMON=0 时每次 ros2 topic list 都要现场
+# 做一遍发现，10s 会周期性被 timeout 杀掉、返回空输出，看起来像"主题一直没出现"。
+# PX4 新版会给消息加版本后缀，所以 vehicle_status 和 vehicle_status_v4 都要认。
 while [ "$(date +%s)" -lt "$deadline" ]; do
-  if timeout 10 ros2 topic list 2>/dev/null | grep -qx "/fmu/out/vehicle_status"; then
+  attempt=$((attempt + 1))
+  if timeout 60 ros2 topic list 2>/dev/null | grep -qE '^/fmu/out/vehicle_status(_v[0-9]+)?$'; then
     found=1
     break
   fi
   sleep 3
 done
+note "wait finished after $attempt attempt(s)"
 
 if [ "$found" -eq 1 ]; then
   note "topic /fmu/out/vehicle_status is visible"
