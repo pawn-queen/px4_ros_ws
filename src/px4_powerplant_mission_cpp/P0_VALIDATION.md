@@ -55,7 +55,7 @@ depth_last_sample_stamp_ns, lidar_last_sample_stamp_ns,
 observed_cloud_fingerprint
 ```
 
-同时保留原完整性、计数、地图时间戳和版本字段。原生控制器拒绝旧版地图健康协议；保留的 Python mapper 是旧算法对照，不能直接与本轮原生控制器混用。默认 C++ mapper/controller 的 simulation/hardware 路径共用新协议。
+同时保留原完整性、计数、地图时间戳和版本字段。原生控制器拒绝旧版地图健康协议；原 Python mapper/controller 已于 2026-10-30 删除。默认 C++ mapper/controller 的 simulation/hardware 路径共用新协议。
 
 关键诊断字段：`health_fault_reason`、`last_input_reject_reason`、`odometry_rejected_count`、`odom_sample_stamp_ns`、`odom_received_stamp_ns`、`localization_epoch`、`map_epoch`、`map_localization_healthy`、`vehicle_status_fresh`、`landing_timeout`。
 

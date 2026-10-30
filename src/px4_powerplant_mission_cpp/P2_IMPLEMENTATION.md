@@ -108,7 +108,7 @@ mapper 与注册器共用 rectified pinhole 输入校验：图像必须经过驱
 
 ## 接口与验证
 
-保留地图四字段、原 ROS 主话题、服务和顶层阶段。新增 `/powerplant/perception/yolo_source_image`、RGB CameraInfo 订阅及运动/区域/质量/覆盖诊断。旧 Python mapper/controller 保留为旧算法对照，P2 运行使用原生两节点。
+保留地图四字段、原 ROS 主话题、服务和顶层阶段。新增 `/powerplant/perception/yolo_source_image`、RGB CameraInfo 订阅及运动/区域/质量/覆盖诊断。原 Python mapper/controller 已于 2026-10-30 删除，P2 运行只使用原生两节点。
 
 新增核心与节点测试覆盖解析导数、停止包络、三维区域/门户、候选名额、双相机注册、覆盖事务、质量失败和旧结果拒绝。构建后串行运行已有可重放基线与 P2 测试；正式电厂入口为 `run_p2_sitl.py --scenario powerplant`，`room/two_rooms` 仅作回归。实际资产受提交和递归哈希锁定；几何接触、有限阶段、局部任务和满负载性能分开验收。SITL 验证与最终结果见 P2_VALIDATION.md、ISSUE3_VALIDATION.md 和 MIGRATION_STATUS.md。实际通过的数量、场景与未通过项由执行后填入，不能把设计或单元测试当作实飞结果。
 

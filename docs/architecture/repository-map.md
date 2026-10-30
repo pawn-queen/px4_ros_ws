@@ -16,7 +16,7 @@
 
 | 仓库/目录 | 远端与版本 | 规模/状态 | 角色 |
 |---|---|---|---|
-| `px4_ros_ws` | `github.com/pawn-queen/px4_ros_ws`；`main`；HEAD `e5f795d2`；17 个提交（2026-05-13 至 2026-10-25） | 230 个跟踪文件；33 个已修改、29 个未跟踪（普查开始时）；本地 `main` 比 `origin/main` 多 5 个提交，`origin/main` 多 1 个 README 提交 | 机载任务栈主工作区 |
+| `px4_ros_ws` | `github.com/pawn-queen/px4_ros_ws`；`main`；HEAD `9931daf7`；工作树含本次 Python legacy 删除/fixture 迁移 | 本次删除修改/删除多文件；新增 `test/fixtures/`；与 `origin/main` 同步 | 机载任务栈主工作区 |
 | `px4_ros_ws/src/px4_msgs` | PX4 官方 `github.com/PX4/px4_msgs`；gitlink `7abb737`；版本 2.0.1 | 255 个跟踪文件；246 个 `msg`；干净 | PX4 uORB 消息的 ROS 2 映射 |
 | `px4_ros_ws/src/px4_ros_com` | PX4 官方 `github.com/PX4/px4_ros_com`；gitlink `86e9aeb`（`beta-384`） | 28 个跟踪文件；干净；已安装 | 官方示例/`frame_transforms`，**业务包未引用** |
 | `drone-simulation` | `git@github.com:pawn-queen/drone-simulation.git`；`main`；HEAD `d0a0e3cc3c`；`v1.17.0-alpha1-1645-gd0a0e3cc3c`；49,681 个提交；上游基点 `89806574`（2026-04-29） | 13,819 个跟踪文件；约 8.8 GB（`build/` 7.6 GB 未跟踪）；本地相对基点仅 2 个文件、+15/−1；`Tools/simulation/gz` 有 1 个未提交模型修改 | PX4 分支 + Gazebo 仿真资源 |
@@ -39,31 +39,29 @@ px4_ros_ws/
 ├── src/
 │   ├── px4_msgs/                 # gitlink：PX4 消息（构建依赖）
 │   ├── px4_ros_com/              # gitlink：官方示例（业务未引用）
-│   ├── px4_powerplant_mission/   # ament_python：定位/UWB/EV/YOLO + 旧 Python 建图/控制
+│   ├── px4_powerplant_mission/   # ament_python：定位/UWB/EV/YOLO + launch/config
 │   │   ├── config/               # powerplant.yaml + localization_* + p2_*
 │   │   ├── launch/               # system / gz_sensor_bridge / visualization
 │   │   ├── models/yolo/          # best.pt / yolov8n.pt（约 12 MB）
 │   │   ├── px4_powerplant_mission/
-│   │   │   ├── common/           # frames / qos / initial_scan
+│   │   │   ├── common/           # frames / qos
 │   │   │   ├── localization/     # inputs / uwb / fusion
-│   │   │   ├── mapping/          # Python voxel_grid（旧）
-│   │   │   ├── path_planning/    # frontier_3d / grid_astar（旧）
-│   │   │   └── nodes/            # 6 个 Python 节点
-│   │   ├── test/                 # 12 个 Python 测试文件
+│   │   │   └── nodes/            # 4 个 Python 节点
+│   │   ├── test/                 # 8 个 Python 测试文件
 │   │   └── rviz/                 # powerplant_visualization.rviz
 │   └── px4_powerplant_mission_cpp/ # ament_cmake：C++ 建图/规划/控制
 │       ├── config/               # p0 依赖锁定
 │       ├── include/              # 16 个 .hpp
-│       ├── src/                  # 21 个 .cpp（含 P2 未跟踪文件）
+│       ├── src/                  # 21 个 .cpp
 │       ├── scripts/              # P0 基线 / P2 SITL / GCS / 包络推导
-│       ├── test/                 # C++/Python 契约测试 + p2_*.sdf 世界
+│       ├── test/                 # C++ 测试 + fixtures + p2_*.sdf 世界
 │       └── research_sources/     # SITL 机体包络证据
 ├── build/ install/ log/          # 构建/安装/运行产物（未跟踪）
 ├── .p0_deps/                     # 可选 Cyclone DDS 本地解包（未跟踪）
 └── .venv/                        # YOLO 推理依赖（未跟踪）
 ```
 
-`[事实]` Python 包通过 `setup.py:28-36` 注册 6 个节点入口；`data_files` 安装 `config/`、`launch/`、`models/yolo/`、`rviz/`（`setup.py:10-17`）。C++ 包通过 `CMakeLists.txt:23-36` 生成 2 个库、2 个可执行文件。
+`[事实]` Python 包通过 `setup.py:28-34` 注册 4 个节点入口；`data_files` 安装 `config/`、`launch/`、`models/yolo/`、`rviz/`（`setup.py:10-17`）。C++ 包通过 `CMakeLists.txt:23-36` 生成 2 个库、2 个可执行文件。
 
 **UWB 工作区（`C:\Users\pawn-\UWB-loaclization\`）**
 
@@ -107,7 +105,7 @@ drone-simulation/
 
 | 包 | 构建类型 | 版本 | 入口/产物 | 默认是否参与任务 | 证据 |
 |---|---|---|---|---|---|
-| `px4_powerplant_mission` | `ament_python` | 0.1.0 | `localization_node`、`external_vision_bridge_node`、`uwb_simulator_node`、`voxel_mapper_node`、`yolo_detector_node`、`offboard_mission_node` | 定位/EV 默认开；UWB 仿真默认开；建图默认用 C++ 包；YOLO/控制默认关 | `package.xml:10-31`；`setup.py:28-36` |
+| `px4_powerplant_mission` | `ament_python` | 0.1.0 | `localization_node`、`external_vision_bridge_node`、`uwb_simulator_node`、`yolo_detector_node` | 定位/EV 默认开；UWB 仿真默认开；建图默认 C++；YOLO/控制默认关 | `package.xml:10-31`；`setup.py:28-34` |
 | `px4_powerplant_mission_cpp` | `ament_cmake` | 0.1.0 | 库 `powerplant_core`、`powerplant_mission`；可执行 `voxel_mapper_node`、`offboard_mission_node` | 建图默认开；控制默认关（`use_control=false`） | `package.xml:1-29`；`CMakeLists.txt:23-36` |
 | `px4_msgs` | `ament_cmake` | 2.0.1 | 246 个消息/服务定义 | 构建/运行依赖 | `src/px4_msgs/package.xml:1-10` |
 | `px4_ros_com` | `ament_cmake` | 0.1.0（`beta-384`） | 示例节点 + `libframe_transforms.so` | **否** | 两个业务包 `package.xml` 均无 `px4_ros_com`；`install/px4_ros_com` 存在 |
@@ -228,10 +226,12 @@ flowchart TB
 | `168dde05` … `9c53030e` | 2026-05-14 至 05-17 | 航点、UWB 定位、避障 | 逐步引入 UWB/外部视觉 |
 | `c18926c2` | 2026-10-21 | 迁移 C++ 建图/规划/Offboard | 双栈并存开始 |
 | `071503ea` | 2026-10-24 | 解耦仿真/实机，EV 直接接独立 UWB | `localization_profile` 与硬件话题出现 |
-| `e5f795d2` | 2026-10-25 | 文档更新 | 当前 HEAD |
-| 工作树 | 2026-10-26 | P2 轨迹/拓扑/巡检 | **未提交**，见 [D1](architecture-debt.md#d1-p2-工作仍未提交) |
+| `e5f795d2` | 2026-10-25 | 文档更新 | 历史提交 |
+| `4800616b` | 2026-10-26 | P2 轨迹/拓扑/巡检入库 | P2 源码/测试/文档成为提交内容 |
+| `9931daf7` | 2026-10-30 | CI smoke/测试加固 | 本次删除前的当前 HEAD |
+| 工作树 | 2026-10-30 | 删除 Python legacy + fixture 迁移 | **未提交**，见 [D1](architecture-debt.md#d1-本次删除改动未提交) |
 
-`[事实]` `origin/main` 另有 `44fbb40e` “Create README.md”（2026-05-18），本地 `main` 未合并；本地 5 个提交也未推送。`[推断]` 远端与本地对“当前基线”的认知已经分叉。
+`[事实]` 当前 `main` 与 `origin/main` 已同步（`git rev-list --left-right --count` 为 0/0）。
 
 **其他仓库关键提交**
 

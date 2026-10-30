@@ -20,8 +20,8 @@ setup(
     maintainer="pawn",
     maintainer_email="pawn@example.com",
     description=(
-        "PX4 Gazebo powerplant simulation stack with localization, mapping, "
-        "YOLO perception, and offboard mission control."
+        "PX4 powerplant localization, independent UWB/external vision, YOLO "
+        "perception, and launch composition for the native mission stack."
     ),
     license="BSD-3-Clause",
     tests_require=["pytest"],
@@ -30,9 +30,7 @@ setup(
             "localization_node = px4_powerplant_mission.nodes.localization_node:main",
             "external_vision_bridge_node = px4_powerplant_mission.nodes.external_vision_bridge_node:main",
             "uwb_simulator_node = px4_powerplant_mission.nodes.uwb_simulator_node:main",
-            "voxel_mapper_node = px4_powerplant_mission.nodes.voxel_mapper_node:main",
             "yolo_detector_node = px4_powerplant_mission.nodes.yolo_detector_node:main",
-            "offboard_mission_node = px4_powerplant_mission.nodes.offboard_mission_node:main",
         ],
     },
 )

@@ -51,7 +51,6 @@ PR 模板里的每一项都要填。**"验证结果"表格不允许留空**，�
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src/px4_powerplant_mission \
   python3 -m pytest -p no:cacheprovider -q \
   src/px4_powerplant_mission/test/test_core_math.py \
-  src/px4_powerplant_mission/test/test_frontier_3d.py \
   src/px4_powerplant_mission/test/test_uwb_quality_solver.py
 ```
 

@@ -1,0 +1,631 @@
+{
+  "source": "pre-deletion Python _declare_parameters",
+  "nodes": {
+    "voxel_mapper_node": {
+      "node": "powerplant_voxel_mapper",
+      "parameters": {
+        "localized_odom_topic": {
+          "type": "string",
+          "value": "/powerplant/localization/odom"
+        },
+        "depth_image_topic": {
+          "type": "string",
+          "value": "/depth_camera"
+        },
+        "depth_camera_info_topic": {
+          "type": "string",
+          "value": "/depth_camera/camera_info"
+        },
+        "laser_scan_topic": {
+          "type": "string",
+          "value": "/scan"
+        },
+        "pointcloud_topic": {
+          "type": "string",
+          "value": "/points"
+        },
+        "occupied_voxels_topic": {
+          "type": "string",
+          "value": "/powerplant/map/occupied_voxels"
+        },
+        "observed_voxels_topic": {
+          "type": "string",
+          "value": "/powerplant/map/observed_voxels"
+        },
+        "occupancy_grid_topic": {
+          "type": "string",
+          "value": "/powerplant/map/occupancy_grid"
+        },
+        "voxel_marker_topic": {
+          "type": "string",
+          "value": "/powerplant/map/voxel_markers"
+        },
+        "fusion_status_topic": {
+          "type": "string",
+          "value": "/powerplant/map/fusion_status"
+        },
+        "map_frame": {
+          "type": "string",
+          "value": "map"
+        },
+        "base_frame": {
+          "type": "string",
+          "value": "base_link"
+        },
+        "voxel_resolution_m": {
+          "type": "double",
+          "value": 0.25
+        },
+        "hit_log_odds": {
+          "type": "double",
+          "value": 0.85
+        },
+        "miss_log_odds": {
+          "type": "double",
+          "value": -0.4
+        },
+        "occupied_log_odds_threshold": {
+          "type": "double",
+          "value": 0.0
+        },
+        "free_log_odds_threshold": {
+          "type": "double",
+          "value": -0.2
+        },
+        "ray_clear_enabled": {
+          "type": "bool",
+          "value": true
+        },
+        "publish_rate_hz": {
+          "type": "double",
+          "value": 2.0
+        },
+        "depth_stride_px": {
+          "type": "int",
+          "value": 8
+        },
+        "depth_fusion_rate_hz": {
+          "type": "double",
+          "value": 3.0
+        },
+        "lidar_fusion_rate_hz": {
+          "type": "double",
+          "value": 3.0
+        },
+        "max_depth_range_m": {
+          "type": "double",
+          "value": 18.0
+        },
+        "min_depth_range_m": {
+          "type": "double",
+          "value": 0.25
+        },
+        "camera_fx": {
+          "type": "double",
+          "value": 430.0
+        },
+        "camera_fy": {
+          "type": "double",
+          "value": 430.0
+        },
+        "camera_cx": {
+          "type": "double",
+          "value": 320.0
+        },
+        "camera_cy": {
+          "type": "double",
+          "value": 240.0
+        },
+        "camera_translation_flu": {
+          "type": "double_array",
+          "value": [
+            0.12,
+            -0.03,
+            0.24
+          ]
+        },
+        "lidar_translation_flu": {
+          "type": "double_array",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "pointcloud_frame": {
+          "type": "string",
+          "value": "base_link"
+        },
+        "max_publish_points": {
+          "type": "int",
+          "value": 60000
+        },
+        "grid_z_min_m": {
+          "type": "double",
+          "value": 0.3
+        },
+        "grid_z_max_m": {
+          "type": "double",
+          "value": 6.0
+        },
+        "use_flight_height_grid_band": {
+          "type": "bool",
+          "value": true
+        },
+        "grid_z_band_below_m": {
+          "type": "double",
+          "value": 0.8
+        },
+        "grid_z_band_above_m": {
+          "type": "double",
+          "value": 0.8
+        },
+        "startup_gate_enabled": {
+          "type": "bool",
+          "value": true
+        },
+        "startup_gate_min_height_m": {
+          "type": "double",
+          "value": 2.0
+        },
+        "startup_gate_max_tilt_rad": {
+          "type": "double",
+          "value": 0.35
+        },
+        "max_orientation_variance_rad2": {
+          "type": "double",
+          "value": 0.5
+        },
+        "startup_gate_clear_on_enable": {
+          "type": "bool",
+          "value": true
+        },
+        "use_fixed_grid_bounds": {
+          "type": "bool",
+          "value": false
+        },
+        "grid_min_x_m": {
+          "type": "double",
+          "value": -25.0
+        },
+        "grid_max_x_m": {
+          "type": "double",
+          "value": 35.0
+        },
+        "grid_min_y_m": {
+          "type": "double",
+          "value": -10.0
+        },
+        "grid_max_y_m": {
+          "type": "double",
+          "value": 50.0
+        }
+      }
+    },
+    "offboard_mission_node": {
+      "node": "powerplant_offboard_mission",
+      "parameters": {
+        "localized_odom_topic": {
+          "type": "string",
+          "value": "/powerplant/localization/odom"
+        },
+        "occupancy_grid_topic": {
+          "type": "string",
+          "value": "/powerplant/map/occupancy_grid"
+        },
+        "map_fusion_status_topic": {
+          "type": "string",
+          "value": "/powerplant/map/fusion_status"
+        },
+        "observed_voxels_topic": {
+          "type": "string",
+          "value": "/powerplant/map/observed_voxels"
+        },
+        "planned_path_topic": {
+          "type": "string",
+          "value": "/powerplant/control/planned_path"
+        },
+        "yolo_detections_topic": {
+          "type": "string",
+          "value": "/powerplant/perception/yolo_detections"
+        },
+        "target_position_topic": {
+          "type": "string",
+          "value": "/powerplant/perception/target_position"
+        },
+        "inspection_event_topic": {
+          "type": "string",
+          "value": "/powerplant/control/inspection_events"
+        },
+        "depth_image_topic": {
+          "type": "string",
+          "value": "/depth_camera"
+        },
+        "laser_scan_topic": {
+          "type": "string",
+          "value": "/mapping_lidar"
+        },
+        "depth_camera_info_topic": {
+          "type": "string",
+          "value": "/depth_camera/camera_info"
+        },
+        "rgb_image_topic": {
+          "type": "string",
+          "value": "/camera"
+        },
+        "vehicle_status_topic": {
+          "type": "string",
+          "value": "/fmu/out/vehicle_status"
+        },
+        "battery_status_topic": {
+          "type": "string",
+          "value": "/fmu/out/battery_status"
+        },
+        "failsafe_flags_topic": {
+          "type": "string",
+          "value": "/fmu/out/failsafe_flags"
+        },
+        "vehicle_command_ack_topic": {
+          "type": "string",
+          "value": "/fmu/out/vehicle_command_ack"
+        },
+        "offboard_control_mode_topic": {
+          "type": "string",
+          "value": "/fmu/in/offboard_control_mode"
+        },
+        "trajectory_setpoint_topic": {
+          "type": "string",
+          "value": "/fmu/in/trajectory_setpoint"
+        },
+        "vehicle_command_topic": {
+          "type": "string",
+          "value": "/fmu/in/vehicle_command"
+        },
+        "mission_status_topic": {
+          "type": "string",
+          "value": "/powerplant/control/mission_status"
+        },
+        "map_frame": {
+          "type": "string",
+          "value": "map"
+        },
+        "auto_start": {
+          "type": "bool",
+          "value": false
+        },
+        "arm_on_start": {
+          "type": "bool",
+          "value": true
+        },
+        "command_retry_interval_s": {
+          "type": "double",
+          "value": 1.0
+        },
+        "offboard_warmup_setpoints": {
+          "type": "int",
+          "value": 20
+        },
+        "require_localization_for_start": {
+          "type": "bool",
+          "value": true
+        },
+        "max_localization_age_s": {
+          "type": "double",
+          "value": 0.5
+        },
+        "max_start_position_variance_m2": {
+          "type": "double",
+          "value": 4.0
+        },
+        "max_start_height_variance_m2": {
+          "type": "double",
+          "value": 4.0
+        },
+        "require_preflight_checks": {
+          "type": "bool",
+          "value": true
+        },
+        "require_accepts_offboard_setpoints": {
+          "type": "bool",
+          "value": false
+        },
+        "takeoff_height_m": {
+          "type": "double",
+          "value": 5.0
+        },
+        "initial_scan_hover_s": {
+          "type": "double",
+          "value": 2.0
+        },
+        "initial_scan_yaw_steps": {
+          "type": "int",
+          "value": 12
+        },
+        "initial_scan_yaw_rate_radps": {
+          "type": "double",
+          "value": 0.2
+        },
+        "initial_scan_yaw_dwell_s": {
+          "type": "double",
+          "value": 0.3
+        },
+        "initial_scan_yaw_tolerance_rad": {
+          "type": "double",
+          "value": 0.12
+        },
+        "initial_scan_max_tilt_rad": {
+          "type": "double",
+          "value": 0.35
+        },
+        "initial_scan_max_tilt_variance_rad2": {
+          "type": "double",
+          "value": 0.5
+        },
+        "initial_scan_max_speed_mps": {
+          "type": "double",
+          "value": 0.35
+        },
+        "initial_scan_max_hover_yaw_rate_radps": {
+          "type": "double",
+          "value": 0.12
+        },
+        "initial_scan_max_position_error_m": {
+          "type": "double",
+          "value": 0.5
+        },
+        "initial_scan_max_horizontal_setpoint_speed_mps": {
+          "type": "double",
+          "value": 0.3
+        },
+        "initial_scan_max_sensor_age_s": {
+          "type": "double",
+          "value": 2.0
+        },
+        "initial_scan_min_valid_lidar_ranges": {
+          "type": "int",
+          "value": 10
+        },
+        "initial_scan_min_known_grid_cells": {
+          "type": "int",
+          "value": 10
+        },
+        "initial_scan_timeout_s": {
+          "type": "double",
+          "value": 90.0
+        },
+        "return_home_height_m": {
+          "type": "double",
+          "value": 5.0
+        },
+        "target_acceptance_m": {
+          "type": "double",
+          "value": 0.45
+        },
+        "yaw_acceptance_rad": {
+          "type": "double",
+          "value": 0.25
+        },
+        "cruise_yaw_enu_rad": {
+          "type": "double",
+          "value": 0.0
+        },
+        "max_horizontal_setpoint_speed_mps": {
+          "type": "double",
+          "value": 2.0
+        },
+        "max_vertical_setpoint_speed_mps": {
+          "type": "double",
+          "value": 0.8
+        },
+        "max_yaw_rate_radps": {
+          "type": "double",
+          "value": 0.6
+        },
+        "avoidance_startup_gate_enabled": {
+          "type": "bool",
+          "value": true
+        },
+        "avoidance_startup_min_height_m": {
+          "type": "double",
+          "value": 2.0
+        },
+        "avoidance_startup_max_tilt_rad": {
+          "type": "double",
+          "value": 0.35
+        },
+        "replan_interval_s": {
+          "type": "double",
+          "value": 2.0
+        },
+        "safety_stop_enabled": {
+          "type": "bool",
+          "value": true
+        },
+        "safety_stop_distance_m": {
+          "type": "double",
+          "value": 1.2
+        },
+        "safety_stop_width_m": {
+          "type": "double",
+          "value": 0.5
+        },
+        "safety_stop_treat_unknown_as_blocked": {
+          "type": "bool",
+          "value": false
+        },
+        "target_class_name": {
+          "type": "string",
+          "value": "gas_cylinders"
+        },
+        "min_target_confidence": {
+          "type": "double",
+          "value": 0.35
+        },
+        "target_memory_s": {
+          "type": "double",
+          "value": 8.0
+        },
+        "lock_target_after_acquisition": {
+          "type": "bool",
+          "value": true
+        },
+        "explore_max_duration_s": {
+          "type": "double",
+          "value": 300.0
+        },
+        "explore_min_replan_interval_s": {
+          "type": "double",
+          "value": 1.0
+        },
+        "explore_max_map_age_s": {
+          "type": "double",
+          "value": 3.0
+        },
+        "explore_min_x_m": {
+          "type": "double",
+          "value": -24.0
+        },
+        "explore_max_x_m": {
+          "type": "double",
+          "value": 34.0
+        },
+        "explore_min_y_m": {
+          "type": "double",
+          "value": -9.0
+        },
+        "explore_max_y_m": {
+          "type": "double",
+          "value": 49.0
+        },
+        "explore_min_z_m": {
+          "type": "double",
+          "value": 3.5
+        },
+        "explore_max_z_m": {
+          "type": "double",
+          "value": 7.0
+        },
+        "explore_clearance_radius_m": {
+          "type": "double",
+          "value": 0.35
+        },
+        "explore_max_search_radius_m": {
+          "type": "double",
+          "value": 10.0
+        },
+        "explore_sensor_range_m": {
+          "type": "double",
+          "value": 8.0
+        },
+        "explore_local_path_length_m": {
+          "type": "double",
+          "value": 2.0
+        },
+        "explore_viewpoint_dwell_s": {
+          "type": "double",
+          "value": 0.4
+        },
+        "explore_cruise_speed_mps": {
+          "type": "double",
+          "value": 1.0
+        },
+        "explore_return_speed_mps": {
+          "type": "double",
+          "value": 1.0
+        },
+        "explore_return_reserve_s": {
+          "type": "double",
+          "value": 30.0
+        },
+        "explore_max_position_variance_m2": {
+          "type": "double",
+          "value": 1.0
+        },
+        "explore_localization_variance_growth_m2_per_m": {
+          "type": "double",
+          "value": 0.01
+        },
+        "explore_min_battery_fraction": {
+          "type": "double",
+          "value": 0.2
+        },
+        "explore_battery_max_age_s": {
+          "type": "double",
+          "value": 3.0
+        },
+        "target_standoff_m": {
+          "type": "double",
+          "value": 2.2
+        },
+        "inspection_altitude_m": {
+          "type": "double",
+          "value": 5.0
+        },
+        "inspection_orbit_points": {
+          "type": "int",
+          "value": 4
+        },
+        "inspection_required_photos": {
+          "type": "int",
+          "value": 4
+        },
+        "inspection_photo_dir": {
+          "type": "string",
+          "value": "/home/pawn/px4_ros_ws/inspection_photos"
+        },
+        "require_image_for_photo": {
+          "type": "bool",
+          "value": true
+        },
+        "camera_fx": {
+          "type": "double",
+          "value": 430.0
+        },
+        "camera_fy": {
+          "type": "double",
+          "value": 430.0
+        },
+        "camera_cx": {
+          "type": "double",
+          "value": 320.0
+        },
+        "camera_cy": {
+          "type": "double",
+          "value": 240.0
+        },
+        "camera_translation_flu": {
+          "type": "double_array",
+          "value": [
+            0.12,
+            -0.03,
+            0.24
+          ]
+        },
+        "bbox_depth_sample_fraction": {
+          "type": "double",
+          "value": 0.45
+        },
+        "min_detection_depth_m": {
+          "type": "double",
+          "value": 0.25
+        },
+        "max_detection_depth_m": {
+          "type": "double",
+          "value": 18.0
+        },
+        "max_depth_age_s": {
+          "type": "double",
+          "value": 1.0
+        },
+        "land_complete_height_m": {
+          "type": "double",
+          "value": 0.25
+        },
+        "land_complete_timeout_s": {
+          "type": "double",
+          "value": 20.0
+        }
+      }
+    }
+  }
+}

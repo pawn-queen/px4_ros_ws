@@ -3,7 +3,7 @@
 <package format="3">
   <name>px4_powerplant_mission</name>
   <version>0.1.0</version>
-  <description>PX4 Gazebo powerplant simulation stack: localization, mapping, YOLO perception, and offboard mission control.</description>
+  <description>PX4 powerplant localization, UWB/external vision, YOLO perception, and launch composition for the native mission stack.</description>
   <maintainer email="pawn@example.com">pawn</maintainer>
   <license>BSD-3-Clause</license>
 

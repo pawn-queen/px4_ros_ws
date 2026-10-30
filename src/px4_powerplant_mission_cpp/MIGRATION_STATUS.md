@@ -1,6 +1,10 @@
 # C++ 迁移进度与验证记录
 
-更新：2026-10-29。此文件用于后续继续任务时保持范围与验证结论一致。
+更新：2026-10-30。此文件用于后续继续任务时保持范围与验证结论一致。
+
+## 2026-10-30：Python mapper/controller 已移除
+
+按用户确认的删除方案，Python `voxel_mapper_node`/`offboard_mission_node` 及其专用 `mapping/`、`path_planning/`、`common/initial_scan.py`、相关测试已删除；`setup.py` 移除两个入口，launch 移除 `mapping_package`/`control_package` 回退参数。C++ 测试的旧行为基准改为 `src/px4_powerplant_mission_cpp/test/fixtures/` 下的冻结 fixture，不再在测试运行时 import Python legacy。该删除是在用户明确豁免 Q9=A 的情况下执行的：完整 SITL 和实机地面链仍未通过，不能把删除当作飞行验收。删除后本机 P0 baseline：C++ 400 项、Python 72 项，均 0 失败；双进程 ROS 探针通过。
 
 ## 2026-10-29：A—D过渡策略、圆角停止几何与参考管理（最新）
 
@@ -133,7 +137,7 @@ SITL 已实际启动隔离 PX4、Agent、Gazebo 与任务栈，保留至 CPU17 �
 
 运行入口、依赖锁定、配置及新协议见 [P0_VALIDATION.md](P0_VALIDATION.md)。`scripts/run_p0_baseline.sh` 串行运行探针、C++/对照/跨进程测试和 Python 回归并保存结果；不会启动 Gazebo、Agent、真实飞控或电机。下方 2026-10-24/21 的“未通过”是历史结果，本轮仅在上述新 middleware 配置下解决同机通信；不能据此断言默认 Fast DDS 已修好。
 
-**仍待验收：**完整 PX4/Gazebo 飞行、Agent/PX4 与所选 DDS 的实际互通、真实 UWB/相机/雷达标定及故障数据、起飞顶棚净空、PX4 Offboard-loss 配置和反应、连续动力学制动与真实电量裕量。LOCALHOST 基线不验证 Windows Host 或跨计算机 DDS。原来的 Python mapper/controller 可保留算法对照，但不具备本轮原生 P0 行为；混用旧地图协议会被拒绝。
+**仍待验收：**完整 PX4/Gazebo 飞行、Agent/PX4 与所选 DDS 的实际互通、真实 UWB/相机/雷达标定及故障数据、起飞顶棚净空、PX4 Offboard-loss 配置和反应、连续动力学制动与真实电量裕量。LOCALHOST 基线不验证 Windows Host 或跨计算机 DDS。原 Python mapper/controller 已于 2026-10-30 删除；建图/控制只保留 C++ 实现。
 
 ## 2026-10-24：仿真/实机共用定位链路
 
@@ -180,13 +184,7 @@ PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
 - `powerplant_system.launch.py` 默认把建图、控制路由到 C++ 包；`use_control=false`、`use_yolo=false` 和 YAML `auto_start=false` 保持不变。
 - 原包仅修改 launch 接线、package.xml 依赖及 README；原 Python 节点、算法和 YAML 均未修改或删除。
 
-Python 回退（可分别指定任一模块）：
-
-```bash
-ros2 launch px4_powerplant_mission powerplant_system.launch.py \
-  mapping_package:=px4_powerplant_mission control_package:=px4_powerplant_mission \
-  use_control:=true
-```
+Python 回退已移除：`mapping_package`/`control_package` 参数和两个 Python 入口均不存在。下方“已验证”表是删除前的历史记录，保留用于追溯。
 
 ## 已验证
 
@@ -196,9 +194,9 @@ ros2 launch px4_powerplant_mission powerplant_system.launch.py \
 | 原 Python 包测试 | 95 项通过 |
 | C++ 原生测试 | 17 项通过 |
 | Python/C++ 算法对照 | 26 项通过 |
-| launch 参数检查 | 默认选择 C++，保留 Python 回退开关 |
+| launch 参数检查（历史） | 删除前默认选择 C++、保留 Python 回退开关；该开关已于 2026-10-30 移除 |
 | 默认 C++ 两节点加载原 YAML、短时运行、SIGINT 退出 | 通过；未触发任务，无 PX4/Gazebo |
-| Python 回退启动 | 确认启动原 Python 两节点；退出时出现原实现重复 `rclpy.shutdown()` 异常，遵照保留原程序要求未修改 |
+| Python 回退启动（历史） | 删除前确认启动原 Python 两节点；该路径已于 2026-10-30 删除 |
 
 原生测试包括位姿插值/时间回退、点云双精度/字节序/行填充、地图完整性与新鲜度、异步任务取消、起飞门控、初扫超时、目标抢占、返航安全、限速、电量预算，以及照片保存期间地图失效后的完成处理。
 
