@@ -2,7 +2,7 @@
 
 > **文档性质**：架构普查（初始只读）+ 2026-10-30 Python legacy 删除实施记录；本次删除已按用户明确授权执行。
 > **证据基线**：2026-10-30，`px4_ros_ws` 工作树（HEAD `7741be72`，docs/project-context 拆分已提交）、`UWB-loaclization` 工作树（HEAD `fb5f43d`）、`drone-simulation` 工作树（HEAD `d0a0e3cc3c`，`Tools/simulation/gz` 子模块有未提交修改）。
-> **重要前提**：`docs/project-context` 已在 `7741be72` 提交，当前工作树干净。D1 已关闭；后续变更仍通过 PR 提交。
+> **重要前提**：`docs/project-context` 已在 `7741be72` 提交，D1 已关闭；后续变更仍通过 PR 提交。
 >
 > 标签约定：`[事实]` 有文件、行号或命令输出支撑；`[推断]` 由事实推导但未实测；`[建议]` 改进方向；`[待核实]` 本地无证据。
 >
@@ -81,7 +81,7 @@ flowchart LR
 | 判断 | 结论 | 证据 |
 |---|---|---|
 | 两个业务包可构建、可安装 | `[事实]` 本机 `install/` 有 Python 包、C++ 可执行；C++ 可执行是指向 `build/` 的符号链接 | `install/px4_powerplant_mission_cpp/lib/px4_powerplant_mission_cpp/`；`src/px4_powerplant_mission/README.md:32-39` |
-| 单元/契约测试 | `[事实]` 删除 legacy 后本机 runtime C++ 244 项、validation 148 项、Python 72 项，均 0 失败 | 本机 `colcon test-result`；`pytest validation/tests`；`pytest src/px4_powerplant_mission/test` |
+| 单元/契约测试 | `[事实]` 删除 legacy 后本机 runtime C++ 244 项、validation 148 项、Python 77 项，均 0 失败 | 本机 `colcon test-result`；`pytest validation/tests`；`pytest src/px4_powerplant_mission/test` |
 | 完整 SITL 飞行 | `[事实]` 2026-10-29 实际电厂 20 个 A–D/I 候选均未通过起飞初扫，未进入 `HOVER_SCAN` | `docs/validation/issue3-actual-plant.md:3`；`docs/design/takeoff-response-sync.md:106-112` |
 | 原始传感器负载 SITL | `[事实]` 文档称原始渲染负载未通过健康启动，CPU 档 10 Hz 仍慢于实时；2.5 Hz CPU 档接近实时，但完整流程未通过 | `docs/history/migration-status.md:32`；`docs/validation/sitl-acceptance.md:56-70` |
 | 实机 UWB → EV → PX4 | `[未证实]` Host 测试仅假串口/PTY/mock，未接实板；README 明确“不声称已经执行无线测距” | `Host/README.md:102-111`；`C:\Users\pawn-\UWB-loaclization\AGENTS.md:36` |

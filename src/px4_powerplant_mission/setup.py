@@ -10,7 +10,7 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml", "README.md", "LOCALIZATION_DEPLOYMENT.md", "requirements-yolo.txt"]),
-        (f"share/{package_name}/config", glob("config/*.yaml")),
+        (f"share/{package_name}/config", glob("config/*.yaml") + glob("config/*.json")),
         (f"share/{package_name}/launch", glob("launch/*.launch.py")),
         (f"share/{package_name}/models/yolo", glob("models/yolo/*")),
         (f"share/{package_name}/rviz", glob("rviz/*.rviz")),

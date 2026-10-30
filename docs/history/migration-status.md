@@ -4,7 +4,7 @@
 
 ## 2026-10-30：Python mapper/controller 已移除
 
-按用户确认的删除方案，Python `voxel_mapper_node`/`offboard_mission_node` 及其专用 `mapping/`、`path_planning/`、`common/initial_scan.py`、相关测试已删除；`setup.py` 移除两个入口，launch 移除 `mapping_package`/`control_package` 回退参数。C++ 测试的旧行为基准改为 `src/px4_powerplant_mission_cpp/test/fixtures/` 下的冻结 fixture，不再在测试运行时 import Python legacy。该删除是在用户明确豁免 Q9=A 的情况下执行的：完整 SITL 和实机地面链仍未通过，不能把删除当作飞行验收。 2026-10-30 后 validation 脚本路径已迁移；下文历史命令中的旧名称只作记录，当前入口见 `validation/README.md`。删除后本机 P0 baseline：runtime C++ 244 项、validation 148 项、Python 72 项，均 0 失败；双进程 ROS 探针通过。
+按用户确认的删除方案，Python `voxel_mapper_node`/`offboard_mission_node` 及其专用 `mapping/`、`path_planning/`、`common/initial_scan.py`、相关测试已删除；`setup.py` 移除两个入口，launch 移除 `mapping_package`/`control_package` 回退参数。C++ 测试的旧行为基准改为 `src/px4_powerplant_mission_cpp/test/fixtures/` 下的冻结 fixture，不再在测试运行时 import Python legacy。该删除是在用户明确豁免 Q9=A 的情况下执行的：完整 SITL 和实机地面链仍未通过，不能把删除当作飞行验收。 2026-10-30 后 validation 脚本路径已迁移；下文历史命令中的旧名称只作记录，当前入口见 `validation/README.md`。删除后本机 P0 baseline：runtime C++ 244 项、validation 148 项、Python 77 项，均 0 失败；双进程 ROS 探针通过。
 
 ## 2026-10-29：A—D过渡策略、圆角停止几何与参考管理（最新）
 

@@ -74,17 +74,18 @@ flowchart LR
 
 ### 2.2 launch 默认行为
 
-`[事实]` `powerplant_system.launch.py` 的默认值（`:46-70`）：
+`[事实]` `powerplant_system.launch.py` 的默认值由 `config/runtime_profiles.json` 提供（`:82-110`）。`profile` 是新入口；`localization_profile` 保留为兼容入口，二者都设置时 `profile` 优先。
 
 | 参数 | 默认 | 含义 |
 |---|---|---|
-| `localization_profile` | `simulation` | 选择 `src/px4_powerplant_mission/config/localization_simulation.yaml` 与 `p2_simulation.yaml` |
+| `profile` | 空 | 新入口；空时回退 `localization_profile`，设置后优先 |
+| `localization_profile` | `simulation` | 兼容入口；选择 `localization_simulation.yaml` 与 `p2_simulation.yaml` |
 | `use_localization` | `true` | 启动定位适配 |
 | `use_external_vision` | `true` | 启动 EV 桥 |
-| `use_uwb` | `simulation`（即 true） | 启动 UWB 仿真器 |
-| `use_gazebo_truth_bridge` | `simulation`（true） | 桥接真值位姿/odom |
-| `use_gazebo_clock_bridge` | `simulation`（true） | 桥接 `/clock` |
-| `use_sim_time` | `simulation`（true） | 所有节点统一仿真时钟 |
+| `use_uwb` | profile 默认 | simulation=true，hardware=false |
+| `use_gazebo_truth_bridge` | profile 默认 | simulation=true，hardware=false |
+| `use_gazebo_clock_bridge` | profile 默认 | simulation=true，hardware=false |
+| `use_sim_time` | profile 默认 | simulation=true，hardware=false |
 | `use_mapping` | `true` | 启动建图 |
 | `use_yolo` | `false` | 默认不启 YOLO |
 | `use_control` | `false` | 默认不启 Offboard |
@@ -272,7 +273,7 @@ flowchart LR
 | 检查 | 结果 | 证据 |
 |---|---|---|
 | runtime C++/契约测试 | 244 项，0 失败 | 本机 `colcon test-result --test-result-base build/px4_powerplant_mission_cpp` |
-| Python 回归 | 72 项，0 失败（删除 legacy 后） | 本机 `pytest src/px4_powerplant_mission/test` |
+| Python 回归 | 77 项，0 失败（删除 legacy 后） | 本机 `pytest src/px4_powerplant_mission/test` |
 | validation 回归 | 148 项，0 失败 | 本机 `pytest validation/tests` |
 | 最新完整 SITL | **未通过**：`passed=false`，`exit_reason=mission_fault`；阶段 `IDLE→START→SAFE_TAKEOFF→FAULT` | `log/p2_sitl_cpu_17/report.json` |
 | 失败原因 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE`，在起飞段触发安全停止 | `log/p2_sitl_cpu_17/events.jsonl` |
