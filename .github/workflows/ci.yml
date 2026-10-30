@@ -141,10 +141,34 @@ jobs:
             --from-paths src/px4_powerplant_mission src/px4_powerplant_mission_cpp src/px4_msgs \
             --skip-keys "ros_gz_bridge iceoryx_posh iceoryx_hoofs jsoncpp ament_python"
 
+      - name: Resolve px4_msgs commit
+        id: px4msgs
+        run: |
+          set -eo pipefail
+          sha=$(git rev-parse HEAD:src/px4_msgs)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "px4_msgs gitlink: $sha"
+
+      # px4_msgs 的构建占整个作业的一半以上（246 条消息的 rosidl 代码生成，
+      # 不是编译器，所以 ccache 对它无效）。只缓存这一个包的 build/install，
+      # 让 CMake 做增量：命中时 466s 会降到 ~20s。
+      #
+      # key 里带子模块的确切 commit，子模块一动就 miss；故意不写
+      # restore-keys —— 宁可全量重编 8 分钟，也不接受"差不多能用"的旧缓存。
+      - name: Cache px4_msgs build
+        id: px4cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/px4_msgs
+            install/px4_msgs
+          key: px4msgs-${{ steps.px4msgs.outputs.sha }}-jazzy-${{ runner.os }}
+
       - name: Build
         run: |
           set -eo pipefail
           source /opt/ros/jazzy/setup.bash
+          echo "px4_msgs cache hit: ${{ steps.px4cache.outputs.cache-hit == 'true' }}"
           colcon build \
             --packages-up-to px4_powerplant_mission_cpp px4_powerplant_mission \
             --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
