@@ -181,7 +181,7 @@ receiver 保存至多 64 条、共 200000 个变化格的版本历史。旧计�
 构建后使用同一基线入口，保留 P0 的本机 Cyclone DDS 配置：
 
 ```bash
-bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
+bash validation/baseline/run_baseline.sh
 ```
 
 名字保留以便复现原基线；新增 P1 测试会随 CMake 一并执行。主要新增验证为：独立 DDA 几何 oracle、薄障碍像素与预算、随机增量索引与全量参考、实际非对称相机视锥、转向/停留预算、方向记忆、覆盖初扫、迟到旧观测和规划依赖区域。实际数量和结果记录在 [MIGRATION_STATUS.md](MIGRATION_STATUS.md)。

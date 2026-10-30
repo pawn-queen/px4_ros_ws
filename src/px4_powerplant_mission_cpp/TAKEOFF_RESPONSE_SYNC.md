@@ -42,19 +42,19 @@
 
 实际结果及未通过项见 [Issue #3 验收记录](ISSUE3_VALIDATION.md)。在获得真实运行证据之前，不宣称自主飞行流程已可用。
 
-可重放的隔离标定入口（先source ROS、工作区及`p0_ros_env.sh`）：
+可重放的隔离标定入口（先source ROS、工作区及`ros_env.sh`）：
 
 ```bash
 GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA \
 PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
-python3 src/px4_powerplant_mission_cpp/scripts/calibrate_p2_sitl.py \
+python3 validation/sitl/calibrate_takeoff.py \
   --profile src/px4_powerplant_mission/config/p2_sitl_controller.yaml \
   --output-dir log/issue3_response_sync/new_calibration -- \
   --sensor-profile cpu --cpu-camera-rate-hz 5 --cpu-lidar-rate-hz 5 \
   --render-context display --detection-mode none --timeout 600 --startup-timeout 120
 ```
 
-只有该轮连续两次实际阶段通过，才输出冻结YAML供`run_p2_sitl.py --controller-profile <冻结文件> --stop-after mission`使用。代码/模型变化须重新标定；目录须选新的路径保留旧证据。本次 `20261029_0150/calibration_v2/` 五候选全部失败，`frozen_profile=null`，没有正式主链通过结论。详见最新验收记录及该目录的`calibration_diagnosis.json`。
+只有该轮连续两次实际阶段通过，才输出冻结YAML供`run_acceptance.py --controller-profile <冻结文件> --stop-after mission`使用。代码/模型变化须重新标定；目录须选新的路径保留旧证据。本次 `20261029_0150/calibration_v2/` 五候选全部失败，`frozen_profile=null`，没有正式主链通过结论。详见最新验收记录及该目录的`calibration_diagnosis.json`。
 
 ## 后续实施：仅SITL起飞过渡的A—D策略与参考管理
 
@@ -99,7 +99,7 @@ python3 src/px4_powerplant_mission_cpp/scripts/calibrate_p2_sitl.py \
 
 参考管理借鉴[Trakas等的参考调节器（2023）](https://www.mdpi.com/2075-1702/11/11/984)的外环思想，本实现不直接继承其模型或稳定性证明。精确描述可达集合以减保守与[Liu等IROS 2023工作](https://arxiv.org/abs/2303.02607)的研究方向相关，本轮仍采用确定性几何，不引入未标定碰撞概率。独立停止退路沿用[FASTER（2021）](https://arxiv.org/abs/2001.04420)的安全思想，实际运动仍限制在已验证空间。
 
-`calibrate_p2_sitl.py`按A至D、每策略内I=2/1/0.5/0.25/0.1顺序串行运行；选择首个策略中连续两次通过实际起飞初扫的最大I。冻结同时绑定实际阶段策略、参数、代码/二进制及模型。然后使用冻结配置和`--governor-ablation --stop-after scan`运行一次关闭参考管理的独立对照，其scope不同，不混入标定成功对。正式任务仍须默认ROI连续三次主链和独立ROI外接入。
+`calibrate_takeoff.py`按A至D、每策略内I=2/1/0.5/0.25/0.1顺序串行运行；选择首个策略中连续两次通过实际起飞初扫的最大I。冻结同时绑定实际阶段策略、参数、代码/二进制及模型。然后使用冻结配置和`--governor-ablation --stop-after scan`运行一次关闭参考管理的独立对照，其scope不同，不混入标定成功对。正式任务仍须默认ROI连续三次主链和独立ROI外接入。
 
 `replay_takeoff_policies.py`通过原生core_probe重放旧五次运行的已对齐跟踪样本，比较软硬门决策；它不能预测改变阈值后的真实飞行结果。接触评估允许在0.3秒有界时间内由后续真实world统计确认提前到达的接触时钟，仍要求同epoch、保留原时戳；超期/不同epoch保持未确认，不修改导航时钟门限。
 

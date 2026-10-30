@@ -22,8 +22,8 @@ from std_srvs.srv import Trigger
 from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleStatus, VehicleLandDetected, VehicleOdometry
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURES = Path(__file__).resolve().parent / "fixtures"
-BUILD = Path(os.environ.get("POWERPLANT_CPP_BUILD", ROOT.parent / "build/px4_powerplant_mission_cpp"))
+FIXTURES = ROOT / "src/px4_powerplant_mission_cpp/test/fixtures"
+BUILD = Path(os.environ.get("POWERPLANT_CPP_BUILD", ROOT / "build/px4_powerplant_mission_cpp"))
 SENSOR = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
 PX4 = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
@@ -138,7 +138,7 @@ def test_ordinary_motion_profile_loads_idle_without_audited_ground_authority(tra
     statuses = []
     node.create_subscription(String, "/powerplant/control/mission_status",
                              lambda m: statuses.append(json.loads(m.data)), 10)
-    config = ROOT / "px4_powerplant_mission/config"
+    config = ROOT / "src/px4_powerplant_mission/config"
     launch("offboard_mission_node", "@"+str(config/"powerplant.yaml"),
            "@"+str(config/profile), "use_sim_time:=false")
     wait(lambda: bool(statuses))
@@ -395,7 +395,7 @@ def test_localization_and_ev_use_independent_sources_across_processes(transport,
     topic = "/uwb/hardware/pose" if profile == "hardware" else "/uwb/pose"
     uwb_pub = node.create_publisher(PoseWithCovarianceStamped, topic, 10)
     px4_pub = node.create_publisher(VehicleOdometry, "/fmu/out/vehicle_odometry", PX4)
-    config = "@" + str(ROOT / "px4_powerplant_mission/config" / ("localization_" + profile + ".yaml"))
+    config = "@" + str(ROOT / "src/px4_powerplant_mission/config" / ("localization_" + profile + ".yaml"))
     launch("python:px4_powerplant_mission.nodes.localization_node", config, "publish_tf:=false")
     launch("python:px4_powerplant_mission.nodes.external_vision_bridge_node", config)
     publish_uwb = True

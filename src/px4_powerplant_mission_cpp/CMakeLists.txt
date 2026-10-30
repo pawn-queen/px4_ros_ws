@@ -109,27 +109,7 @@ if(BUILD_TESTING)
     ENV "PYTHONDONTWRITEBYTECODE=1"
     "POWERPLANT_CORE_PROBE=$<TARGET_FILE:core_probe>"
     "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
-  ament_add_pytest_test(ros_contract test/test_ros_contract.py
-    TIMEOUT 120 APPEND_ENV
-    "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/../px4_powerplant_mission"
-    ENV "PYTHONDONTWRITEBYTECODE=1"
-    "POWERPLANT_CPP_BUILD=${CMAKE_CURRENT_BINARY_DIR}"
-    "ROS_DOMAIN_ID=173" "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
-  ament_add_pytest_test(powerplant_assets test/test_powerplant_assets.py
-    TIMEOUT 120 ENV "PYTHONDONTWRITEBYTECODE=1" "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
-  ament_add_pytest_test(gcs_startup test/test_gcs_startup.py
-    TIMEOUT 120 ENV "PYTHONDONTWRITEBYTECODE=1")
-  ament_add_pytest_test(powerplant_sensors test/test_powerplant_sensors.py
-    TIMEOUT 120 ENV "PYTHONDONTWRITEBYTECODE=1" "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
-  ament_add_pytest_test(powerplant_probes test/test_powerplant_probes.py
-    TIMEOUT 120 ENV "PYTHONDONTWRITEBYTECODE=1" "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
-  ament_add_pytest_test(ground_support_audit test/test_ground_support_audit.py
-    TIMEOUT 120 ENV "PYTHONDONTWRITEBYTECODE=1" "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
-  ament_add_pytest_test(sitl_takeoff_harness test/test_sitl_takeoff_harness.py
-    TIMEOUT 120 ENV "PYTHONDONTWRITEBYTECODE=1" "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
-  ament_add_pytest_test(sitl_controller_profile test/test_sitl_controller_profile.py
-    TIMEOUT 120 ENV "PYTHONDONTWRITEBYTECODE=1" "OPENBLAS_NUM_THREADS=1" "OMP_NUM_THREADS=1")
   set_tests_properties(test_ground_mission PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=173")
-  set_tests_properties(test_native test_input_validation test_map_health test_mapper_health test_planning_index test_p1_mapping test_p1_mission test_p1_planner test_p2_motion test_p2_topology test_p2_inspection test_p2_mission test_p2_map_worker test_roi_mission test_ground_mission reference_parity ros_contract powerplant_assets gcs_startup powerplant_sensors powerplant_probes ground_support_audit sitl_takeoff_harness sitl_controller_profile PROPERTIES RUN_SERIAL TRUE)
+  set_tests_properties(test_native test_input_validation test_map_health test_mapper_health test_planning_index test_p1_mapping test_p1_mission test_p1_planner test_p2_motion test_p2_topology test_p2_inspection test_p2_mission test_p2_map_worker test_roi_mission test_ground_mission reference_parity PROPERTIES RUN_SERIAL TRUE)
 endif()
 ament_package()

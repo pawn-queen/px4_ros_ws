@@ -352,7 +352,8 @@ def main():
             text=renderer_log.read_text(errors='replace')
             result['renderer_identification']=[line for line in text.splitlines() if any(key in line for key in ('GL_RENDERER =','GL_VENDOR =','Device Name:','EGL Device:'))]
             (scene.out/'ogre2.log').write_text(text)
-            from powerplant_lidar_rays import capture_renderer_resources
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sensors"))
+            from lidar_rays import capture_renderer_resources
             result['runtime_renderer_resources']=capture_renderer_resources(text)
             result['renderer_resource_log_sha256']=sha(scene.out/'ogre2.log')
         result['collision_resource_kind']='cleaned_complete_surface_without_decimation' if args.variant=='complete' else 'validated_componentwise_simplification'

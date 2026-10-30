@@ -67,13 +67,13 @@ observed_cloud_fingerprint
 
 ```bash
 cd /home/pawn/px4_ros_ws
-/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/bootstrap_p0_ros.py
+/usr/bin/python3 tools/env/bootstrap_ros.py
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-source src/px4_powerplant_mission_cpp/scripts/p0_ros_env.sh
+source tools/env/ros_env.sh
 ```
 
-提取器只支持当前 Ubuntu noble amd64，以 [依赖锁定文件](config/p0_ros_dependencies.json) 中 SHA256 验证五个软件包并解压到被 git 忽略的 `.p0_deps/`；不安装系统包。其他平台应安装匹配平台的 ROS middleware。此配置设置 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` 和 `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`，只影响当前 shell 及子进程。
+提取器只支持当前 Ubuntu noble amd64，以 [依赖锁定文件](../../tools/env/ros_dependencies.json) 中 SHA256 验证五个软件包并解压到被 git 忽略的 `.p0_deps/`；不安装系统包。其他平台应安装匹配平台的 ROS middleware。此配置设置 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` 和 `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`，只影响当前 shell 及子进程。
 
 **LOCALHOST 配置用于本机联调。** 它没有验收 Windows Host、跨计算机 DDS、Micro XRCE-DDS Agent/PX4 与 Cyclone 的完整互通。外部设备部署应按真实接口和网络重新验证；不要将本机测试结果解释为完整实机部署通过。
 
@@ -88,7 +88,7 @@ CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 colcon build --symlink-install \
   --packages-select px4_powerplant_mission_cpp px4_powerplant_mission \
   --executor sequential --parallel-workers 1 \
   --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3 -DCMAKE_BUILD_TYPE=Release
-bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
+bash validation/baseline/run_baseline.sh
 ```
 
 入口先运行真实双进程话题/服务探针，再串行执行 C++、Python/C++ 对照、跨进程契约和 Python 回归。失败以非零状态退出，不跳过通信失败。结果保存在 `log/p0_baseline/` 与 `build/px4_powerplant_mission_cpp/test_results/`，可在同一提交/配置下重放比较。

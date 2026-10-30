@@ -5,7 +5,8 @@ import math
 import numpy as np
 import pytest
 
-p = Path(__file__).resolve().parents[1] / 'scripts/build_powerplant_supplemental_fixtures.py'
+VALIDATION = Path(__file__).resolve().parents[1]
+p = VALIDATION / 'support/build_fixtures.py'
 spec = importlib.util.spec_from_file_location('supplemental_probes', p)
 probes = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probes)

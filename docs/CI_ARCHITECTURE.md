@@ -32,18 +32,18 @@ colcon build → scripts/ci/sitl_smoke.sh
 ```
 
 **它只证明链路是活的**，不证明任务能飞。任务级验收仍然要用
-`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py`，其结论以它自己的 `report.json` 为准。
+`validation/sitl/run_acceptance.py`，其结论以它自己的 `report.json` 为准。
 
 ## 运行环境要求
 
 Github-hosted 侧：ROS 2 Jazzy（Ubuntu 24.04 / noble / amd64 / Python 3.12）。
-注意 `src/px4_powerplant_mission_cpp/scripts/bootstrap_p0_ros.py` 会硬性拒绝非 noble 或非 x86_64 的环境。
+注意 `tools/env/bootstrap_ros.py` 会硬性拒绝非 noble 或非 x86_64 的环境。
 
 自托管侧需要：
 
 - Ubuntu 24.04 + ROS 2 Jazzy（`/opt/ros/jazzy/setup.bash`）
 - PX4 源码树与已编译的 SITL 二进制。默认取 `$HOME/drone-simulation`，可用仓库变量 `PX4_ROOT` 覆盖。
-  注意 `run_p2_sitl.py` 的 `--px4-root` 默认值是 `/home/pawn/drone-simulation`，在 lab 上手动跑时要显式传参。
+  注意 `run_acceptance.py` 的 `--px4-root` 默认值是 `/home/pawn/drone-simulation`，在 lab 上手动跑时要显式传参。
 - **不需要免密 sudo**：runner 用户没有 root，所有安装都落在 `$HOME` 下。这是刻意选择——给自托管 runner 开免密 sudo，等于让任何合入 `main` 的 workflow 拿到那台机器的 root。
 - Gazebo（`gz`）、`MicroXRCEAgent`
 - Python: `rclpy`、`numpy`、`yaml`、`pymavlink`、`vtkmodules`、`scipy`、`gz.transport13`、`gz.msgs10`

@@ -3,7 +3,7 @@
 #
 # 这个脚本只回答一个问题：PX4 SITL + Gazebo + uXRCE-DDS + ROS 2 这条链路能不能
 # 起来，并且让 ROS 2 **真正收到** PX4 发的一条 VehicleStatus 消息。
-# 它不验证起飞、解锁、避障、任务状态机或 EKF 性能——那些属于 run_p2_sitl.py。
+# 它不验证起飞、解锁、避障、任务状态机或 EKF 性能——那些属于 validation/sitl/run_acceptance.py。
 #
 # 判据（全部必须成立）：
 #   1. MicroXRCEAgent / Gazebo / PX4 正常启动
