@@ -73,7 +73,7 @@
 | `parameters.hpp` / `ros_support.hpp` | 参数声明、QoS、JSON、点云工具 | `parameters.hpp:6-80`；`ros_support.hpp:95-145` |
 | `offboard.hpp` | `OffboardMissionNode` 状态与接口 | `offboard.hpp:86-205` |
 
-`[事实]` 这些 P2 头文件已在 `4800616b` 进入仓库；当前未提交的是本次 docs/project-context 拆分。见 [D1](architecture-debt.md#d1-本次-docs-拆分未提交)。
+`[事实]` 这些 P2 头文件已在 `4800616b` 进入仓库；docs/project-context 拆分已在 `7741be72` 提交。见 [D1](architecture-debt.md#d1-docs-拆分已提交)。
 
 ## 5. launch、配置与脚本
 
