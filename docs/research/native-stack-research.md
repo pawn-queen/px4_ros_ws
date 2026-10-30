@@ -2,9 +2,9 @@
 
 调研日期：2026-10-24。代码基线：`071503ea`。范围：`px4_powerplant_mission_cpp` 的建图、探索规划与任务控制，以及它们和已有 Python 定位、YOLO 节点的接口。本文件是研究与实施建议，**不代表下述算法已经实现或实机验收通过**。
 
-2026-10-26 实施进展：P0 的输入/地图健康、全阶段监督、起飞区域、落地确认与本机 ROS 通信改进已实施；P1 七项也已实施并通过当前基线。P2 已接入五次时序轨迹、持续停止包络、独立执行线程、三维区域/门户和同步目标表面/照片覆盖闭环；按用户最后确认，已完成软件逻辑核查及本次发现问题的修复，316 个直接用例通过，飞控/动力学参数由用户调整。强化了采样时间参考、停稳新测量、规划/执行同预算、实际局部段证明、真实时序评分、区域身份与曝光绑定。原理变化分别见 [P1_IMPLEMENTATION.md](P1_IMPLEMENTATION.md) 和 [P2_IMPLEMENTATION.md](P2_IMPLEMENTATION.md)，实际结果与尚未通过的飞行范围见 [P2_VALIDATION.md](P2_VALIDATION.md) 和 [MIGRATION_STATUS.md](MIGRATION_STATUS.md)。下文代码审查与问题分析仍描述调研时历史基线，不能作为当前缺口清单；P3 仍为研究建议。软件回归、静态外参和图像链路检查不能替代完整飞行或实机验收。
+2026-10-26 实施进展：P0 的输入/地图健康、全阶段监督、起飞区域、落地确认与本机 ROS 通信改进已实施；P1 七项也已实施并通过当前基线。P2 已接入五次时序轨迹、持续停止包络、独立执行线程、三维区域/门户和同步目标表面/照片覆盖闭环；按用户最后确认，已完成软件逻辑核查及本次发现问题的修复，316 个直接用例通过，飞控/动力学参数由用户调整。强化了采样时间参考、停稳新测量、规划/执行同预算、实际局部段证明、真实时序评分、区域身份与曝光绑定。原理变化分别见 [docs/design/mapping-and-frontier.md](../design/mapping-and-frontier.md) 和 [docs/design/motion-and-inspection.md](../design/motion-and-inspection.md)，实际结果与尚未通过的飞行范围见 [docs/validation/sitl-acceptance.md](../validation/sitl-acceptance.md) 和 [docs/history/migration-status.md](../history/migration-status.md)。下文代码审查与问题分析仍描述调研时历史基线，不能作为当前缺口清单；P3 仍为研究建议。软件回归、静态外参和图像链路检查不能替代完整飞行或实机验收。
 
-2026-10-28 Issue #3 进展：正式电厂采用原视觉 STL 与独立简化静态凹碰撞 mesh，保留门洞和设备间空隙；最终 501262 面，相比原 605740 面减少约 17.25%，有限稠密验证集最大表面距离约 19.08 mm。资产提交 `69f6511d0b11e2189b204ce6b10f12cbef24f119` 和递归哈希已锁定，原视觉、四壁顶棚及任务框架保持。ROI 现为局部任务范围，不再裁剪起飞、初扫、停止或返航证据域；EXPLORE 内的 `ROI_WORK/ROI_ACCESS` 支持限预算自主接入，覆盖仅统计 ROI 内的相关表面。实现见 [ISSUE3_IMPLEMENTATION.md](ISSUE3_IMPLEMENTATION.md)，最新验证见 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。本轮已有构建、软件回归、几何和动态接触范围证据，不预先宣称原始负载性能、针对性 SITL 或完整局部巡检通过；历史 316 项软件记录和 CPU17 飞行失败继续保留。
+2026-10-28 Issue #3 进展：正式电厂采用原视觉 STL 与独立简化静态凹碰撞 mesh，保留门洞和设备间空隙；最终 501262 面，相比原 605740 面减少约 17.25%，有限稠密验证集最大表面距离约 19.08 mm。资产提交 `69f6511d0b11e2189b204ce6b10f12cbef24f119` 和递归哈希已锁定，原视觉、四壁顶棚及任务框架保持。ROI 现为局部任务范围，不再裁剪起飞、初扫、停止或返航证据域；EXPLORE 内的 `ROI_WORK/ROI_ACCESS` 支持限预算自主接入，覆盖仅统计 ROI 内的相关表面。实现见 [docs/design/issue3-collision-and-roi.md](../design/issue3-collision-and-roi.md)，最新验证见 [docs/validation/issue3-actual-plant.md](../validation/issue3-actual-plant.md)。本轮已有构建、软件回归、几何和动态接触范围证据，不预先宣称原始负载性能、针对性 SITL 或完整局部巡检通过；历史 316 项软件记录和 CPU17 飞行失败继续保留。
 
 ## 1. 建议先做什么
 
@@ -34,12 +34,12 @@ START → SAFE_TAKEOFF → HOVER_SCAN → EXPLORE
 本次先使用用户指定的 Consensus 进行定向检索，再通过论文原文、作者项目页和出版信息补充核验。主要关注 2023—2026 年成果，同时保留直接影响实现选择的基础工作。这里的“最新”指截至调研日已核验的相关公开研究，不表示穷尽所有论文或建立统一性能排名。
 
 - [Consensus 完整研究线程](https://consensus.app/search/请完成一份中文研究综述面向当前-ros2px4-c-室内无人机自主探索与巡检项目研究截止2026-1/wSzMC0RaTjairsryp9SvDQ/)
-- [Consensus 检索引用元数据](research_sources/consensus_sources.json)：保留原工具返回的 18 条记录；其中年份可能是预印本年份，不能直接当成正式出版年份。
+- [Consensus 检索引用元数据](../../src/px4_powerplant_mission_cpp/research_sources/consensus_sources.json)：保留原工具返回的 18 条记录；其中年份可能是预印本年份，不能直接当成正式出版年份。
 - 本文参考文献使用独立的 **R1—R14** 编号，包含补充检索，不与上述 JSON 的编号一一对应。论文结论和本项目工程建议在下文分开说明；没有将论文报告的加速比、安全性或覆盖率直接套用到本项目。
 
-调研时的历史验证记录为 Python 112 项、C++ 原生 17 项、Python/C++ 对照 26 项通过，跨进程 ROS 收不到数据。2026-10-25 的 P0/P1 实施后，本机采用临时 Cyclone DDS 配置恢复同机跨进程基线；当前通过 C++ 62 项、几何/算法对照 26 项、跨进程 ROS 7 项和 Python 113 项。默认 Fast DDS 故障根因仍未确定。**完整 PX4/Gazebo 飞行、真实飞控/UWB 接入和大型地图时延尚未完成验收。** 具体结果以 [MIGRATION_STATUS.md](MIGRATION_STATUS.md) 为准。
+调研时的历史验证记录为 Python 112 项、C++ 原生 17 项、Python/C++ 对照 26 项通过，跨进程 ROS 收不到数据。2026-10-25 的 P0/P1 实施后，本机采用临时 Cyclone DDS 配置恢复同机跨进程基线；当前通过 C++ 62 项、几何/算法对照 26 项、跨进程 ROS 7 项和 Python 113 项。默认 Fast DDS 故障根因仍未确定。**完整 PX4/Gazebo 飞行、真实飞控/UWB 接入和大型地图时延尚未完成验收。** 具体结果以 [docs/history/migration-status.md](../history/migration-status.md) 为准。
 
-此前完成的仿真/实机共用定位关系也应保持：独立 UWB 测量进入 EV，PX4 完整状态进入导航里程计；可选融合器的导航输出不反向当作独立 EV 测量。单 UWB Tag 不提供完整姿态。详见 [LOCALIZATION_DEPLOYMENT.md](../px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md)。
+此前完成的仿真/实机共用定位关系也应保持：独立 UWB 测量进入 EV，PX4 完整状态进入导航里程计；可选融合器的导航输出不反向当作独立 EV 测量。单 UWB Tag 不提供完整姿态。详见 [LOCALIZATION_DEPLOYMENT.md](../../src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md)。
 
 ## 3. 当前代码实际具备什么
 
@@ -47,16 +47,16 @@ START → SAFE_TAKEOFF → HOVER_SCAN → EXPLORE
 
 | 模块 | 当前实现 | 主要边界与代码证据 |
 | --- | --- | --- |
-| 体素占据地图 | 稀疏哈希、log-odds 累加与上下限；区分占据、空闲、不确定和缺失体素 | 体素主要存概率值，没有逐体素时间、来源或动态标签；内部地图持续增长。见 [voxel_grid.cpp](src/voxel_grid.cpp#L4)、[core.hpp](include/px4_powerplant_mission_cpp/core.hpp#L84) |
-| 射线更新 | 射线按约半体素间隔采样；同批次去重，命中优先于清空 | 尚非精确 DDA 遍历，擦过体素边角的短交段可能漏采；有效量程端点统一作为命中。见 [voxel_grid.cpp](src/voxel_grid.cpp#L26) |
-| 位姿时间对齐 | 位置线性插值、四元数 SLERP；等待传感器时间被位姿包围，不做外推 | 已有 2 秒历史、250 ms 插值间隔限制；较大乱序与时钟回退的区分仍需改进。见 [voxel_grid.cpp](src/voxel_grid.cpp#L150) |
-| 深度/雷达输入 | CameraInfo 匹配；深度按采样时刻投影；LaserScan 按 `time_increment` 逐束补偿 | 固定光学轴转换加平移，缺少任意安装旋转；PointCloud2 目前主要作命中点插入。见 [voxel_mapper_node.cpp](src/voxel_mapper_node.cpp#L173) |
-| 地图质量和发布 | 有队列上限、完整性检查、地图云/状态精确时间戳配对；要求深度和雷达实际融合 | mapper 目前主要检查 roll/pitch 方差，未覆盖位置与 yaw；全量发布上限不是内部内存上限。见 [voxel_mapper_node.cpp](src/voxel_mapper_node.cpp#L115)、[map_snapshot.cpp](src/map_snapshot.cpp#L33) |
-| 前沿/观察点 | 从空闲与未知的六邻域边界提取前沿，观察点留在满足净空的已知空闲侧 | 每次扫描大量空闲体素；局部搜索范围、候选截断和分桶可能漏掉更好的视点。见 [frontier_planner.cpp](src/frontier_planner.cpp#L268) |
-| 可见性/收益 | 已考虑量程、水平/垂直 FOV、遮挡、偏航；统计可见未知与补拍收益 | 主要统计射线上首个未知体素，并非完整期望熵下降；补拍收益仍是目标中心处的缺照数。见 [frontier_planner.cpp](src/frontier_planner.cpp#L153)、[mission_planning.cpp](src/mission_planning.cpp#L81) |
-| 路径与返航 | 六邻域 **Dijkstra**、已知空闲净空检查、去程/返航可达性和预算；只执行局部段 | 不是动力学轨迹优化，也不是当前已实现的 A*；离散路径与采样检查不构成连续机体扫掠体保证。见 [frontier_planner.cpp](src/frontier_planner.cpp#L98) |
-| 异步规划 | 快照规划、取消令牌、单运行任务与有界等待任务；拒绝过期结果 | 探索结果因全局 `observation_revision` 改变而整体失效，有高频观测导致结果持续作废的风险。见 [mission_planning.cpp](src/mission_planning.cpp#L170) |
-| 任务状态机 | 已有安全起飞、低倾角稳定悬停、慢偏航初扫、探索、巡检、返航、降落 | 起飞柱体、全阶段定位故障、照片质量和真实落地确认仍有缺口。见 [mission_state_machine.cpp](src/mission_state_machine.cpp)、[offboard_control.cpp](src/offboard_control.cpp#L157) |
+| 体素占据地图 | 稀疏哈希、log-odds 累加与上下限；区分占据、空闲、不确定和缺失体素 | 体素主要存概率值，没有逐体素时间、来源或动态标签；内部地图持续增长。见 [voxel_grid.cpp](../../src/px4_powerplant_mission_cpp/src/voxel_grid.cpp#L4)、[core.hpp](../../src/px4_powerplant_mission_cpp/include/px4_powerplant_mission_cpp/core.hpp#L84) |
+| 射线更新 | 射线按约半体素间隔采样；同批次去重，命中优先于清空 | 尚非精确 DDA 遍历，擦过体素边角的短交段可能漏采；有效量程端点统一作为命中。见 [voxel_grid.cpp](../../src/px4_powerplant_mission_cpp/src/voxel_grid.cpp#L26) |
+| 位姿时间对齐 | 位置线性插值、四元数 SLERP；等待传感器时间被位姿包围，不做外推 | 已有 2 秒历史、250 ms 插值间隔限制；较大乱序与时钟回退的区分仍需改进。见 [voxel_grid.cpp](../../src/px4_powerplant_mission_cpp/src/voxel_grid.cpp#L150) |
+| 深度/雷达输入 | CameraInfo 匹配；深度按采样时刻投影；LaserScan 按 `time_increment` 逐束补偿 | 固定光学轴转换加平移，缺少任意安装旋转；PointCloud2 目前主要作命中点插入。见 [voxel_mapper_node.cpp](../../src/px4_powerplant_mission_cpp/src/voxel_mapper_node.cpp#L173) |
+| 地图质量和发布 | 有队列上限、完整性检查、地图云/状态精确时间戳配对；要求深度和雷达实际融合 | mapper 目前主要检查 roll/pitch 方差，未覆盖位置与 yaw；全量发布上限不是内部内存上限。见 [voxel_mapper_node.cpp](../../src/px4_powerplant_mission_cpp/src/voxel_mapper_node.cpp#L115)、[map_snapshot.cpp](../../src/px4_powerplant_mission_cpp/src/map_snapshot.cpp#L33) |
+| 前沿/观察点 | 从空闲与未知的六邻域边界提取前沿，观察点留在满足净空的已知空闲侧 | 每次扫描大量空闲体素；局部搜索范围、候选截断和分桶可能漏掉更好的视点。见 [frontier_planner.cpp](../../src/px4_powerplant_mission_cpp/src/frontier_planner.cpp#L268) |
+| 可见性/收益 | 已考虑量程、水平/垂直 FOV、遮挡、偏航；统计可见未知与补拍收益 | 主要统计射线上首个未知体素，并非完整期望熵下降；补拍收益仍是目标中心处的缺照数。见 [frontier_planner.cpp](../../src/px4_powerplant_mission_cpp/src/frontier_planner.cpp#L153)、[mission_planning.cpp](../../src/px4_powerplant_mission_cpp/src/mission_planning.cpp#L81) |
+| 路径与返航 | 六邻域 **Dijkstra**、已知空闲净空检查、去程/返航可达性和预算；只执行局部段 | 不是动力学轨迹优化，也不是当前已实现的 A*；离散路径与采样检查不构成连续机体扫掠体保证。见 [frontier_planner.cpp](../../src/px4_powerplant_mission_cpp/src/frontier_planner.cpp#L98) |
+| 异步规划 | 快照规划、取消令牌、单运行任务与有界等待任务；拒绝过期结果 | 探索结果因全局 `observation_revision` 改变而整体失效，有高频观测导致结果持续作废的风险。见 [mission_planning.cpp](../../src/px4_powerplant_mission_cpp/src/mission_planning.cpp#L170) |
+| 任务状态机 | 已有安全起飞、低倾角稳定悬停、慢偏航初扫、探索、巡检、返航、降落 | 起飞柱体、全阶段定位故障、照片质量和真实落地确认仍有缺口。见 [mission_state_machine.cpp](../../src/px4_powerplant_mission_cpp/src/mission_state_machine.cpp)、[offboard_control.cpp](../../src/px4_powerplant_mission_cpp/src/offboard_control.cpp#L157) |
 
 ### 3.1 当前观察点评分的具体含义
 
@@ -69,13 +69,13 @@ score = 3 log(1 + N_unknown) + 2 log(1 + G_surface)
         + 0.5 margin / max(T_remaining, 1)
 ```
 
-`T_out`、`T_home` 来自路径长度除以配置速度；`margin` 扣除了返航和预留时间。评分前已经存在可达性、定位方差、预算等硬约束。见 [评分实现](src/frontier_planner.cpp#L455) 和 [默认配置](include/px4_powerplant_mission_cpp/core.hpp#L117)。
+`T_out`、`T_home` 来自路径长度除以配置速度；`margin` 扣除了返航和预留时间。评分前已经存在可达性、定位方差、预算等硬约束。见 [评分实现](../../src/px4_powerplant_mission_cpp/src/frontier_planner.cpp#L455) 和 [默认配置](../../src/px4_powerplant_mission_cpp/include/px4_powerplant_mission_cpp/core.hpp#L117)。
 
 需要优化的重点是各项估计的真实性：
 
 - 时间尚未完整计入转向、加减速、停留采图、目标确认和拍照。
 - 定位预测是当前 XY 方差加“到当前位置的欧氏距离 × 增长系数”，不是沿整条路线传播的状态协方差，也不是由真实 UWB 锚点质量构建的地图。
-- FOV 默认值、候选数量、偏航离散数及多项权重仍在核心配置中，`config()` 只从 ROS 参数传入其中一部分。调参前应先明确哪些参数实际生效，见 [mission_planning.cpp](src/mission_planning.cpp#L3)。
+- FOV 默认值、候选数量、偏航离散数及多项权重仍在核心配置中，`config()` 只从 ROS 参数传入其中一部分。调参前应先明确哪些参数实际生效，见 [mission_planning.cpp](../../src/px4_powerplant_mission_cpp/src/mission_planning.cpp#L3)。
 
 ## 4. 相关研究如何用于本项目
 
@@ -139,7 +139,7 @@ p_map = T_map_body(t_sample) × T_body_sensor × p_sensor
 
 具体实现应明确射线刚好落在面、棱、角上的规则。**碰撞检查的保守 supercover 与地图空闲更新不是同一种证据语义**：碰撞检查可以扩大覆盖集合；一条零宽射线仅擦过一个体素角点，不足以证明整格没有障碍。因此不能把保守碰撞遍历集合直接用于更激进的清空。
 
-当前 [共享 YAML](../px4_powerplant_mission/config/powerplant.yaml#L116) 中深度采样步长为 16 像素。用示例焦距 `fx=430` 估算，在 18 m 处相邻采样射线的横向间隔约为 `18×16/430≈0.67 m`。这是投影几何估算，不是相机的实际检测分辨率；它提示细管、电缆和门框可能在采样间隙被遗漏。提高体素分辨率本身不能补回未采到的障碍。
+当前 [共享 YAML](../../src/px4_powerplant_mission/config/powerplant.yaml#L116) 中深度采样步长为 16 像素。用示例焦距 `fx=430` 估算，在 18 m 处相邻采样射线的横向间隔约为 `18×16/430≈0.67 m`。这是投影几何估算，不是相机的实际检测分辨率；它提示细管、电缆和门框可能在采样间隙被遗漏。提高体素分辨率本身不能补回未采到的障碍。
 
 建议按距离、深度突变边缘和当前飞行走廊自适应采样：近处通行区域、门洞边缘和疑似细障碍加密，远处平面适度稀疏。验证时同时统计薄障碍召回、错误空闲和计算开销，防止只追求点数或地图外观。
 
@@ -259,9 +259,9 @@ FASTER 的关键借鉴是持续维护已知空闲空间中的备用轨迹；SUPE
 
 ### 8.1 全阶段健康监督先于新规划算法
 
-[offboard_node.cpp](src/offboard_node.cpp#L79) 当前部分新鲜度使用接收时刻；收到延迟旧包时可能被误认为最新。mapper 与控制器的时钟使用也并不完全相同。建议同时检查采样时间和到达间隔，并明确时间域；不能直接相减仿真时间、设备时间和墙钟时间。
+[offboard_node.cpp](../../src/px4_powerplant_mission_cpp/src/offboard_node.cpp#L79) 当前部分新鲜度使用接收时刻；收到延迟旧包时可能被误认为最新。mapper 与控制器的时钟使用也并不完全相同。建议同时检查采样时间和到达间隔，并明确时间域；不能直接相减仿真时间、设备时间和墙钟时间。
 
-[safety_required()](src/offboard_control.cpp#L157) 主要覆盖探索、巡检、返航地图/路径条件；启动和探索有定位检查，但这不等于所有阶段的运动发布前都完成持续定位检查。建议统一健康监督，检查时间重复/倒退、坐标系、位置/姿态质量、传感器与地图新鲜度、飞控状态和预算，在每次允许运动前生效。
+[safety_required()](../../src/px4_powerplant_mission_cpp/src/offboard_control.cpp#L157) 主要覆盖探索、巡检、返航地图/路径条件；启动和探索有定位检查，但这不等于所有阶段的运动发布前都完成持续定位检查。建议统一健康监督，检查时间重复/倒退、坐标系、位置/姿态质量、传感器与地图新鲜度、飞控状态和预算，在每次允许运动前生效。
 
 健康监督应区分：仅地图暂时过期但定位可靠，可以按已验证制动策略停下；定位本身不可用，应进入另行验证的飞控降级策略。两种故障不能都用旧地图中的“当前位置悬停”处理。
 
@@ -295,7 +295,7 @@ FASTER 的关键借鉴是持续维护已知空闲空间中的备用轨迹；SUPE
 
 本项目可在已构建局部地图上提取目标表面片，候选视点评估：可见面积、遮挡、入射角、距离/成像尺度、与已有照片的互补角度，以及路径和返航代价。先对已确认目标做局部覆盖，不必立即建设全场景高精度网格模型。
 
-目前固定圆周/固定高度/固定照片数在狭窄室内可能不可达，拍足四张也不等于覆盖完整。建议只有图像时间新鲜、目标确实可见、清晰度/曝光符合任务要求且写盘成功，才更新“合格覆盖”。保留异步写盘架构，但将允许无图记录的 fallback 与实机任务成功判定分开，见 [inspection_recorder.cpp](src/inspection_recorder.cpp)。
+目前固定圆周/固定高度/固定照片数在狭窄室内可能不可达，拍足四张也不等于覆盖完整。建议只有图像时间新鲜、目标确实可见、清晰度/曝光符合任务要求且写盘成功，才更新“合格覆盖”。保留异步写盘架构，但将允许无图记录的 fallback 与实机任务成功判定分开，见 [inspection_recorder.cpp](../../src/px4_powerplant_mission_cpp/src/inspection_recorder.cpp)。
 
 ### 8.5 返航预算覆盖整个任务
 
@@ -320,7 +320,7 @@ FASTER 的关键借鉴是持续维护已知空闲空间中的备用轨迹；SUPE
 | P2-C | 同步目标确认、表面覆盖、图像质量闭环 | 目标订阅、巡检规划和照片记录 | 误检/丢失/遮挡可恢复；合格覆盖与简单照片数分开报告 |
 | P3 | 动态层、定位质量空间模型、实测能耗 | 地图、传感器质量输入、视点评分 | 真实逐锚日志/跟踪数据先到位；跨场景评估，不仅在单一仿真调参 |
 
-**2026-10-26 执行进展：**P0、P1 七项以及 P2-A/B/C 核心均已有实现；P2 采用保守五次直线段并停稳转弯，不引入优化求解器。上表保留调研时建议，当前原理和差异见 [P2_IMPLEMENTATION.md](P2_IMPLEMENTATION.md)。正在完成 P2 的系统验收；任意硬件外参、驱动无回波语义、原始传感器负载下的尾延迟及真实制动能力仍须相应证据。下一步先解决真实闭环暴露的问题并完成可重放飞行验证，再扩大速度和室内实机任务范围。
+**2026-10-26 执行进展：**P0、P1 七项以及 P2-A/B/C 核心均已有实现；P2 采用保守五次直线段并停稳转弯，不引入优化求解器。上表保留调研时建议，当前原理和差异见 [docs/design/motion-and-inspection.md](../design/motion-and-inspection.md)。正在完成 P2 的系统验收；任意硬件外参、驱动无回波语义、原始传感器负载下的尾延迟及真实制动能力仍须相应证据。下一步先解决真实闭环暴露的问题并完成可重放飞行验证，再扩大速度和室内实机任务范围。
 
 **2026-10-28 范围补充：**“全局区域引导”指在完整已知安全连通空间中组织航路，不表示必须执行全电厂任务。当前任务 ROI 默认 x=[-24,34]、y=[-9,49]、z=[3.5,7] m；只对其中未知区域和巡检表面计算任务收益。起飞、初扫、接入、绕障、外侧观察位及返航按完整导航证据验证。没有可用 ROI 工作视点时，接入候选限定为 home 与 ROI 联合 AABB 外扩 10 m，默认累计 60 s，重访代价 5 s；无可达入口、仍有未知或超预算必须明确报告，不能改写为全场完成。ROI 参数仅 IDLE 接受有效原子修改，迟到结果按独立版本失效。
 

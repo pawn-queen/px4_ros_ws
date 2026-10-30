@@ -23,18 +23,18 @@
 
 | ID | 严重度 | 问题 | 直接影响 | 证据 |
 |---|---|---|---|---|
-| D1 | **S2** | 本次 validation 拆分改动未提交 | 干净检出仍是拆分前路径；脚本/测试/CI 变更无法复现 | `git status` 的 rename/修改/`?? validation` |
+| D1 | **S2** | 本次 docs/project-context 拆分未提交 | 干净检出仍是旧文档路径；索引/链接/CMake 安装清单无法复现 | `git status` 的 docs rename/新增 |
 | D2 | **S1** | PX4/Gazebo/消息版本靠人工同步 | `FailsafeFlags` 字段漂移；雷达偏移/世界依赖未提交修改 | `px4_msgs` vs PX4；gz `M model.sdf` |
 | D3 | **S1** | Jetson/实机部署路径缺失 | 无法回答“上机怎么启动/回滚/监控” | 无 aarch64/Docker/systemd；`.p0_deps` 仅 amd64 |
-| D4 | **S1** | DDS 依赖本机 Cyclone+LOCALHOST 临时配置 | 跨机/Windows Host/Jetson 通信未证明 | `src/px4_powerplant_mission_cpp/P0_VALIDATION.md:62-78` |
+| D4 | **S1** | DDS 依赖本机 Cyclone+LOCALHOST 临时配置 | 跨机/Windows Host/Jetson 通信未证明 | `docs/validation/input-map-health.md:62-78` |
 | D5 | **已关闭** | Python legacy 已删除 | 双栈/回退风险关闭；新增 fixture oracle 维护责任 | 删除文件/入口；`test/fixtures/` |
-| D6 | **S1** | 完整 SITL/实机验收未通过 | 不能宣称可飞/可交付 | `src/px4_powerplant_mission_cpp/ISSUE3_VALIDATION.md:3`；`TAKEOFF_RESPONSE_SYNC.md:106-112` |
+| D6 | **S1** | 完整 SITL/实机验收未通过 | 不能宣称可飞/可交付 | `docs/validation/issue3-actual-plant.md:3`；`docs/design/takeoff-response-sync.md:106-112` |
 | D7 | **S2** | UWB 工作区可复现性差 | 152 项 EOL 噪声；SDK 无 `.gitmodules`；无实板验证 | `git diff --ignore-cr-at-eol`；SDK gitlink |
 | D8 | **S2** | 绝对路径 + 双时间域 | 换机/换用户失效；静默拒绝 UWB | `yolo_python`、照片目录、`px4_timestamp_domain` |
 | D9 | **S1** | 真实传感器驱动/标定缺失 | 硬件建图/控制不可直接运行 | `src/` 仅 4 个 `package.xml`；`src/px4_powerplant_mission/config/p2_hardware.yaml:1-10` |
-| D10 | **S2** | 大地图/DDS 性能未验收 | 控制周期/健康超时风险 | `src/px4_powerplant_mission/config/powerplant.yaml:150`；`src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:66` |
+| D10 | **S2** | 大地图/DDS 性能未验收 | 控制周期/健康超时风险 | `src/px4_powerplant_mission/config/powerplant.yaml:150`；`docs/history/migration-status.md:66` |
 | D11 | **S3** | CI 与仓库卫生仍需维护 | 回归依赖 CI 配置；仓库膨胀 | `.github/workflows/` 已存在；18 个 tracked `.pyc` 已删除；7.6 GB build |
-| D12 | **S3** | 文档/可观测性漂移 | 决策者高估成熟度；排障慢 | `src/px4_powerplant_mission/README.md`（413 行）；`src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:20-32` |
+| D12 | **S3** | 文档/可观测性漂移 | 决策者高估成熟度；排障慢 | `src/px4_powerplant_mission/README.md`（413 行）；`docs/history/migration-status.md:20-32` |
 
 ```mermaid
 flowchart TB
@@ -52,24 +52,25 @@ flowchart TB
 
 ## 3. 详细条目
 
-### D1 本次 validation 拆分未提交
+### D1 本次 docs 拆分未提交
 
 **事实**
 
-- 拆分前仓库为 `04a0ccbf` 且工作树干净。
-- 当前工作树包含：脚本从 `src/px4_powerplant_mission_cpp/scripts/` 迁到 `validation/` 和 `tools/env/`，validation 测试迁到 `validation/tests/`，以及 CMake/CI/文档修改。
-- 尚未提交；干净检出仍是拆分前路径。
+- 拆分前仓库为 `2ae88109` 且工作树干净。
+- 当前工作树把 C++ package 的 9 份阶段/工作项文档和研究文档迁到根 `docs/design|validation|history|research`，并新增 `GLOSSARY.md`、`docs/README.md`、`docs/adr/`。
+- CMake 的文档安装清单已改为只安装 runtime README 和 `research_sources/sitl_body_envelope.json`。
+- 尚未提交；干净检出仍是旧文档路径。
 
 **影响**
 
-- `[推断]` 在提交前，新 validation 模块、迁移后的测试和 CI 步骤无法从仓库历史复现。
-- `[事实]` 若现在切回 HEAD，旧脚本路径和旧 CMake pytest 目标仍然存在，和新文档不一致。
+- `[推断]` 在提交前，新的文档索引、分类和安装策略无法从仓库历史复现。
+- `[事实]` 若现在切回 HEAD，旧路径仍在，新文档链接和 CMake 安装清单不一致。
 
 **建议**
 
-1. 将脚本移动、测试迁移、CMake/CI 修改和文档作为一个可构建提交。
-2. 在干净 clone 上重跑 `validation/baseline/run_baseline.sh`。
-3. 在提交信息中注明本轮只迁移 runtime/validation 边界，不改变飞行行为。
+1. 将文档移动、索引、ADR、链接和 CMake 安装清单一并提交。
+2. 在干净 clone 上运行 `colcon build` 和链接检查。
+3. 在提交信息中注明本轮只改文档/安装边界，不改变 runtime 行为。
 
 **置信度**：事实。
 
@@ -143,9 +144,9 @@ flowchart TB
 
 **事实**
 
-- `src/px4_powerplant_mission_cpp/P0_VALIDATION.md:64-78` 记录：当前主机默认 Fast DDS 同机进程出现单向发现、无数据/服务响应；回环 UDP/显式 locator/TCP 对照未恢复，根因未确定。
+- `docs/validation/input-map-health.md:64-78` 记录：当前主机默认 Fast DDS 同机进程出现单向发现、无数据/服务响应；回环 UDP/显式 locator/TCP 对照未恢复，根因未确定。
 - 采用 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` + `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` 后同机跨进程恢复（`tools/env/ros_env.sh:12-13`）。
-- 该配置只影响当前 shell；文档明确“不验证 Windows Host、跨计算机 DDS、Agent/PX4 与 Cyclone 的完整互通”（`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:78`）。
+- 该配置只影响当前 shell；文档明确“不验证 Windows Host、跨计算机 DDS、Agent/PX4 与 Cyclone 的完整互通”（`docs/validation/input-map-health.md:78`）。
 - UWB Host 的 README 也记录：本机 WSL Fast DDS 跨进程最小复现失败，ROS 测试仅同进程（`Host/README.md:111`）。
 
 **影响**
@@ -195,9 +196,9 @@ flowchart TB
 
 - 最新完整 SITL 报告：`log/p2_sitl_cpu_17/report.json`，`passed=false`，`exit_reason=mission_fault`；阶段 `IDLE→START→SAFE_TAKEOFF→FAULT`；失败项包括 `all_required_phases`、`phase_order`、`landed_and_disarmed_completion`、`no_mission_fault`、`topology_built`、`inspection_result_explicit`、`actual_photo_and_surface_evidence`。
 - `events.jsonl`：`safety_stop` / `mission_fault` 原因为 `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE`。
-- 文档记录：原始渲染负载未通过健康启动；CPU 10 Hz 仍慢于实时；2.5 Hz CPU 档接近实时但完整流程未通过（`src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:32`）。
-- 单元/契约测试：删除 legacy 后本机 runtime C++ 392 项、validation 148 项、Python 72 项均 0 失败；这不等于飞行验收。
-- 实机：Host 仅假串口/PTY/mock；主工作区没有真实传感器驱动；无实飞记录（`Host/README.md:102-111`；`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:78`）。
+- 文档记录：原始渲染负载未通过健康启动；CPU 10 Hz 仍慢于实时；2.5 Hz CPU 档接近实时但完整流程未通过（`docs/history/migration-status.md:32`）。
+- 单元/契约测试：删除 legacy 后本机 runtime C++ 244 项、validation 148 项、Python 72 项均 0 失败；这不等于飞行验收。
+- 实机：Host 仅假串口/PTY/mock；主工作区没有真实传感器驱动；无实飞记录（`Host/README.md:102-111`；`docs/validation/input-map-health.md:78`）。
 
 **影响**
 
@@ -296,8 +297,8 @@ flowchart TB
 **事实**
 
 - 地图以 2 Hz 发布完整 `observed_voxels`，上限 `max_publish_points=200000`（`src/px4_powerplant_mission/config/powerplant.yaml:150`；`src/px4_powerplant_mission/README.md:174`）。
-- 控制节点使用点云时间戳与 `fusion_status.map_stamp_ns` 精确配对，只接受完整、健康、指纹一致快照（`src/px4_powerplant_mission/README.md:174`；`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:11`）。
-- `src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:66` 明确：未完成大型地图/YOLO 并行负载下的尾延迟测量；`:172` 也说未测量大型地图控制周期延迟。
+- 控制节点使用点云时间戳与 `fusion_status.map_stamp_ns` 精确配对，只接受完整、健康、指纹一致快照（`src/px4_powerplant_mission/README.md:174`；`docs/validation/input-map-health.md:11`）。
+- `docs/history/migration-status.md:66` 明确：未完成大型地图/YOLO 并行负载下的尾延迟测量；`:172` 也说未测量大型地图控制周期延迟。
 - 控制主循环 10 Hz（`offboard_node.cpp:113`），运动流 50 Hz（`motion_runtime`），地图 2 Hz。
 
 **影响**
@@ -348,10 +349,10 @@ flowchart TB
 
 **事实**
 
-- `src/px4_powerplant_mission/README.md` 413 行，混合当前行为、历史排查、验证步骤、参数说明；`src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md` 记录 300 个直接用例，但最新 SITL 仍失败。
+- `src/px4_powerplant_mission/README.md` 413 行，混合当前行为、历史排查、验证步骤、参数说明；`docs/history/migration-status.md` 记录 300 个直接用例，但最新 SITL 仍失败。
 - 运行状态分散在 `mission_status`、`fusion_status`、`localization/status`、UWB quality、事件 JSON、日志/报告中，没有统一健康面板。
 - 关键契约是字符串 JSON（定位/地图/UWB），没有 schema 文件；字段变更靠文档/测试。
-- `src/px4_powerplant_mission_cpp/P2_VALIDATION.md` 明确“prepare-only 的 `passed=false` 不代表验收”；但普通读者容易把测试数量当成飞行能力。
+- `docs/validation/sitl-acceptance.md` 明确“prepare-only 的 `passed=false` 不代表验收”；但普通读者容易把测试数量当成飞行能力。
 
 **影响**
 

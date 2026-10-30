@@ -73,7 +73,7 @@
 | `parameters.hpp` / `ros_support.hpp` | 参数声明、QoS、JSON、点云工具 | `parameters.hpp:6-80`；`ros_support.hpp:95-145` |
 | `offboard.hpp` | `OffboardMissionNode` 状态与接口 | `offboard.hpp:86-205` |
 
-`[事实]` 这些 P2 头文件已在 `4800616b` 进入仓库；当前未提交的是本次 validation 拆分。见 [D1](architecture-debt.md#d1-本次-validation-拆分未提交)。
+`[事实]` 这些 P2 头文件已在 `4800616b` 进入仓库；当前未提交的是本次 docs/project-context 拆分。见 [D1](architecture-debt.md#d1-本次-docs-拆分未提交)。
 
 ## 5. launch、配置与脚本
 
@@ -92,7 +92,7 @@
 | `tools/env/bootstrap_ros.py` | Python | 无 root 解包锁定 Cyclone 包 | 仅 noble amd64 | `:16-60` |
 | `validation/sitl/run_acceptance.py` | Python | 启动隔离的 Agent/Gazebo/PX4/GCS/传感器/任务 | 独立 domain/port/rootfs | `:249-329` |
 | `validation/sitl/gcs_heartbeat.py` | Python | 只读 MAVLink GCS 心跳/参数证据 | 不发送解锁/模式/轨迹 | `:23-83` |
-| `validation/model/body_envelope.py` | Python | 从 SDF 推导机体包络 | 生成包络审计证据 | `research_sources/sitl_body_envelope.md` |
+| `validation/model/body_envelope.py` | Python | 从 SDF 推导机体包络 | 生成包络审计证据 | `docs/research/sitl-body-envelope.md` |
 | `validation/sitl/worlds/*.sdf` | SDF | SITL 验收世界 | room / two_rooms | `room.sdf`、`two_rooms.sdf` |
 
 `[事实]` `src/px4_powerplant_mission/launch/powerplant_system.launch.py:16-24` 用已安装 `px4_msgs` 的 `MESSAGE_VERSION` 生成 `/fmu/out/*_vN` 重映射；直接 `ros2 run` 节点时不会自动加后缀，必须手工匹配固件（`src/px4_powerplant_mission/README.md:409`）。

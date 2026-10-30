@@ -89,7 +89,7 @@ PX4 reset_counter 变化时丢弃缓存并撤销独立健康，等待新 UWB。�
 
 ## 验证边界
 
-自动测试覆盖完整姿态变换、硬件无姿态输入、独立 EV 与 PX4 导航分离、位置协方差/坐标变换、重复/过期/倒序样本、故障队列、时钟回退、原始采样时间，以及旧测距与自适应融合回归。实际执行结果见 `../px4_powerplant_mission_cpp/MIGRATION_STATUS.md` 的本次定位更新记录。
+自动测试覆盖完整姿态变换、硬件无姿态输入、独立 EV 与 PX4 导航分离、位置协方差/坐标变换、重复/过期/倒序样本、故障队列、时钟回退、原始采样时间，以及旧测距与自适应融合回归。实际执行结果见 `../px4_powerplant_mission_cpp/docs/history/migration-status.md` 的本次定位更新记录。
 
 硬件锚点坐标、噪声模型、天线偏移、航向来源、串口与飞控版本仍需要实机测量和配置；自动测试不代表真实飞行验收。
 
@@ -98,4 +98,4 @@ PX4 reset_counter 变化时丢弃缓存并撤销独立健康，等待新 UWB。�
 
 定位状态新增 `status_stamp_ns`、`status_sequence` 和 `localization_epoch`。序号在同一 epoch 内递增，ROS 时钟回退或 PX4 estimator reset 后切换 epoch；导航里程计继续保留原采样时间。C++ mapper/controller 同时检查这些状态与六维 pose 协方差，旧包不能刷新健康，坐标 epoch 变化不能沿用旧地图/home。单 Tag、独立 UWB→EV 与 PX4→导航的数据来源关系保持不变。
 
-launch 将 `use_sim_time` 同步到控制与 YOLO，硬件 profile 仍默认墙钟。P0 起飞柱体配置、落地确认、FAULT 恢复条件，以及仅限本机的 Cyclone DDS 验证步骤见 [P0_VALIDATION.md](../px4_powerplant_mission_cpp/P0_VALIDATION.md)。本机跨进程通信通过不代表真实 UWB、Agent/PX4、飞控 failsafe 或完整飞行已经验收。
+launch 将 `use_sim_time` 同步到控制与 YOLO，硬件 profile 仍默认墙钟。P0 起飞柱体配置、落地确认、FAULT 恢复条件，以及仅限本机的 Cyclone DDS 验证步骤见 [docs/validation/input-map-health.md](../../docs/validation/input-map-health.md)。本机跨进程通信通过不代表真实 UWB、Agent/PX4、飞控 failsafe 或完整飞行已经验收。

@@ -1,8 +1,8 @@
 # P2：轨迹、停止能力、三维区域引导与巡检证据
 
-本轮延续 P0/P1。保留顶层任务阶段，新增运动子状态和巡检结果；仿真、硬件使用同一核心，通过标定与物理参数区分。默认不自动起飞。2026-10-28 已接入 Issue #3 的局部任务 ROI 与可检出电厂碰撞资产；原理和最新验收边界见 [ISSUE3_IMPLEMENTATION.md](ISSUE3_IMPLEMENTATION.md) 与 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。
+本轮延续 P0/P1。保留顶层任务阶段，新增运动子状态和巡检结果；仿真、硬件使用同一核心，通过标定与物理参数区分。默认不自动起飞。2026-10-28 已接入 Issue #3 的局部任务 ROI 与可检出电厂碰撞资产；原理和最新验收边界见 [docs/design/issue3-collision-and-roi.md](issue3-collision-and-roi.md) 与 [docs/validation/issue3-actual-plant.md](../validation/issue3-actual-plant.md)。
 
-2026-10-29 起飞响应续改：启动意图不再等同于实际离地；加入反馈探测、起落架净空证明、严格证书交接、执行器软保护及恢复锁存，并通过独立 SITL 控制配置进行标定。新增流程和参数见 [TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)。下文原微上升描述属于本次续改前的实现背景，当前启用仿真响应同步时采用新进度门控。
+2026-10-29 起飞响应续改：启动意图不再等同于实际离地；加入反馈探测、起落架净空证明、严格证书交接、执行器软保护及恢复锁存，并通过独立 SITL 控制配置进行标定。新增流程和参数见 [docs/design/takeoff-response-sync.md](takeoff-response-sync.md)。下文原微上升描述属于本次续改前的实现背景，当前启用仿真响应同步时采用新进度门控。
 
 ## 运动：几何骨架之后增加时间与持续停止检查
 
@@ -56,7 +56,7 @@ SITL16 在消除反复不确定度制动后仍暴露起飞响应滞后：当前 
 
 SITL 辅助 GCS 只读实际 spool/ramp 参数，START 前检查持续时间至少覆盖二者之和及反应预算，高度不超过配置跟踪容差；它不修改 PX4 参数，也不把等待时间当作真实 ramp 状态观测。全部跟踪和停止保护保持有效。共享/硬件缺省两参数为零且模型未启用；零表示尚未标定，实机应提供实际启动响应边界，不能照搬仿真值。当前启动段的真实飞行结果仍以验证记录为准。
 
-`p2_simulation.yaml` 使用当前展开 SDF 相对 PX4 导航参考点的安装参数：RGB/深度 `(0.13233,0,0.26078)m`、雷达 `(0,0,0.42)m`；实体 SDF base_link 与模型原点有 0.24 m 偏移，SITL机体世界包络采用半径0.5m、相对z范围[-0.06,0.5]m，覆盖允许倾角下的旋翼/支架。SITL跟踪位置误差初值0.03m仍须由实际日志核对。不能只平移 ROS 导航而不转换 PX4 目标。静态 SITL 已核对导航参考和已知墙面投影；飞行时的跟踪与动态表现单独验收。全部10个碰撞体与旋翼任意偏航、总倾角≤0.35rad的解析界为 z≥−0.05201654m、z≤0.41454884m、水平半径≤0.46556036m，配置仍向外留余量，见 [SDF包络标定](research_sources/sitl_body_envelope.md)。SITL入口校验原始模型SHA256和包络/倾角参数，模型变更须重新标定。
+`p2_simulation.yaml` 使用当前展开 SDF 相对 PX4 导航参考点的安装参数：RGB/深度 `(0.13233,0,0.26078)m`、雷达 `(0,0,0.42)m`；实体 SDF base_link 与模型原点有 0.24 m 偏移，SITL机体世界包络采用半径0.5m、相对z范围[-0.06,0.5]m，覆盖允许倾角下的旋翼/支架。SITL跟踪位置误差初值0.03m仍须由实际日志核对。不能只平移 ROS 导航而不转换 PX4 目标。静态 SITL 已核对导航参考和已知墙面投影；飞行时的跟踪与动态表现单独验收。全部10个碰撞体与旋翼任意偏航、总倾角≤0.35rad的解析界为 z≥−0.05201654m、z≤0.41454884m、水平半径≤0.46556036m，配置仍向外留余量，见 [SDF包络标定](../research/sitl-body-envelope.md)。SITL入口校验原始模型SHA256和包络/倾角参数，模型变更须重新标定。
 
 `p2_hardware.yaml` 不采用这些仿真标定，实测覆盖文件由launch参数`motion_config_file`传入。`motion_model_configured=false` 时拒绝任务启动；应在部署覆盖中提供实测外参、机体、速度/加速度、制动、误差与时延后显式启用。这个开关是参数来源声明，不构成实飞验收。
 
@@ -110,12 +110,12 @@ mapper 与注册器共用 rectified pinhole 输入校验：图像必须经过驱
 
 保留地图四字段、原 ROS 主话题、服务和顶层阶段。新增 `/powerplant/perception/yolo_source_image`、RGB CameraInfo 订阅及运动/区域/质量/覆盖诊断。原 Python mapper/controller 已于 2026-10-30 删除，P2 运行只使用原生两节点。
 
-新增核心与节点测试覆盖解析导数、停止包络、三维区域/门户、候选名额、双相机注册、覆盖事务、质量失败和旧结果拒绝。构建后串行运行已有可重放基线与 P2 测试；正式电厂入口为 `run_acceptance.py --scenario powerplant`，`room/two_rooms` 仅作回归。实际资产受提交和递归哈希锁定；几何接触、有限阶段、局部任务和满负载性能分开验收。SITL 验证与最终结果见 P2_VALIDATION.md、ISSUE3_VALIDATION.md 和 MIGRATION_STATUS.md。实际通过的数量、场景与未通过项由执行后填入，不能把设计或单元测试当作实飞结果。
+新增核心与节点测试覆盖解析导数、停止包络、三维区域/门户、候选名额、双相机注册、覆盖事务、质量失败和旧结果拒绝。构建后串行运行已有可重放基线与 P2 测试；正式电厂入口为 `run_acceptance.py --scenario powerplant`，`room/two_rooms` 仅作回归。实际资产受提交和递归哈希锁定；几何接触、有限阶段、局部任务和满负载性能分开验收。SITL 验证与最终结果见 docs/validation/sitl-acceptance.md、docs/validation/issue3-actual-plant.md 和 docs/history/migration-status.md。实际通过的数量、场景与未通过项由执行后填入，不能把设计或单元测试当作实飞结果。
 
-2026-10-26 软件阶段按当时范围以测试和已有日志核查收尾；Issue #3 后续增加真实碰撞、局部 ROI 与实际场景验证，其通过范围单列于 ISSUE3_VALIDATION.md。飞控、动力学及实机标定参数仍由用户调整。一般安全模型和标定参数按任务开始前的静态配置使用，调整后在上锁状态重新启动节点/任务；任务 ROI/接入策略另有仅 IDLE 可用的校验及 revision 更新接口。本轮不承诺飞行中热切换机体、制动或误差模型。自动 bootstrap 时长切换属于已有状态机的受控内部行为。
+2026-10-26 软件阶段按当时范围以测试和已有日志核查收尾；Issue #3 后续增加真实碰撞、局部 ROI 与实际场景验证，其通过范围单列于 docs/validation/issue3-actual-plant.md。飞控、动力学及实机标定参数仍由用户调整。一般安全模型和标定参数按任务开始前的静态配置使用，调整后在上锁状态重新启动节点/任务；任务 ROI/接入策略另有仅 IDLE 可用的校验及 revision 更新接口。本轮不承诺飞行中热切换机体、制动或误差模型。自动 bootstrap 时长切换属于已有状态机的受控内部行为。
 
 ## 2026-10-29：仅SITL起飞过渡的风险/几何/参考管理续改
 
 A—D白名单、45秒固定预算、圆角停止几何、停稳HOLD的1.0/1.25参考选择，以及独立严格策略原子交接已实现。不可变ACK证据绑定同一导航采样及实际NED参考；数值微偏航和ROS/NumPy类型适配已修正。硬件缺省、PX4源码、实际电厂、默认ROI及既有主流程保持。
 
-当前524项直接软件用例通过。实际电厂20候选全部未通过起飞初扫，5次仅通过严格ACK瞬间子项；没有HOVER_SCAN或正式自主主链通过。未冻结参数，未执行通过配置的消融、三次主链或独立ROI接入。此为有界标定失败结论，不能用软件回归或落地COMPLETE替代物理验收。详见[实现原理](TAKEOFF_RESPONSE_SYNC.md)、[完整验收](ISSUE3_VALIDATION.md)与`log/issue3_margin_governor/20261029_1336/`。
+当前524项直接软件用例通过。实际电厂20候选全部未通过起飞初扫，5次仅通过严格ACK瞬间子项；没有HOVER_SCAN或正式自主主链通过。未冻结参数，未执行通过配置的消融、三次主链或独立ROI接入。此为有界标定失败结论，不能用软件回归或落地COMPLETE替代物理验收。详见[实现原理](takeoff-response-sync.md)、[完整验收](../validation/issue3-actual-plant.md)与`log/issue3_margin_governor/20261029_1336/`。

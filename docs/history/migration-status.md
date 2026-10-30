@@ -4,7 +4,7 @@
 
 ## 2026-10-30：Python mapper/controller 已移除
 
-按用户确认的删除方案，Python `voxel_mapper_node`/`offboard_mission_node` 及其专用 `mapping/`、`path_planning/`、`common/initial_scan.py`、相关测试已删除；`setup.py` 移除两个入口，launch 移除 `mapping_package`/`control_package` 回退参数。C++ 测试的旧行为基准改为 `src/px4_powerplant_mission_cpp/test/fixtures/` 下的冻结 fixture，不再在测试运行时 import Python legacy。该删除是在用户明确豁免 Q9=A 的情况下执行的：完整 SITL 和实机地面链仍未通过，不能把删除当作飞行验收。 2026-10-30 后 validation 脚本路径已迁移；下文历史命令中的旧名称只作记录，当前入口见 `validation/README.md`。删除后本机 P0 baseline：runtime C++ 392 项、validation 148 项、Python 72 项，均 0 失败；双进程 ROS 探针通过。
+按用户确认的删除方案，Python `voxel_mapper_node`/`offboard_mission_node` 及其专用 `mapping/`、`path_planning/`、`common/initial_scan.py`、相关测试已删除；`setup.py` 移除两个入口，launch 移除 `mapping_package`/`control_package` 回退参数。C++ 测试的旧行为基准改为 `src/px4_powerplant_mission_cpp/test/fixtures/` 下的冻结 fixture，不再在测试运行时 import Python legacy。该删除是在用户明确豁免 Q9=A 的情况下执行的：完整 SITL 和实机地面链仍未通过，不能把删除当作飞行验收。 2026-10-30 后 validation 脚本路径已迁移；下文历史命令中的旧名称只作记录，当前入口见 `validation/README.md`。删除后本机 P0 baseline：runtime C++ 244 项、validation 148 项、Python 72 项，均 0 失败；双进程 ROS 探针通过。
 
 ## 2026-10-29：A—D过渡策略、圆角停止几何与参考管理（最新）
 
@@ -18,7 +18,7 @@
 
 按所有允许候选失败分支停止。没有governor关闭对照、默认ROI三次主链或独立ROI接入通过证据。实际时长倍率本组均为1.0，1.25及无候选恢复由软件回归覆盖；没有通过消融对，不能声称参数/几何/参考管理已提高任务成功率。Issue #3保持OPEN，代码/模型不提交、不推送。
 
-原理见 [TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)，完整记录见 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 及工作区 `log/issue3_margin_governor/20261029_1336/VALIDATION.md`、`final_summary.json`、`calibration_v6/`。旧35秒/五积分失败保留为历史基线，不混入新队列。
+原理见 [docs/design/takeoff-response-sync.md](../design/takeoff-response-sync.md)，完整记录见 [docs/validation/issue3-actual-plant.md](../validation/issue3-actual-plant.md) 及工作区 `log/issue3_margin_governor/20261029_1336/VALIDATION.md`、`final_summary.json`、`calibration_v6/`。旧35秒/五积分失败保留为历史基线，不混入新队列。
 
 ## 2026-10-29：起飞响应同步与独立SITL标定（此前基线）
 
@@ -26,13 +26,13 @@
 
 两包串行构建和最新 **506个直接回归用例** 通过。实际电厂按2、1、0.5、0.25、0.1测试垂向积分，hover初值按模型推导为0.7463305342、全部参数实际回读匹配；五个候选均未通过起飞初扫，**未生成冻结配置，未执行默认ROI三次正式主链或独立ROI接入**。最高有限模型原点上升约7.9cm，不能称完整离地/悬停。标定期间暴露的初始化偏航与已发布HOLD偏航不一致已修复，并从2.0重新测试；旧失败不混入冻结。
 
-当前需要进一步核查控制/导航的实际响应和收敛：低积分运行仍受垂向响应及横向导航/参考误差约束，软恢复无法满足；保留受控降落或硬FAULT分类。发布速率49.886～50.002Hz、p95/p99及最大间隔符合原门限，不能归为本次发布频率瓶颈。完整范围、接触未确认项和原始证据见 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)、[TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md) 与 `log/issue3_response_sync/20261029_0150/`。Issue #3保持开启；未提交、未推送。
+当前需要进一步核查控制/导航的实际响应和收敛：低积分运行仍受垂向响应及横向导航/参考误差约束，软恢复无法满足；保留受控降落或硬FAULT分类。发布速率49.886～50.002Hz、p95/p99及最大间隔符合原门限，不能归为本次发布频率瓶颈。完整范围、接触未确认项和原始证据见 [docs/validation/issue3-actual-plant.md](../validation/issue3-actual-plant.md)、[docs/design/takeoff-response-sync.md](../design/takeoff-response-sync.md) 与 `log/issue3_response_sync/20261029_0150/`。Issue #3保持开启；未提交、未推送。
 
 ## 2026-10-28：Issue #3 碰撞资产与局部任务 ROI
 
-本节历史实测：真实GPU渲染和明确5Hz降载已进入SAFE_TAKEOFF，但停止包络下界越界约1.03mm触发FAULT，尚无初扫/ROI接入/返航通过证据。版本绑定的实际GPU雷达方向、深度一致性已通过；名义角度与在线mapper误差单独保留。详细状态及不重复计数的软件结果以 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 为准，Issue #3继续开启。
+本节历史实测：真实GPU渲染和明确5Hz降载已进入SAFE_TAKEOFF，但停止包络下界越界约1.03mm触发FAULT，尚无初扫/ROI接入/返航通过证据。版本绑定的实际GPU雷达方向、深度一致性已通过；名义角度与在线mapper误差单独保留。详细状态及不重复计数的软件结果以 [docs/validation/issue3-actual-plant.md](../validation/issue3-actual-plant.md) 为准，Issue #3继续开启。
 
-本次修正电厂碰撞资产，并将局部任务区域从全阶段导航安全域中分离。实现、版本与验收入口分别见 [ISSUE3_IMPLEMENTATION.md](ISSUE3_IMPLEMENTATION.md)、[ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)；下方 316 项软件回归和 CPU17 飞行失败保留为 2026-10-26 的历史证据。
+本次修正电厂碰撞资产，并将局部任务区域从全阶段导航安全域中分离。实现、版本与验收入口分别见 [docs/design/issue3-collision-and-roi.md](../design/issue3-collision-and-roi.md)、[docs/validation/issue3-actual-plant.md](../validation/issue3-actual-plant.md)；下方 316 项软件回归和 CPU17 飞行失败保留为 2026-10-26 的历史证据。
 
 - 原视觉 STL 保持不变；实心碰撞盒改为保留凹结构的独立静态简化 mesh。最终 **501262 面**，较原 605740 面减少约 **17.25%**。全部顶点和三角形质心的独立双向复验最大距离约 **19.08 mm**；这是有限验证集结果，不是连续 Hausdorff 证明。
 - 资产已形成模型仓库的本地可检出提交 `69f6511d0b11e2189b204ce6b10f12cbef24f119`，未推送，不含已有 `x500_depth` 修改。主仓库 `config/powerplant_assets.json` 固定资产提交及递归文件哈希；实际电厂准备阶段发现版本或资源不匹配时拒绝沿用旧验收。
@@ -43,11 +43,11 @@
 
 本轮已记录的验证：两包 Release 串行构建通过；C++/对照/跨进程 ROS 等 `colcon` 汇总 **235 项通过**（含 17 个 CTest 外层结果，不重复计数）；共享 Python **127 项通过**。完整和简化 mesh 的动态双侧接触、阳性接触对照及 3 条起飞区自由路径已有通过证据。对应运行目录为 `log/issue3_powerplant/20261027_204849/`。
 
-正式场景入口为 `run_acceptance.py --scenario powerplant`；`room/two_rooms` 继续作回归。`--stop-after scan`、`--roi-access-test --stop-after roi-access` 与 `--stop-after mission` 分别标记起飞初扫、接入进展和局部任务范围；真实电厂没有已核验标注 fixture 时，拒绝复用小房间圆柱检测重放。本轮417个直接软件用例通过；正确绑定资源后的六组原始传感器负载成本对照通过5%退化检查，旧未绑定对照作废。**SITL仍未通过，完整巡检未验收**，具体范围以 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 为准。
+正式场景入口为 `run_acceptance.py --scenario powerplant`；`room/two_rooms` 继续作回归。`--stop-after scan`、`--roi-access-test --stop-after roi-access` 与 `--stop-after mission` 分别标记起飞初扫、接入进展和局部任务范围；真实电厂没有已核验标注 fixture 时，拒绝复用小房间圆柱检测重放。本轮417个直接软件用例通过；正确绑定资源后的六组原始传感器负载成本对照通过5%退化检查，旧未绑定对照作废。**SITL仍未通过，完整巡检未验收**，具体范围以 [docs/validation/issue3-actual-plant.md](../validation/issue3-actual-plant.md) 为准。
 
 ## 2026-10-26：P2 软件逻辑核查与回归完成
 
-已接入无求解器五次时序轨迹、持续反应/制动包络、独立 50 Hz 执行、三维区域/门户引导、同步 RGB-D 注册及稳定表面/合格照片覆盖闭环。主流程不变，`auto_start=false`。任务规格与缺口见 [Issue #2](https://github.com/pawn-queen/px4_ros_ws/issues/2)，原理、参数与接口见 [P2_IMPLEMENTATION.md](P2_IMPLEMENTATION.md)，真实仿真入口和证据范围见 [P2_VALIDATION.md](P2_VALIDATION.md)。
+已接入无求解器五次时序轨迹、持续反应/制动包络、独立 50 Hz 执行、三维区域/门户引导、同步 RGB-D 注册及稳定表面/合格照片覆盖闭环。主流程不变，`auto_start=false`。任务规格与缺口见 [Issue #2](https://github.com/pawn-queen/px4_ros_ws/issues/2)，原理、参数与接口见 [docs/design/motion-and-inspection.md](../design/motion-and-inspection.md)，真实仿真入口和证据范围见 [docs/validation/sitl-acceptance.md](../validation/sitl-acceptance.md)。
 
 按用户最后确认，本轮以测试和已有日志完成软件逻辑核查，飞控/动力学参数由用户调整。本次发现的下列逻辑问题已修复，完整回归通过；没有把旧 SITL 失败改写为飞行通过，也未继续调飞控参数。
 
@@ -77,11 +77,11 @@
 
 共 **316 个直接用例**。`colcon test-result` 为 **204 项**，其中另有 15 个 CTest 外层结果，不是额外行为用例。全部零失败、零跳过；最新 C++/对照/ROS 结果为 `log/p2_baseline/native_logic_review_result.log`，Python 结果为 `python_bootstrap.xunit.xml`（6.13 秒）。另有七种启动参数核对检查通过，见 `log/p2_startup_config_checks.json`。下方 P1/P0 是历史记录。
 
-SITL 已实际启动隔离 PX4、Agent、Gazebo 与任务栈，保留至 CPU17 的各次报告。原始渲染负载和 CPU 10 Hz 档曾触发健康失鲜；2.5 Hz 档用于降载功能验证，静态导航/外参和真实 YOLO 源图链路的独立检查已通过。CPU17 完整流程未通过，且发生在本轮参考采样时间等逻辑修复之前；新软件不据此宣称飞行结果。后续参数标定、完整飞行、多房间/物理制动、满负载时延及实机验收由用户继续，操作边界见 P2_VALIDATION.md。
+SITL 已实际启动隔离 PX4、Agent、Gazebo 与任务栈，保留至 CPU17 的各次报告。原始渲染负载和 CPU 10 Hz 档曾触发健康失鲜；2.5 Hz 档用于降载功能验证，静态导航/外参和真实 YOLO 源图链路的独立检查已通过。CPU17 完整流程未通过，且发生在本轮参考采样时间等逻辑修复之前；新软件不据此宣称飞行结果。后续参数标定、完整飞行、多房间/物理制动、满负载时延及实机验收由用户继续，操作边界见 docs/validation/sitl-acceptance.md。
 
 ## 2026-10-25：P1 建图效率与观测有效性
 
-本节是 P1 完成时的历史记录：实施用户确认的 **P1 全部项目**，保留 P0 的健康门控、坐标 epoch、起飞柱体与落地确认。原理变化、公式、参数和限制集中见 [P1_IMPLEMENTATION.md](P1_IMPLEMENTATION.md)。当时 P2/P3 尚未实施，P2 最新进展见上节。
+本节是 P1 完成时的历史记录：实施用户确认的 **P1 全部项目**，保留 P0 的健康门控、坐标 epoch、起飞柱体与落地确认。原理变化、公式、参数和限制集中见 [docs/design/mapping-and-frontier.md](../design/mapping-and-frontier.md)。当时 P2/P3 尚未实施，P2 最新进展见上节。
 
 - 射线改为按体素面推进的精确 DDA，仅正长度交段提供空闲证据；保留批次去重和命中优先，不用碰撞 supercover 激进清空地图。
 - 深度按距离投影足迹、深度/有效性边缘细分，选择真实像素并按图像分区分配射线预算。未观测像素不填充覆盖；遍历深度图的 CPU 成本仍需测量。
@@ -135,7 +135,7 @@ SITL 已实际启动隔离 PX4、Agent、Gazebo 与任务栈，保留至 CPU17 �
 
 跨进程定位测试实际启动独立的 localization、EV 和注入/断言进程，分别使用 simulation/hardware profile；检查独立 UWB→EV、PX4→完整导航，停止 UWB 后导航协方差退化且新 PX4 状态不产生 EV 反馈。这里使用合成 ROS 消息，没有连接 Host 串口硬件。
 
-运行入口、依赖锁定、配置及新协议见 [P0_VALIDATION.md](P0_VALIDATION.md)。`validation/baseline/run_baseline.sh` 串行运行探针、C++/对照/跨进程测试和 Python 回归并保存结果；不会启动 Gazebo、Agent、真实飞控或电机。下方 2026-10-24/21 的“未通过”是历史结果，本轮仅在上述新 middleware 配置下解决同机通信；不能据此断言默认 Fast DDS 已修好。
+运行入口、依赖锁定、配置及新协议见 [docs/validation/input-map-health.md](../validation/input-map-health.md)。`validation/baseline/run_baseline.sh` 串行运行探针、C++/对照/跨进程测试和 Python 回归并保存结果；不会启动 Gazebo、Agent、真实飞控或电机。下方 2026-10-24/21 的“未通过”是历史结果，本轮仅在上述新 middleware 配置下解决同机通信；不能据此断言默认 Fast DDS 已修好。
 
 **仍待验收：**完整 PX4/Gazebo 飞行、Agent/PX4 与所选 DDS 的实际互通、真实 UWB/相机/雷达标定及故障数据、起飞顶棚净空、PX4 Offboard-loss 配置和反应、连续动力学制动与真实电量裕量。LOCALHOST 基线不验证 Windows Host 或跨计算机 DDS。原 Python mapper/controller 已于 2026-10-30 删除；建图/控制只保留 C++ 实现。
 
@@ -148,7 +148,7 @@ SITL 已实际启动隔离 PX4、Agent、Gazebo 与任务栈，保留至 CPU17 �
 - 默认导航使用 PX4 完整位姿，转换完整四元数、协方差和 twist，保留状态采样时间。`fusion.py` 与旧 adaptive 导航模式保留，结果不进入 EV。
 - 共用 frame/坐标变换、质量与健康事件处理；UWB 失效使导航协方差退化，PX4 位姿过期停止发布，时钟回退清缓存。
 - 新增 `localization_profile:=simulation|hardware`，hardware 默认关闭 UWB 仿真器、Gazebo 真值/时钟桥和仿真时间。默认控制与 YOLO 仍关闭。
-- 实机锚点坐标、航向、map/PX4 对齐与天线安装偏移仍需标定。配置方法与已知边界见 [定位部署说明](../px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md)。
+- 实机锚点坐标、航向、map/PX4 对齐与天线安装偏移仍需标定。配置方法与已知边界见 [定位部署说明](../../src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md)。
 
 本次实际验证：
 
@@ -237,4 +237,4 @@ ROS 接口测试默认使用隔离的 `ROS_DOMAIN_ID=173`，一次仅启动一�
 
 ### 2026-10-28 地面保护续改
 
-C++ 已接入三类起飞授权、实际支持模型、采样时间与解锁时间域检查、执行器严格交接、保守过渡及独立探索时限。SITL runner 支持临时接触监测、源/二进制/资源哈希、参数回读和故障后落地证据。原1.03mm案例在严格模式仍拒绝，合格地面证书可处理。实际主链仍因原跟踪保护未通过，Issue #3保持开启；尚未验收初扫、ROI接入或正常任务返航。详见 TAKEOFF_GROUND_SUPPORT.md 与 ISSUE3_VALIDATION.md。
+C++ 已接入三类起飞授权、实际支持模型、采样时间与解锁时间域检查、执行器严格交接、保守过渡及独立探索时限。SITL runner 支持临时接触监测、源/二进制/资源哈希、参数回读和故障后落地证据。原1.03mm案例在严格模式仍拒绝，合格地面证书可处理。实际主链仍因原跟踪保护未通过，Issue #3保持开启；尚未验收初扫、ROI接入或正常任务返航。详见 docs/design/takeoff-ground-support.md 与 docs/validation/issue3-actual-plant.md。

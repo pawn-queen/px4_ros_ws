@@ -2,23 +2,23 @@
 
 本包是 ROS 2 Jazzy 下的 C++17 体素建图、保守三维规划和 Offboard 控制实现。Python mapper/controller 已于 2026-10-30 删除；Python 包现在只提供定位、UWB、外部视觉桥和 YOLO 感知。本包不内嵌或执行 Python 节点。
 
-当前结果与剩余集成检查见 [迁移状态](MIGRATION_STATUS.md)。验证、SITL 和模型审计已迁到仓库根目录的 [validation](../../validation/README.md)；本包只保留 runtime 代码、runtime 配置和 runtime 测试。
+当前结果与剩余集成检查见 [迁移状态](../../docs/history/migration-status.md)。验证、SITL 和模型审计已迁到仓库根目录的 [validation](../../validation/README.md)；本包只保留 runtime 代码、runtime 配置和 runtime 测试。
 
 ## 阶段说明
 
-P0 的输入健康、地图健康、起飞区确认、落地确认和可重放 ROS 检查见 [P0 验证](P0_VALIDATION.md)。
-P1 的建图效率、前沿和观测流程改进见 [P1 实现](P1_IMPLEMENTATION.md)。
-P2 的运动证书、区域引导、目标表面和照片证据见 [P2 实现](P2_IMPLEMENTATION.md)；P3 仍是后续工作。
+P0 的输入健康、地图健康、起飞区确认、落地确认和可重放 ROS 检查见 [P0 验证](../../docs/validation/input-map-health.md)。
+P1 的建图效率、前沿和观测流程改进见 [P1 实现](../../docs/design/mapping-and-frontier.md)。
+P2 的运动证书、区域引导、目标表面和照片证据见 [P2 实现](../../docs/design/motion-and-inspection.md)；P3 仍是后续工作。
 
-P2 软件审计覆盖采样时刻参考历史、HOLD 新鲜确认、规划器/执行器共享的不确定性预算、可执行局部前缀、精确停止/时间记账、区域身份和曝光绑定照片覆盖。历史审计的 316 个直接回归用例见 [P2 验证](P2_VALIDATION.md)。飞行参数和物理验收独立于这些软件检查；修改安全/标定参数后应在地面重新启动，运行中热切换物理安全模型不在本接口范围内。
+P2 软件审计覆盖采样时刻参考历史、HOLD 新鲜确认、规划器/执行器共享的不确定性预算、可执行局部前缀、精确停止/时间记账、区域身份和曝光绑定照片覆盖。历史审计的 316 个直接回归用例见 [P2 验证](../../docs/validation/sitl-acceptance.md)。飞行参数和物理验收独立于这些软件检查；修改安全/标定参数后应在地面重新启动，运行中热切换物理安全模型不在本接口范围内。
 
 ## 局部任务 ROI 与电厂碰撞资产
 
-实际电厂场景使用单独简化的静态凹碰撞网格，同时保留原始视觉 STL。资产提交和内容哈希锁定真实场景验收入口。`explore_min/max_*` 定义任务收益和覆盖范围；起飞、初扫、安全接入和返航使用完整观测导航域。EXPLORE 内含受约束的 ROI_ACCESS 和 ROI_WORK 子模式，不要求已知航点。背景见 [Issue #3 实现](ISSUE3_IMPLEMENTATION.md) 和 [实际验证状态](ISSUE3_VALIDATION.md)。
+实际电厂场景使用单独简化的静态凹碰撞网格，同时保留原始视觉 STL。资产提交和内容哈希锁定真实场景验收入口。`explore_min/max_*` 定义任务收益和覆盖范围；起飞、初扫、安全接入和返航使用完整观测导航域。EXPLORE 内含受约束的 ROI_ACCESS 和 ROI_WORK 子模式，不要求已知航点。背景见 [Issue #3 实现](../../docs/design/issue3-collision-and-roi.md) 和 [实际验证状态](../../docs/validation/issue3-actual-plant.md)。
 
-起飞响应更新把启动参考和实测升力分开，加入早停认证制动和恢复锁存，并在启动前派生一个不可变的 SITL 地面过渡预算。独立控制器 profile 必须用实际 PX4 参数回读验证后才能解锁；它不修改 PX4 源码或硬件默认值。策略见 [起飞响应设计](TAKEOFF_RESPONSE_SYNC.md)，实际飞行范围见 [Issue #3 验证](ISSUE3_VALIDATION.md)。
+起飞响应更新把启动参考和实测升力分开，加入早停认证制动和恢复锁存，并在启动前派生一个不可变的 SITL 地面过渡预算。独立控制器 profile 必须用实际 PX4 参数回读验证后才能解锁；它不修改 PX4 源码或硬件默认值。策略见 [起飞响应设计](../../docs/design/takeoff-response-sync.md)，实际飞行范围见 [Issue #3 验证](../../docs/validation/issue3-actual-plant.md)。
 
-本轮 A–D 过渡策略使用固定 45 秒预算、圆角扫掠包络和有界参考选择，并保留原严格策略的原子恢复。20 个实际策略/积分候选均未通过起飞初扫；5 次获得严格 ACK，但后续严格爬升/恢复失败，均未进入 HOVER_SCAN，未冻结控制器 profile。主飞行、governor 消融和 ROI 验收仍未执行。最新记录见 [验证记录](ISSUE3_VALIDATION.md)。
+本轮 A–D 过渡策略使用固定 45 秒预算、圆角扫掠包络和有界参考选择，并保留原严格策略的原子恢复。20 个实际策略/积分候选均未通过起飞初扫；5 次获得严格 ACK，但后续严格爬升/恢复失败，均未进入 HOVER_SCAN，未冻结控制器 profile。主飞行、governor 消融和 ROI 验收仍未执行。最新记录见 [验证记录](../../docs/validation/issue3-actual-plant.md)。
 
 ## 构建
 
@@ -59,7 +59,7 @@ CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 colcon build --symlink-install \
 
 ## 接口兼容
 
-可执行文件仍是 `voxel_mapper_node` 和 `offboard_mission_node`；节点名仍是 `powerplant_voxel_mapper` 和 `powerplant_offboard_mission`。核心 ROS 话题/类型、服务名、QoS、ENU/FLU→NED 约定和四字段地图布局保留。P0 增加严格定位/地图健康、`VehicleLandDetected`、锁定 `FAULT` 阶段和显式起飞区参数；P1 增加成功深度相机/观测元数据和覆盖/规划原因诊断。契约测试检查保留的默认值和有意变更的 `require_image_for_photo=true`。启动条件和中 middleware profile 见 [P0 验证](P0_VALIDATION.md)，新增参数见 [P1 实现](P1_IMPLEMENTATION.md)。
+可执行文件仍是 `voxel_mapper_node` 和 `offboard_mission_node`；节点名仍是 `powerplant_voxel_mapper` 和 `powerplant_offboard_mission`。核心 ROS 话题/类型、服务名、QoS、ENU/FLU→NED 约定和四字段地图布局保留。P0 增加严格定位/地图健康、`VehicleLandDetected`、锁定 `FAULT` 阶段和显式起飞区参数；P1 增加成功深度相机/观测元数据和覆盖/规划原因诊断。契约测试检查保留的默认值和有意变更的 `require_image_for_photo=true`。启动条件和中 middleware profile 见 [P0 验证](../../docs/validation/input-map-health.md)，新增参数见 [P1 实现](../../docs/design/mapping-and-frontier.md)。
 
 正常探索默认要求实际匹配的 CameraInfo；P2 巡检还要求真实 RGB 标定和 YOLO 源曝光。硬件运动参数必须显式配置。`/powerplant/map/observed_voxels` 仍使用四个 float32 字段（`x,y,z,state`）；未知/缺失和不确定（`state=-1`）单元不能承载飞行路径，截断快照不能授权探索。launch 给定位、建图、YOLO 和控制传入同一个 `use_sim_time`。消息头使用 ROS 时间；墙钟定时器和单调接收时限也能检测仿真时钟冻结。
 
@@ -104,4 +104,4 @@ python3 -m pytest -p no:cacheprovider -q \
 
 runtime 测试覆盖几何、时间历史、地图契约、增量索引、自适应采样、标定可见性、转向/停留预算、扫描覆盖、视点确认、规划依赖、setpoint 限制和取消。测试专用 `core_probe` 通过 JSON 输入/输出验证原规划不变量和随机障碍路线。历史规划对照显式中和新的转向/停留成本；P1 原生测试覆盖生产模型。精确射线更新有意不同于已退役 Python 固定步长采样，并用独立线段几何 oracle 检查。ROS 契约测试一次只启动一个原生进程，注入合成传感器和 PX4 消息，验证参数默认值、发布和服务；定位/EV 测试还会为两个 profile 启动独立 Python 进程。这些测试不能替代完整 PX4/Gazebo 飞行验收。
 
-起飞地面接触保护的三阶段、独立地面模型、时间域和严格证书交接见 [TAKEOFF_GROUND_SUPPORT.md](TAKEOFF_GROUND_SUPPORT.md)。硬件默认严格模式；当前实际电厂主链仍未通过跟踪验收，结果以 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 为准。失败后落地上锁不能替代自主任务完成。
+起飞地面接触保护的三阶段、独立地面模型、时间域和严格证书交接见 [docs/design/takeoff-ground-support.md](../../docs/design/takeoff-ground-support.md)。硬件默认严格模式；当前实际电厂主链仍未通过跟踪验收，结果以 [docs/validation/issue3-actual-plant.md](../../docs/validation/issue3-actual-plant.md) 为准。失败后落地上锁不能替代自主任务完成。

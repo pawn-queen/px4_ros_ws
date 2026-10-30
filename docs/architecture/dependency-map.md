@@ -19,7 +19,7 @@
 | 运行期（跨仓库） | Host → `px4_powerplant_mission.localization.uwb` | Python import | `Host/uwb_hardware_bridge/solver.py:12` |
 | 运行期（仿真） | PX4 → Gazebo world/models；Gazebo → ROS bridge | 进程/文件 | `Tools/simulation/gz/worlds/powerplant.sdf`；`validation/sitl/run_acceptance.py:319-329` |
 | 测试期 | C++ 测试 → Python 参考实现；Host 测试 → 主工作区解算器 | 反向/跨仓库 | `CMakeLists.txt:98-109`；`Host/README.md:95-100` |
-| 部署期 | 三个工作空间 + Agent + PX4 + 真实传感器 | 人工编排 | `src/px4_powerplant_mission/README.md:65-86`；`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:29` |
+| 部署期 | 三个工作空间 + Agent + PX4 + 真实传感器 | 人工编排 | `src/px4_powerplant_mission/README.md:65-86`；`docs/validation/sitl-acceptance.md:29` |
 
 ## 2. 构建/链接依赖
 
@@ -179,17 +179,17 @@ flowchart LR
 
 | 契约 | 生产者 | 消费者 | 关键字段 | 证据 |
 |---|---|---|---|---|
-| 定位状态 | localization | mapper、controller | `status_stamp_ns`、`status_sequence`、`localization_epoch`、`uwb_input_healthy`、`has_independent_position`、`position_variance_enu_m2` | `localization_node.py:591-651`；`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:42-47` |
-| 地图健康 | mapper | controller | `map_epoch`、`status_sequence`、`localization_healthy`、`pose_last_sample_stamp_ns`、`observed_cloud_fingerprint` | `src/px4_powerplant_mission_cpp/P0_VALIDATION.md:49-58`；`voxel_mapper_node.cpp` 状态发布 |
+| 定位状态 | localization | mapper、controller | `status_stamp_ns`、`status_sequence`、`localization_epoch`、`uwb_input_healthy`、`has_independent_position`、`position_variance_enu_m2` | `localization_node.py:591-651`；`docs/validation/input-map-health.md:42-47` |
+| 地图健康 | mapper | controller | `map_epoch`、`status_sequence`、`localization_healthy`、`pose_last_sample_stamp_ns`、`observed_cloud_fingerprint` | `docs/validation/input-map-health.md:49-58`；`voxel_mapper_node.cpp` 状态发布 |
 | UWB 质量 | UWB 仿真器/Host | localization、EV | `sample_stamp_ns`、`accepted`、`used_anchors`、`rejected_anchors`、`residual_rms_m`、`geometry_condition`、`position_variance_m2`；Host 额外 `kind`/`reason`/`confirmed_running` | `uwb_simulator_node.py:380-390`；`Host/uwb_hardware_bridge/ros_node.py:39-53`；`localization/inputs.py:80-118` |
-| 地图点云 | mapper | controller | `x,y,z,state` 四字段；`state=0` 空闲、`1` 占据、`-1` 不确定 | `src/px4_powerplant_mission/README.md:174`；`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:11` |
+| 地图点云 | mapper | controller | `x,y,z,state` 四字段；`state=0` 空闲、`1` 占据、`-1` 不确定 | `src/px4_powerplant_mission/README.md:174`；`docs/validation/input-map-health.md:11` |
 | 任务状态 | controller | 操作者 | `phase`、`nav_target_enu`、`setpoint_enu`、`command_wait_reason`、`initial_scan_*`、`explore_wait_reason` | `src/px4_powerplant_mission/README.md:150-172` |
 | 巡检事件 | controller | 操作者 | 目标发现、坐标、拍照、返航、降落 | `src/px4_powerplant_mission/README.md:375` |
 | 照片目录 | controller | 文件系统 | `inspection_photo_dir`（绝对路径） | `src/px4_powerplant_mission/config/powerplant.yaml:363` |
 | 运动配置 | 操作者 | mapper/controller | 外参、包络、制动/时延、`motion_model_configured` | `src/px4_powerplant_mission/README.md:405-413`；`src/px4_powerplant_mission/config/p2_hardware.yaml:1-10` |
 | Host 配置 | 操作者 | Host | 串口、Tag ID、Anchor ENU、`coordinates_measured`、噪声/门限 | `Host/uwb_hardware_bridge/config.py:27-80` |
 
-`[事实]` 地图/定位健康协议是跨进程的**字符串 JSON 契约**，不是 ROS 消息字段；字段缺失/旧版本会被 C++ 控制器拒绝（`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:58`）。`[推断]` 这类契约没有 `.msg`/schema 文件，升级时容易漏改一端。
+`[事实]` 地图/定位健康协议是跨进程的**字符串 JSON 契约**，不是 ROS 消息字段；字段缺失/旧版本会被 C++ 控制器拒绝（`docs/validation/input-map-health.md:58`）。`[推断]` 这类契约没有 `.msg`/schema 文件，升级时容易漏改一端。
 
 ## 4. 跨仓库版本耦合
 
@@ -199,7 +199,7 @@ flowchart LR
 | Gazebo 模型 ↔ P2 配置 | 雷达偏移工作树 0.18（未提交）、提交 0.32；`p2_simulation.yaml` 期望 0.42（base_link 0.24 + 0.18） | 干净检出/子模块更新会改变建图输入 | `Tools/simulation/gz/models/x500_depth/model.sdf:17`；`x500_base/model.sdf:4`；`src/px4_powerplant_mission/config/p2_simulation.yaml:6-8` |
 | Gazebo 分支 ↔ `.gitmodules` | `.gitmodules` 声明 PX4 上游 `main`；实际检出 fork `powerplant-sim` 的 2dda48c | `git submodule update --remote` 会丢 `powerplant` world/雷达 | `drone-simulation/.gitmodules:75-78`；`git -C Tools/simulation/gz remote -v` |
 | Host ↔ 主工作区解算器 | Host 运行时 import `solve_uwb_ranges`；记录源码 SHA-256 | 主工作区升级可能改变 Host 行为；无版本断言 | `Host/uwb_hardware_bridge/solver.py:6-20`；`Host/uwb_hardware_bridge/processing.py:119,241-249` |
-| 主工作区 ↔ Gazebo 世界名 | 手工用 `worlds/powerplant.sdf`；P2 用 `validation/sitl/worlds/*.sdf`，但两者 world name 都是 `powerplant` | 话题 `/world/powerplant/*` 相同；模型/内容不同 | `validation/sitl/run_acceptance.py:258`；`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:46`；`powerplant.sdf:3` |
+| 主工作区 ↔ Gazebo 世界名 | 手工用 `worlds/powerplant.sdf`；P2 用 `validation/sitl/worlds/*.sdf`，但两者 world name 都是 `powerplant` | 话题 `/world/powerplant/*` 相同；模型/内容不同 | `validation/sitl/run_acceptance.py:258`；`docs/validation/sitl-acceptance.md:46`；`powerplant.sdf:3` |
 | 主工作区 ↔ UWB 话题 | 仿真 `/uwb/pose`、`/uwb/quality`，硬件 `/uwb/hardware/*` | profile 配错会导致无数据但不报错 | `src/px4_powerplant_mission/config/localization_simulation.yaml`；`localization_hardware.yaml` |
 
 `[推断]` 项目没有“版本矩阵”文件；上述耦合靠 README、脚本默认值和人工记忆维持。`[建议]` 至少在 CI/部署清单中加入：`px4_msgs` SHA、PX4 `git describe`、gz 子模块 SHA、Host 解算器 SHA、`gz sdf -p` 的传感器偏移。
@@ -210,12 +210,12 @@ flowchart LR
 |---|---|---|
 | EV 只能接独立 UWB，不能接导航里程计 | 代码满足：EV 不订阅 `localized_odom_topic` | `external_vision_bridge_node.py:34-38,41`；`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:20` |
 | 单 Tag 不得伪造姿态/速度 | 代码满足：`q=NaN`、速度 `NaN`、姿态方差 `NaN` | `external_vision_bridge_node.py:81-105` |
-| Python legacy 已不能驱动 C++ controller | 源码/入口已删除；只剩 C++ 健康协议 | `src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md` |
+| Python legacy 已不能驱动 C++ controller | 源码/入口已删除；只剩 C++ 健康协议 | `docs/history/migration-status.md` |
 | 仿真源不得在硬件 profile 打开 | launch 默认按 profile 关闭 UWB 仿真/真值/时钟桥 | `src/px4_powerplant_mission/launch/powerplant_system.launch.py:52-55` |
 | 同一 UWB pose 话题只能有一个发布者 | Host 检测 `count_publishers>1` 并拒绝 | `Host/uwb_hardware_bridge/ros_node.py:133-137` |
 | 定位/mapper/控制共享同一 `use_sim_time` | launch 给四个节点传同一参数 | `src/px4_powerplant_mission/launch/powerplant_system.launch.py:78,86,130,148` |
 
-`[推断]` 规则 1/2 是实机安全的关键，但只有单元/契约测试；没有实机故障注入验证（`src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:92`）。
+`[推断]` 规则 1/2 是实机安全的关键，但只有单元/契约测试；没有实机故障注入验证（`docs/history/migration-status.md:92`）。
 
 ## 6. 依赖反模式与缺口
 
@@ -223,7 +223,7 @@ flowchart LR
 |---|---|---|---|
 | 跨仓库源码 import | Host 直接 import 主工作区包 | 部署必须同时安装/`source` 两个工作区；版本漂移不可见 | `Host/uwb_hardware_bridge/solver.py:12`；`Host/package.xml:18` |
 | 冻结 oracle 维护 | C++ `reference_parity` 读 `test/fixtures`；`ros_contract` 仍启动 Python 定位/EV | fixture 与 C++ 行为漂移需评审；Python 只保留运行节点 | `src/px4_powerplant_mission_cpp/test/test_reference_parity.py`；`validation/tests/test_ros_contract.py` |
-| 字符串 JSON 契约 | 定位/地图/UWB 质量均为 `String` | 无 schema、无编译期检查；一端字段变更另一端静默拒绝 | `src/px4_powerplant_mission_cpp/P0_VALIDATION.md:42-58`；`localization/inputs.py:80-118` |
+| 字符串 JSON 契约 | 定位/地图/UWB 质量均为 `String` | 无 schema、无编译期检查；一端字段变更另一端静默拒绝 | `docs/validation/input-map-health.md:42-58`；`localization/inputs.py:80-118` |
 | 绝对路径 | YOLO Python、照片目录、P2 PX4 根目录 | 换用户/换机器（Jetson）即失效 | `src/px4_powerplant_mission/launch/powerplant_system.launch.py:69`；`src/px4_powerplant_mission/config/powerplant.yaml:363`；`validation/sitl/run_acceptance.py:106` |
 | 子模块 URL 自引用 | `.gitmodules` 的 `./src/...` | 干净 clone 无法按文档取子模块 | `.gitmodules:1-6`；`.gitignore:12-13` |
 

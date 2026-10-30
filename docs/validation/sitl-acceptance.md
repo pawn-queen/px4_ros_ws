@@ -5,15 +5,15 @@
 
 本文件给出 P2 的验证入口与证据边界。运行结果以对应目录中的 `report.json` 为准；准备脚本或通过单元测试不等于完成 SITL，更不等于实机验收。编译、测试和 Gazebo 始终串行执行。
 
-2026-10-26 软件阶段已按当时范围完成测试和旧日志核查；其 316 项软件通过及 CPU17 飞行失败保留在第 5 节。2026-10-28 的 Issue #3 已新增真实电厂入口、碰撞资产锁和局部任务 ROI；本轮实际物理、性能与飞行结果集中维护在 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)，不能由历史记录或新命令推定通过。
+2026-10-26 软件阶段已按当时范围完成测试和旧日志核查；其 316 项软件通过及 CPU17 飞行失败保留在第 5 节。2026-10-28 的 Issue #3 已新增真实电厂入口、碰撞资产锁和局部任务 ROI；本轮实际物理、性能与飞行结果集中维护在 [docs/validation/issue3-actual-plant.md](issue3-actual-plant.md)，不能由历史记录或新命令推定通过。
 
-2026-10-29起飞响应同步续改已通过506项直接软件回归，但真实电厂五个允许积分候选全部失败，未生成冻结控制配置，主链仍未通过。仿真控制标定、不可续期的35秒过渡预算、物理离地/返航证据及可重放入口见 [TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)；失败原因、有限实际位移及尚未执行的正式三次主链见最新Issue #3验收记录。代码和测试通过不能替代这部分实际证据。
+2026-10-29起飞响应同步续改已通过506项直接软件回归，但真实电厂五个允许积分候选全部失败，未生成冻结控制配置，主链仍未通过。仿真控制标定、不可续期的35秒过渡预算、物理离地/返航证据及可重放入口见 [docs/design/takeoff-response-sync.md](../design/takeoff-response-sync.md)；失败原因、有限实际位移及尚未执行的正式三次主链见最新Issue #3验收记录。代码和测试通过不能替代这部分实际证据。
 
 ## 0. 正式场景与任务范围
 
 正式仿真使用 `/home/pawn/drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf` 及锁定的 include 资产；两个回归房间虽同名为 `world name=powerplant`，内容不同，不能替代实际电厂验收。`--scenario powerplant` 解析真实文件并检查 `config/powerplant_assets.json` 的本地可检出提交和递归哈希；资源缺失或版本改变时拒绝旧验收。
 
-`explore_min/max_*` 只定义局部任务 ROI，起飞、初扫、接入、绕障、取景和返航使用完整已验证导航证据域。默认 ROI 为 x=[-24,34]、y=[-9,49]、z=[3.5,7] m；`--roi-access-test` 仅在隔离测试覆盖中将 ROI 改为 x=[12,24]、y=[-9,12]、z=[3.5,7] m，使起飞点在任务区域外，不预置航点。任务节点的 `ROI_ACCESS/ROI_WORK` 子模式及预算见 [ISSUE3_IMPLEMENTATION.md](ISSUE3_IMPLEMENTATION.md)。
+`explore_min/max_*` 只定义局部任务 ROI，起飞、初扫、接入、绕障、取景和返航使用完整已验证导航证据域。默认 ROI 为 x=[-24,34]、y=[-9,49]、z=[3.5,7] m；`--roi-access-test` 仅在隔离测试覆盖中将 ROI 改为 x=[12,24]、y=[-9,12]、z=[3.5,7] m，使起飞点在任务区域外，不预置航点。任务节点的 `ROI_ACCESS/ROI_WORK` 子模式及预算见 [docs/design/issue3-collision-and-roi.md](../design/issue3-collision-and-roi.md)。
 
 `powerplant` 默认检测模式为 `none`、结束范围为 `scan`；不填写参数不能暗示执行了完整巡检。`--stop-after scan` 检查起飞初扫进展，`--stop-after roi-access` 检查真实接入运动，达到所需阶段后均通过降落服务和新鲜 landed/disarmed 收尾，报告不具有完整任务资格。完整局部任务需显式 `--stop-after mission`，若还要验收巡检，则必须具有真实目标、合格照片与正的表面覆盖。没有真实标注 fixture 时，实际电厂拒绝 `--detection-mode replay`，不能拿小房间已知圆柱框充当检测证据。
 
@@ -196,7 +196,7 @@ Manifest 记录两套原始/有效 SDF 路径与 SHA256、相机配置尺寸/频
 
 两包 Release 已串行构建；当前 C++/对照/跨进程 ROS 等 colcon 汇总 235 项通过（含 17 个 CTest 外层结果），共享 Python 127 项通过，不将包装数量再次算作直接用例。最终简化碰撞 mesh 501262 面，原视觉 STL 未修改；有限稠密验证集双向最大距离约 19.08 mm。完整/简化碰撞的动态双侧接触、阳性对照及每组 3 条起飞区自由路径已有通过记录。
 
-这些是软件、资产和接触范围的已记录结果；原始传感器性能、针对性 SITL、完整局部任务及照片覆盖的最新通过/失败必须查看 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 和 `log/issue3_powerplant/20261027_204849/` 的实际报告。本节没有将未完成的阶段预先标为通过，也没有覆盖旧 CPU17 失败。
+这些是软件、资产和接触范围的已记录结果；原始传感器性能、针对性 SITL、完整局部任务及照片覆盖的最新通过/失败必须查看 [docs/validation/issue3-actual-plant.md](issue3-actual-plant.md) 和 `log/issue3_powerplant/20261027_204849/` 的实际报告。本节没有将未完成的阶段预先标为通过，也没有覆盖旧 CPU17 失败。
 
 ## 6. P2 逻辑核查与回归覆盖
 
@@ -216,7 +216,7 @@ Manifest 记录两套原始/有效 SDF 路径与 SHA256、相机配置尺寸/频
 
 ### Issue #3 后续实际运行结论（2026-10-28）
 
-实际电厂的资产、传感器和任务ROI验证详见[ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。本机需要显式进程级 `GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA` 才实际选到NVIDIA；runner验证日志真实写入进程，不据环境变量判定。
+实际电厂的资产、传感器和任务ROI验证详见[docs/validation/issue3-actual-plant.md](issue3-actual-plant.md)。本机需要显式进程级 `GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA` 才实际选到NVIDIA；runner验证日志真实写入进程，不据环境变量判定。
 
 明确CPU5Hz降载场景达到约1.02实时因子并进入SAFE_TAKEOFF，随后因停止包络最低点越过确认柱体下界约1.03mm触发FAULT。此记录不是初扫或完整飞行通过；未调控制/健康门限或扩大授权域来掩盖失败。实际GPU采样方向的离线传感器一致性通过也不意味着在线LaserScan名义角度误差已消失。
 
@@ -224,4 +224,4 @@ Manifest 记录两套原始/有效 SDF 路径与 SHA256、相机配置尺寸/频
 
 A—D白名单、45秒固定预算、圆角停止几何、停稳HOLD的1.0/1.25参考选择，以及独立严格策略原子交接已实现。不可变ACK证据绑定同一导航采样及实际NED参考；数值微偏航和ROS/NumPy类型适配已修正。硬件缺省、PX4源码、实际电厂、默认ROI及既有主流程保持。
 
-当前524项直接软件用例通过。实际电厂20候选全部未通过起飞初扫，5次仅通过严格ACK瞬间子项；没有HOVER_SCAN或正式自主主链通过。未冻结参数，未执行通过配置的消融、三次主链或独立ROI接入。此为有界标定失败结论，不能用软件回归或落地COMPLETE替代物理验收。详见[实现原理](TAKEOFF_RESPONSE_SYNC.md)、[完整验收](ISSUE3_VALIDATION.md)与`log/issue3_margin_governor/20261029_1336/`。
+当前524项直接软件用例通过。实际电厂20候选全部未通过起飞初扫，5次仅通过严格ACK瞬间子项；没有HOVER_SCAN或正式自主主链通过。未冻结参数，未执行通过配置的消融、三次主链或独立ROI接入。此为有界标定失败结论，不能用软件回归或落地COMPLETE替代物理验收。详见[实现原理](../design/takeoff-response-sync.md)、[完整验收](issue3-actual-plant.md)与`log/issue3_margin_governor/20261029_1336/`。

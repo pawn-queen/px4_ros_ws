@@ -52,13 +52,13 @@ CPU profile、原始传感器负载、有限阶段及完整任务分别报告。
 
 `validation/model/validate_physics.py` 在同一个实际world中创建临时动态探针，保留接触、位姿、阳性对照及自由通行记录；完整对照只做退化/重复清理，不做减面。性能组固定原始传感器、种子和负载，每组30 s预热+60 s采样。无接触消息本身不能证明空闲，渲染深度/GPU雷达正常也不能证明物理mesh正确。
 
-实际结果与尚未完成项目见 ISSUE3_VALIDATION.md；软件测试和几何检查不代替物理接触、传感器、性能和SITL证据。
+实际结果与尚未完成项目见 docs/validation/issue3-actual-plant.md；软件测试和几何检查不代替物理接触、传感器、性能和SITL证据。
 
 ## 本轮验证新增的关键原理
 
 动态接触使用有限半径球体，不能把中心射线交点当成球体首次碰撞点。补充fixture现在对原始/简化完整表面分别做基于距离1-Lipschitz下界的球体扫掠，保持原起点、速度、半径及2.5cm判据；旧误判被独立几何解释后仍重新运行实际物理测试。`probe_sweep_diagnosis.json`保留前后预期与实际接触，不后验删点。
 
-Gazebo的GPU雷达实际采用立方体纹理最近邻采样。离线验证将默认名义角度与显式、版本绑定的实际纹理方向分开，门限保持，详见[雷达方向原理](research_sources/gz_lidar_ray_convention.md)。这项离线校验不静默改变在线mapper或实机雷达。
+Gazebo的GPU雷达实际采用立方体纹理最近邻采样。离线验证将默认名义角度与显式、版本绑定的实际纹理方向分开，门限保持，详见[雷达方向原理](../research/gz-lidar-ray-convention.md)。这项离线校验不静默改变在线mapper或实机雷达。
 
 当前主机使用硬件渲染的实测进程环境为：
 
@@ -70,7 +70,7 @@ python3 validation/sitl/run_acceptance.py \
   --render-context display --detection-mode none --stop-after scan
 ```
 
-这是明确的降载调试配置，不能代替原始传感器负载性能或完整飞行验收。runner按本次Ogre日志的实际写入进程组/文件描述符确认归属，记录真实GL_RENDERER及哈希；环境变量本身不能证明硬件加速。当前实测已进入SAFE_TAKEOFF并解锁，但停止包络越过确认柱体下界约1.03mm而FAULT，未放宽健康、占据或停止包络门控。见[实际记录](ISSUE3_VALIDATION.md)。
+这是明确的降载调试配置，不能代替原始传感器负载性能或完整飞行验收。runner按本次Ogre日志的实际写入进程组/文件描述符确认归属，记录真实GL_RENDERER及哈希；环境变量本身不能证明硬件加速。当前实测已进入SAFE_TAKEOFF并解锁，但停止包络越过确认柱体下界约1.03mm而FAULT，未放宽健康、占据或停止包络门控。见[实际记录](../validation/issue3-actual-plant.md)。
 
 ## 2026-10-28：地面接触保护续改
 
@@ -78,13 +78,13 @@ python3 validation/sitl/run_acceptance.py \
 
 补齐采样时间、解锁事件时限、会话/epoch/模型版本、异步结果失效、慢速过渡与失败降落证据。修复测试探索60秒误用整趟飞行预算的问题：共享 `explore_max_duration_s=300` 保留，新增 `explore_task_duration_s` 从首次 EXPLORE 开始；默认0，测试显式60。严格交接前需要结束任务时直接降落，不携带地面证书返航。
 
-原理、参数及坐标关系见 [TAKEOFF_GROUND_SUPPORT.md](TAKEOFF_GROUND_SUPPORT.md)。静态与软件通过不能替代实际飞行；当前实飞仍触发原跟踪保护，后续阶段没有通过，详见 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。
+原理、参数及坐标关系见 [docs/design/takeoff-ground-support.md](takeoff-ground-support.md)。静态与软件通过不能替代实际飞行；当前实飞仍触发原跟踪保护，后续阶段没有通过，详见 [docs/validation/issue3-actual-plant.md](../validation/issue3-actual-plant.md)。
 
 ## 2026-10-29：起飞响应同步
 
-本轮在上述地面支持证书上增加启动意图/物理响应分离、采样时间预测风险及BRAKING→HOLD恢复锁存、一次性完整过渡预算和独立SITL控制标定。首次上升采用已发布HOLD偏航，保持地面禁止转向；物理响应要求实际起落架净空下界、新导航样本及新鲜离地状态，预测交接不能代替实时严格ACK。完整设计、参数、默认launch与审计后临时profile的区别见 [TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)。
+本轮在上述地面支持证书上增加启动意图/物理响应分离、采样时间预测风险及BRAKING→HOLD恢复锁存、一次性完整过渡预算和独立SITL控制标定。首次上升采用已发布HOLD偏航，保持地面禁止转向；物理响应要求实际起落架净空下界、新导航样本及新鲜离地状态，预测交接不能代替实时严格ACK。完整设计、参数、默认launch与审计后临时profile的区别见 [docs/design/takeoff-response-sync.md](takeoff-response-sync.md)。
 
-506项直接软件回归通过；实际电厂全部五个允许积分候选失败，未冻结配置，主链仍未通过。本轮不修改PX4源码、硬件缺省、场景、碰撞或ROI，不提交/推送。失败日志及下一步边界见 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。
+506项直接软件回归通过；实际电厂全部五个允许积分候选失败，未冻结配置，主链仍未通过。本轮不修改PX4源码、硬件缺省、场景、碰撞或ROI，不提交/推送。失败日志及下一步边界见 [docs/validation/issue3-actual-plant.md](../validation/issue3-actual-plant.md)。
 
 ## 2026-10-29续改：SITL过渡白名单与严格交接证据
 
@@ -94,4 +94,4 @@ A—D过渡策略与严格策略分别作为不可变limits输入，绑定policy
 
 ACK新增不可变状态/参考/包络/策略快照及源采样时间；验收独立匹配导航、发布与接触边界。修正float32/NumPy布尔类型适配、微小偏航/横移数值差产生禁止运动的规划缺陷。依赖显式声明python3-numpy。参数仅IDLE修改，原顶层状态/话题保留，PX4与硬件缺省不改。
 
-原理与论文借鉴见[TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)。524项软件回归通过；实际20候选均未过初扫，5次严格ACK子项通过不代表整体任务通过。完整证据及剩余控制/导航/时钟问题见[ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md)。
+原理与论文借鉴见[docs/design/takeoff-response-sync.md](takeoff-response-sync.md)。524项软件回归通过；实际20候选均未过初扫，5次严格ACK子项通过不代表整体任务通过。完整证据及剩余控制/导航/时钟问题见[docs/validation/issue3-actual-plant.md](../validation/issue3-actual-plant.md)。

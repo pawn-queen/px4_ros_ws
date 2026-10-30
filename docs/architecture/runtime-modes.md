@@ -99,7 +99,7 @@ flowchart LR
 - `ROS_DOMAIN_ID=25`、`GZ_PARTITION=powerplant-p2-<pid>`、`GZ_IP=127.0.0.1`；
 - Agent 端口 `8889`，`PX4_PARAM_UXRCE_DDS_PRT=8889`；
 - `PX4_GZ_WORLD=powerplant`、`PX4_SIM_MODEL=gz_x500_depth`、`PX4_GZ_MODELS` 指向本地模型或外部模型；P2 的 Gazebo server 实际加载 `validation/sitl/worlds/<scenario>.sdf`（`:258`）；
-- `PX4_PARAM_UXRCE_DDS_SYNCT=0`，定位/EV 的 `px4_timestamp_domain=ros`（`:276-279`；`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:45`）；
+- `PX4_PARAM_UXRCE_DDS_SYNCT=0`，定位/EV 的 `px4_timestamp_domain=ros`（`:276-279`；`docs/validation/sitl-acceptance.md:45`）；
 - 独立 `px4_rootfs`，`etc` 只读符号链接到构建产物（`:285-289`）。
 
 `[推断]` 这套隔离避免与手工运行的 PX4/Agent 抢占端口和参数；但 `ROS_DOMAIN_ID=25` 与正常手工运行的默认域不同，调试时必须显式设置同一域。
@@ -207,7 +207,7 @@ flowchart LR
 | Windows 文件 | UWB 工作区在 `/mnt/c`，Host 可在 Windows 或 WSL 运行 | 不涉及 `/mnt/c` |
 | 串口 | WSL 需人工 USB 接入/转发 | 直接 `/dev/serial/by-id/...` |
 | DDS | 本机 Fast DDS 异常；Cyclone+LOCALHOST 可恢复同机通信 | 需重新验证；不能假设 WSL 结论成立 |
-| 证据 | 本机 `uname`、`lsb_release`；`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:62-78`；`Host/README.md:111` | `[推断]`，未在原生机运行 |
+| 证据 | 本机 `uname`、`lsb_release`；`docs/validation/input-map-health.md:62-78`；`Host/README.md:111` | `[推断]`，未在原生机运行 |
 
 `[事实]` 本机是 `Ubuntu 24.04.4 LTS`、WSL2 内核 `6.18.33.2-microsoft-standard-WSL2`、`x86_64`、ROS `jazzy`（本次命令输出）。仓库没有针对 WSL 的代码分支；差异主要在 DDS、USB、GPU/内存。
 
@@ -262,8 +262,8 @@ flowchart LR
 | PX4 时间域 | P2 锁步用 `px4_timestamp_domain=ros`，`UXRCE_DDS_SYNCT=0` | 默认 `system`，依赖 uXRCE 时间同步 | `validation/sitl/run_acceptance.py:276-279,300`；`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:82-84` |
 | 坐标 | PX4 NED/FRD ↔ ROS ENU/FLU；`map` 与 PX4 local NED 原点对齐 | 同左，需实测锚点/外参 | `common/frames.py:1-12`；`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:62-76` |
 | UWB 时间 | 每个 Gazebo 采样时间生成一组测距 | Host 用测量 UTC 时间，保留到 `timestamp_sample` | `uwb_simulator_node.py:232-245`；`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:82-84` |
-| 健康/epoch | `status_stamp_ns/sequence/localization_epoch`；PX4 reset/时钟回退换 epoch | 同左 | `localization_node.py:591-651`；`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:42-58` |
-| 地图协议 | `map_epoch/sequence/observed_cloud_fingerprint` | 同左 | `src/px4_powerplant_mission_cpp/P0_VALIDATION.md:49-58` |
+| 健康/epoch | `status_stamp_ns/sequence/localization_epoch`；PX4 reset/时钟回退换 epoch | 同左 | `localization_node.py:591-651`；`docs/validation/input-map-health.md:42-58` |
+| 地图协议 | `map_epoch/sequence/observed_cloud_fingerprint` | 同左 | `docs/validation/input-map-health.md:49-58` |
 
 `[推断]` 时钟域是这套系统最容易被“看起来能跑”掩盖的接口：同一份代码在仿真用 `ros` 域、实机用 `system` 域；如果 launch/参数被手工覆盖，UWB 样本会被判过期或 EV 不融合，但节点仍可能正常启动。
 
@@ -271,13 +271,13 @@ flowchart LR
 
 | 检查 | 结果 | 证据 |
 |---|---|---|
-| runtime C++/契约测试 | 392 项，0 失败 | 本机 `colcon test-result --test-result-base build/px4_powerplant_mission_cpp` |
+| runtime C++/契约测试 | 244 项，0 失败 | 本机 `colcon test-result --test-result-base build/px4_powerplant_mission_cpp` |
 | Python 回归 | 72 项，0 失败（删除 legacy 后） | 本机 `pytest src/px4_powerplant_mission/test` |
 | validation 回归 | 148 项，0 失败 | 本机 `pytest validation/tests` |
 | 最新完整 SITL | **未通过**：`passed=false`，`exit_reason=mission_fault`；阶段 `IDLE→START→SAFE_TAKEOFF→FAULT` | `log/p2_sitl_cpu_17/report.json` |
 | 失败原因 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE`，在起飞段触发安全停止 | `log/p2_sitl_cpu_17/events.jsonl` |
-| 原始传感器负载 | 未通过健康启动；CPU 10 Hz 仍慢于实时 | `src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:32` |
-| 实机 | 未验证 | `Host/README.md:102-111`；`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:78` |
+| 原始传感器负载 | 未通过健康启动；CPU 10 Hz 仍慢于实时 | `docs/history/migration-status.md:32` |
+| 实机 | 未验证 | `Host/README.md:102-111`；`docs/validation/input-map-health.md:78` |
 
 `[推断]` 当前状态是“架构与单元契约基本成形，完整闭环仍在调试”。测试通过说明接口/算法回归受控，不说明飞行能力；最新 SITL 失败说明运动证书/跟踪门限与 PX4 起飞响应仍未对齐。
 

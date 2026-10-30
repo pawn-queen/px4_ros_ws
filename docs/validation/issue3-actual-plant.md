@@ -87,7 +87,7 @@
 
 已重新采集 `sensor_validation_bound_renderer/`，记录真实加载的gz-rendering8.2.3、OgreNext/GL3Plus2.3.3库、5个材质/compositor/shader文件及哈希、Ogre注册目录、Scene父链和原始消息。显式 `--lidar-ray-convention gz-rendering8-cubemap-nearest` 严格版本校验后的 `sensor_geometry_actual_rays.json` **PASS**：深度899个clean样本p95=0.02653785m；雷达175个clean样本p95=0.00059017m。8cm/5cm门限未改变，缺少版本证据的旧样本不能按此模式宣称通过。
 
-默认nominal模式保持原有名义角度语义。**在线mapper仍按LaserScan名义角度投影，其距离相关量化误差是否被地图安全裕量覆盖仍需单独验证**；不能把这个离线通过当作在线角度误差已修复，更不能把GPU模型用于实机驱动。原理与源码见 `research_sources/gz_lidar_ray_convention.md`、`SENSOR_DIAGNOSIS.md`。
+默认nominal模式保持原有名义角度语义。**在线mapper仍按LaserScan名义角度投影，其距离相关量化误差是否被地图安全裕量覆盖仍需单独验证**；不能把这个离线通过当作在线角度误差已修复，更不能把GPU模型用于实机驱动。原理与源码见 `docs/research/gz-lidar-ray-convention.md`、`SENSOR_DIAGNOSIS.md`。
 
 ## 真实场景 SITL：尚未通过
 
@@ -165,7 +165,7 @@ Python包构建及4组相关回归通过，93个直接用例零失败/错误/跳
 
 ## 2026-10-29：起飞响应同步与有限控制标定
 
-证据根目录：`log/issue3_response_sync/20261029_0150/`。实现原理和入口见 [TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)。本轮没有修改PX4源码、实机覆盖、实际world、建筑/碰撞资产、默认任务ROI或自主规划；没有提交或推送。原始 `x500_depth` 已有修改保留。
+证据根目录：`log/issue3_response_sync/20261029_0150/`。实现原理和入口见 [docs/design/takeoff-response-sync.md](../design/takeoff-response-sync.md)。本轮没有修改PX4源码、实机覆盖、实际world、建筑/碰撞资产、默认任务ROI或自主规划；没有提交或推送。原始 `x500_depth` 已有修改保留。
 
 ### 软件与集成：通过
 
@@ -223,7 +223,7 @@ Python包构建及4组相关回归通过，93个直接用例零失败/错误/跳
 
 按所有允许候选失败分支停止。没有governor关闭对照、默认ROI三次主链或独立ROI接入通过证据。实际时长倍率本组均为1.0，1.25及无候选恢复由软件回归覆盖；没有通过消融对，不能声称参数/几何/参考管理已提高任务成功率。Issue #3保持OPEN，代码/模型不提交、不推送。
 
-原理见 [TAKEOFF_RESPONSE_SYNC.md](TAKEOFF_RESPONSE_SYNC.md)，完整记录见 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 及工作区 `log/issue3_margin_governor/20261029_1336/VALIDATION.md`、`final_summary.json`、`calibration_v6/`。旧35秒/五积分失败保留为历史基线，不混入新队列。
+原理见 [docs/design/takeoff-response-sync.md](../design/takeoff-response-sync.md)，完整记录见 [docs/validation/issue3-actual-plant.md](issue3-actual-plant.md) 及工作区 `log/issue3_margin_governor/20261029_1336/VALIDATION.md`、`final_summary.json`、`calibration_v6/`。旧35秒/五积分失败保留为历史基线，不混入新队列。
 
 | 策略/I | 故障/降落前模型原点最大上升(m) | 严格ACK瞬间子项 | 首要退出原因 |
 |---|---:|---|---|
