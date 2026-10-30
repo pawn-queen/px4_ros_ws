@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+import shutil
 import struct
 import pytest
 
@@ -339,6 +340,8 @@ def test_takeoff_audit_refuses_collision_candidate_and_binds_actual_config(tmp_p
 
 def test_collision_comparison_verifies_actual_nested_mesh_selection(tmp_path):
     import numpy as np
+    if not shutil.which('gz'):
+        pytest.skip('Gazebo CLI is unavailable')
     s=VALIDATION/'model/validate_physics.py'
     spec=importlib.util.spec_from_file_location('collision_physics',s)
     physics=importlib.util.module_from_spec(spec);spec.loader.exec_module(physics)
