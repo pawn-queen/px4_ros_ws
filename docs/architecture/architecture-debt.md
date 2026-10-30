@@ -23,7 +23,7 @@
 
 | ID | 严重度 | 问题 | 直接影响 | 证据 |
 |---|---|---|---|---|
-| D1 | **S2** | 本次 docs/project-context 拆分未提交 | 干净检出仍是旧文档路径；索引/链接/CMake 安装清单无法复现 | `git status` 的 docs rename/新增 |
+| D1 | **已关闭** | docs/project-context 拆分已提交 | 干净检出可复现；后续文档改动仍需 PR | `7741be72`；`git status` |
 | D2 | **S1** | PX4/Gazebo/消息版本靠人工同步 | `FailsafeFlags` 字段漂移；雷达偏移/世界依赖未提交修改 | `px4_msgs` vs PX4；gz `M model.sdf` |
 | D3 | **S1** | Jetson/实机部署路径缺失 | 无法回答“上机怎么启动/回滚/监控” | 无 aarch64/Docker/systemd；`.p0_deps` 仅 amd64 |
 | D4 | **S1** | DDS 依赖本机 Cyclone+LOCALHOST 临时配置 | 跨机/Windows Host/Jetson 通信未证明 | `docs/validation/input-map-health.md:62-78` |
@@ -52,25 +52,25 @@ flowchart TB
 
 ## 3. 详细条目
 
-### D1 本次 docs 拆分未提交
+### D1 docs 拆分已提交
 
 **事实**
 
-- 拆分前仓库为 `2ae88109` 且工作树干净。
-- 当前工作树把 C++ package 的 9 份阶段/工作项文档和研究文档迁到根 `docs/design|validation|history|research`，并新增 `GLOSSARY.md`、`docs/README.md`、`docs/adr/`。
-- CMake 的文档安装清单已改为只安装 runtime README 和 `research_sources/sitl_body_envelope.json`。
-- 尚未提交；干净检出仍是旧文档路径。
+- `docs/project-context` 已以 `7741be72` 提交并合入 `main`。
+- C++ package 的 9 份阶段/工作项文档和研究文档已迁到根 `docs/design|validation|history|research`；新增 `GLOSSARY.md`、`docs/README.md`、`docs/adr/`。
+- CMake 的文档安装清单只安装 runtime README 和 `research_sources/sitl_body_envelope.json`。
+- 当前工作树干净；本轮没有未提交的文档改动。
 
 **影响**
 
-- `[推断]` 在提交前，新的文档索引、分类和安装策略无法从仓库历史复现。
-- `[事实]` 若现在切回 HEAD，旧路径仍在，新文档链接和 CMake 安装清单不一致。
+- `[事实]` 文档索引、分类和安装清单可从该提交复现。
+- `[推断]` 后续新增文档仍需遵守 `GLOSSARY.md` 的分类和命名规则，否则会重新产生漂移。
 
 **建议**
 
-1. 将文档移动、索引、ADR、链接和 CMake 安装清单一并提交。
-2. 在干净 clone 上运行 `colcon build` 和链接检查。
-3. 在提交信息中注明本轮只改文档/安装边界，不改变 runtime 行为。
+1. 新增文档先放进现有分类，再在 `AGENTS.md` 或 `docs/README.md` 加入口。
+2. 文档搬迁后同时更新相对链接和 CMake 安装清单。
+3. 保持“当前设计/验证/历史”三者的状态区分。
 
 **置信度**：事实。
 

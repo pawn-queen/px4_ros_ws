@@ -1,8 +1,8 @@
 # 室内无人机项目：系统架构总览（决策者版）
 
 > **文档性质**：架构普查（初始只读）+ 2026-10-30 Python legacy 删除实施记录；本次删除已按用户明确授权执行。
-> **证据基线**：2026-10-30，`px4_ros_ws` 工作树（HEAD `2ae88109` + 本次未提交的 docs/project-context 拆分）、`UWB-loaclization` 工作树（HEAD `fb5f43d`）、`drone-simulation` 工作树（HEAD `d0a0e3cc3c`，`Tools/simulation/gz` 子模块有未提交修改）。
-> **重要前提**：下文描述的是**当前工作树**，不是某个干净提交的可复现状态。本次 docs/project-context 拆分尚未提交，见 [architecture-debt.md](architecture-debt.md#d1-本次-docs-拆分未提交)。
+> **证据基线**：2026-10-30，`px4_ros_ws` 工作树（HEAD `7741be72`，docs/project-context 拆分已提交）、`UWB-loaclization` 工作树（HEAD `fb5f43d`）、`drone-simulation` 工作树（HEAD `d0a0e3cc3c`，`Tools/simulation/gz` 子模块有未提交修改）。
+> **重要前提**：`docs/project-context` 已在 `7741be72` 提交，当前工作树干净。D1 已关闭；后续变更仍通过 PR 提交。
 >
 > 标签约定：`[事实]` 有文件、行号或命令输出支撑；`[推断]` 由事实推导但未实测；`[建议]` 改进方向；`[待核实]` 本地无证据。
 >
@@ -92,7 +92,7 @@ flowchart LR
 
 | # | 问题 | 影响 | 证据/详情 |
 |---|---|---|---|
-| 1 | **本次 docs 拆分未提交** | 干净检出仍是旧文档路径；索引/链接/CMake 安装清单无法复现 | [D1](architecture-debt.md#d1-本次-docs-拆分未提交)；`git status` |
+| 1 | **docs 拆分已提交** | 干净检出可复现；后续文档改动仍需 PR | [D1](architecture-debt.md#d1-docs-拆分已提交)；`git status` |
 | 2 | **PX4/Gazebo/消息版本靠人工同步** | Gazebo 雷达安装偏移依赖子模块未提交修改；`FailsafeFlags`/`AuxGlobalPosition` 字段集与本地 PX4 不一致；两套 world 同名 | [D2](architecture-debt.md#d2-跨仓库版本与模型偏移漂移) |
 | 3 | **没有实机/Jetson 部署闭环** | 不能回答“上机后怎么启动、怎么回滚、怎么监控” | [D3](architecture-debt.md#d3-jetson-实机部署路径缺失) |
 | 4 | **DDS 通信依赖本机 Cyclone + LOCALHOST 临时配置** | Windows Host、跨计算机、Jetson 的链路未验证 | [D4](architecture-debt.md#d4-dds-通信依赖本机临时配置) |
@@ -101,7 +101,7 @@ flowchart LR
 
 ## 建议的下一步（不改代码）
 
-1. **先冻结可复现基线**：提交本次 docs/project-context 拆分、索引和安装清单；修正 `.gitmodules`/`.gitattributes`、提交或回退 Gazebo 雷达偏移；在干净 clone 上重跑构建与 SITL。`[建议]`
+1. **保持可复现基线**：docs/project-context 已提交；后续变更仍需 PR 和干净构建；修正 `.gitmodules`/`.gitattributes`、提交或回退 Gazebo 雷达偏移；在干净 clone 上重跑构建与 SITL。`[建议]`
 2. **定义唯一部署目标**：确认 Jetson 型号、Ubuntu/ROS 版本、UWB/Host 与飞控的连接方式；补一份部署清单和 systemd/容器方案，再谈性能。`[建议]`
 3. **把 DDS 选型变成验收项**：在目标机器上分别验证 Cyclone 与 Fast DDS、同机/跨机、Windows Host 到 WSL/Jetson 的发现与传输。`[建议]`
 4. **完成一次受控实机地面链**：单 Anchor—Tag 已知距离 → 四锚非共面 → Host→EV→PX4 EKF，逐级记录串口、时间、残差与拒绝原因。`[建议]`
