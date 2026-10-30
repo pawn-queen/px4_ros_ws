@@ -132,6 +132,15 @@ jobs:
         with:
           submodules: recursive
 
+      # 只建 px4_msgs：ros2 topic echo 需要它能解析 VehiclesStatus 之类的消息类型。
+      # 不建的话 ros2 topic list -t 只会给出 [unknown type]，echo 必然失败。
+      - name: Build px4_msgs for message types
+        run: |
+          set -eo pipefail
+          source /opt/ros/jazzy/setup.bash
+          colcon build --packages-select px4_msgs \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+
       - name: Run SITL smoke
         env:
           SCENARIO: ${{ github.event.inputs.scenario || 'default' }}
@@ -145,7 +154,9 @@ jobs:
             world="$PWD/src/px4_powerplant_mission_cpp/test/worlds/p2_room.sdf"
           fi
           echo "world=$world"
-          PX4_ROOT="$px4_root" PX4_WORLD="$world" bash scripts/ci/sitl_smoke.sh "$TIMEOUT_S"
+          WORKSPACE_SETUP="$PWD/install/setup.bash" \
+            PX4_ROOT="$px4_root" PX4_WORLD="$world" \
+            bash scripts/ci/sitl_smoke.sh "$TIMEOUT_S"
 
       - name: Upload smoke logs
         if: always()
