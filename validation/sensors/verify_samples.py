@@ -11,6 +11,7 @@ import argparse
 import copy
 from collections import Counter
 import hashlib
+import importlib.util
 import json
 import math
 from pathlib import Path
@@ -240,7 +241,11 @@ def particle_bounds(world, evaluator):
 
 
 def scenes(px4_root):
-    from run_p2_sitl import VisualSceneEvaluator
+    runner_path = Path(__file__).resolve().parents[1] / "sitl/run_acceptance.py"
+    spec = importlib.util.spec_from_file_location("run_acceptance", runner_path)
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    VisualSceneEvaluator = runner.VisualSceneEvaluator
     from vtkmodules.vtkIOGeometry import vtkSTLReader
     from vtkmodules.vtkCommonDataModel import vtkStaticCellLocator
     asset_root = px4_root / "Tools/simulation/gz"
@@ -337,7 +342,7 @@ def main():
     args = parser.parse_args()
     folder = args.samples_dir.resolve()
     output = args.output or folder / "sensor_geometry_report.json"
-    from powerplant_lidar_rays import RendererEvidenceUnavailable, predict_scan, verify_renderer_evidence
+    from lidar_rays import RendererEvidenceUnavailable, predict_scan, verify_renderer_evidence
     try:
         import numpy as np
         from gz.msgs10.image_pb2 import Image, R_FLOAT32, RGB_INT8, BGR_INT8, RGBA_INT8, BGRA_INT8

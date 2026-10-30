@@ -4,7 +4,7 @@
 
 ## 2026-10-30：Python mapper/controller 已移除
 
-按用户确认的删除方案，Python `voxel_mapper_node`/`offboard_mission_node` 及其专用 `mapping/`、`path_planning/`、`common/initial_scan.py`、相关测试已删除；`setup.py` 移除两个入口，launch 移除 `mapping_package`/`control_package` 回退参数。C++ 测试的旧行为基准改为 `src/px4_powerplant_mission_cpp/test/fixtures/` 下的冻结 fixture，不再在测试运行时 import Python legacy。该删除是在用户明确豁免 Q9=A 的情况下执行的：完整 SITL 和实机地面链仍未通过，不能把删除当作飞行验收。删除后本机 P0 baseline：C++ 400 项、Python 72 项，均 0 失败；双进程 ROS 探针通过。
+按用户确认的删除方案，Python `voxel_mapper_node`/`offboard_mission_node` 及其专用 `mapping/`、`path_planning/`、`common/initial_scan.py`、相关测试已删除；`setup.py` 移除两个入口，launch 移除 `mapping_package`/`control_package` 回退参数。C++ 测试的旧行为基准改为 `src/px4_powerplant_mission_cpp/test/fixtures/` 下的冻结 fixture，不再在测试运行时 import Python legacy。该删除是在用户明确豁免 Q9=A 的情况下执行的：完整 SITL 和实机地面链仍未通过，不能把删除当作飞行验收。 2026-10-30 后 validation 脚本路径已迁移；下文历史命令中的旧名称只作记录，当前入口见 `validation/README.md`。删除后本机 P0 baseline：runtime C++ 392 项、validation 148 项、Python 72 项，均 0 失败；双进程 ROS 探针通过。
 
 ## 2026-10-29：A—D过渡策略、圆角停止几何与参考管理（最新）
 
@@ -43,7 +43,7 @@
 
 本轮已记录的验证：两包 Release 串行构建通过；C++/对照/跨进程 ROS 等 `colcon` 汇总 **235 项通过**（含 17 个 CTest 外层结果，不重复计数）；共享 Python **127 项通过**。完整和简化 mesh 的动态双侧接触、阳性接触对照及 3 条起飞区自由路径已有通过证据。对应运行目录为 `log/issue3_powerplant/20261027_204849/`。
 
-正式场景入口为 `run_p2_sitl.py --scenario powerplant`；`room/two_rooms` 继续作回归。`--stop-after scan`、`--roi-access-test --stop-after roi-access` 与 `--stop-after mission` 分别标记起飞初扫、接入进展和局部任务范围；真实电厂没有已核验标注 fixture 时，拒绝复用小房间圆柱检测重放。本轮417个直接软件用例通过；正确绑定资源后的六组原始传感器负载成本对照通过5%退化检查，旧未绑定对照作废。**SITL仍未通过，完整巡检未验收**，具体范围以 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 为准。
+正式场景入口为 `run_acceptance.py --scenario powerplant`；`room/two_rooms` 继续作回归。`--stop-after scan`、`--roi-access-test --stop-after roi-access` 与 `--stop-after mission` 分别标记起飞初扫、接入进展和局部任务范围；真实电厂没有已核验标注 fixture 时，拒绝复用小房间圆柱检测重放。本轮417个直接软件用例通过；正确绑定资源后的六组原始传感器负载成本对照通过5%退化检查，旧未绑定对照作废。**SITL仍未通过，完整巡检未验收**，具体范围以 [ISSUE3_VALIDATION.md](ISSUE3_VALIDATION.md) 为准。
 
 ## 2026-10-26：P2 软件逻辑核查与回归完成
 
@@ -104,7 +104,7 @@ SITL 已实际启动隔离 PX4、Agent、Gazebo 与任务栈，保留至 CPU17 �
 
 上述为 **208 个直接测试用例**。`colcon test-result` 的 105 项还包括 10 个 CTest 外层结果，不是额外行为用例。射线测试包含 200 组独立线段/AABB 几何对照；增量索引包含随机全量参考对照与旧快照不变性；初扫包含旧帧、倾角/质量拒绝、缺失深度及雷达失鲜；视点测试验证不能仅靠计数完成观测。
 
-复现命令仍为 `scripts/run_p0_baseline.sh`，名字为保留原入口，CMake 已纳入 P1 全部测试。结构化结果位于 `build/px4_powerplant_mission_cpp/test_results/` 和 `log/p0_baseline/`。
+复现命令仍为 `validation/baseline/run_baseline.sh`，名字为保留原入口，CMake 已纳入 P1 全部测试。结构化结果位于 `build/px4_powerplant_mission_cpp/test_results/` 和 `log/p0_baseline/`。
 
 **边界：**当前相机模型要求已校正 pinhole 深度与 CameraInfo.K 匹配；未来视点假设水平飞行，未增加任意安装旋转。路径仍为离散已知空闲几何路径，未实现连续机体碰撞证明、动力学制动或动态障碍预测。未完成完整 PX4/Gazebo 飞行、真实传感器标定及大型地图/YOLO 并行负载下的尾延迟测量，不据此宣称性能加速比或实飞验收通过。下方 P0 记录保留当时结果。
 
@@ -135,7 +135,7 @@ SITL 已实际启动隔离 PX4、Agent、Gazebo 与任务栈，保留至 CPU17 �
 
 跨进程定位测试实际启动独立的 localization、EV 和注入/断言进程，分别使用 simulation/hardware profile；检查独立 UWB→EV、PX4→完整导航，停止 UWB 后导航协方差退化且新 PX4 状态不产生 EV 反馈。这里使用合成 ROS 消息，没有连接 Host 串口硬件。
 
-运行入口、依赖锁定、配置及新协议见 [P0_VALIDATION.md](P0_VALIDATION.md)。`scripts/run_p0_baseline.sh` 串行运行探针、C++/对照/跨进程测试和 Python 回归并保存结果；不会启动 Gazebo、Agent、真实飞控或电机。下方 2026-10-24/21 的“未通过”是历史结果，本轮仅在上述新 middleware 配置下解决同机通信；不能据此断言默认 Fast DDS 已修好。
+运行入口、依赖锁定、配置及新协议见 [P0_VALIDATION.md](P0_VALIDATION.md)。`validation/baseline/run_baseline.sh` 串行运行探针、C++/对照/跨进程测试和 Python 回归并保存结果；不会启动 Gazebo、Agent、真实飞控或电机。下方 2026-10-24/21 的“未通过”是历史结果，本轮仅在上述新 middleware 配置下解决同机通信；不能据此断言默认 Fast DDS 已修好。
 
 **仍待验收：**完整 PX4/Gazebo 飞行、Agent/PX4 与所选 DDS 的实际互通、真实 UWB/相机/雷达标定及故障数据、起飞顶棚净空、PX4 Offboard-loss 配置和反应、连续动力学制动与真实电量裕量。LOCALHOST 基线不验证 Windows Host 或跨计算机 DDS。原 Python mapper/controller 已于 2026-10-30 删除；建图/控制只保留 C++ 实现。
 

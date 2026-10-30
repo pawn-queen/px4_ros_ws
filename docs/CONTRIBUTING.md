@@ -81,12 +81,12 @@ bash scripts/ci/sitl_smoke.sh 180
 ```
 
 只验证 PX4 SITL + Gazebo + uXRCE-DDS + ROS 2 是否连通。任务级验收请用
-`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py`，两者的结论不能互相代替。
+`validation/sitl/run_acceptance.py`，两者的结论不能互相代替。
 
 ### 完整基线（较慢，跑之前先确认机器空闲）
 
 ```bash
-bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
+bash validation/baseline/run_baseline.sh
 ```
 
 ## 6. Review

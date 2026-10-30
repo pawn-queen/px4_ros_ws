@@ -2,7 +2,7 @@
 
 > **2026-10-30 更新**：Python mapper/controller 已删除；`mapping_package`/`control_package` 已移除，建图/控制固定为 C++。本文中“Python 回退/双栈”段落是删除前历史。
 
-> **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…`、`scripts/…` 相对于 `src/px4_powerplant_mission_cpp/`；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
+> **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…` 相对于 `src/px4_powerplant_mission_cpp/`；`validation/…`、`tools/…` 相对于仓库根；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
 
 > 证据基线：2026-10-26 工作树。本文把依赖分成**构建期**、**运行期**、**测试期**和**部署期**，避免把“package.xml 声明”“import”“DDS 话题”混为一谈。  
 > 标签：`[事实]` / `[推断]` / `[建议]` / `[待核实]`。  
@@ -17,7 +17,7 @@
 | 构建期（UWB Host） | `ament_python`、rclpy、geometry_msgs、std_msgs、std_srvs、PyYAML、pyserial、NumPy | 包 → ROS/Python 库 | `Host/package.xml:2-19` |
 | 运行期（ROS） | `/fmu/*`、`/uwb/*`、`/powerplant/*`、`/clock` | 节点 ↔ DDS | 见第 3 节 |
 | 运行期（跨仓库） | Host → `px4_powerplant_mission.localization.uwb` | Python import | `Host/uwb_hardware_bridge/solver.py:12` |
-| 运行期（仿真） | PX4 → Gazebo world/models；Gazebo → ROS bridge | 进程/文件 | `Tools/simulation/gz/worlds/powerplant.sdf`；`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:319-329` |
+| 运行期（仿真） | PX4 → Gazebo world/models；Gazebo → ROS bridge | 进程/文件 | `Tools/simulation/gz/worlds/powerplant.sdf`；`validation/sitl/run_acceptance.py:319-329` |
 | 测试期 | C++ 测试 → Python 参考实现；Host 测试 → 主工作区解算器 | 反向/跨仓库 | `CMakeLists.txt:98-109`；`Host/README.md:95-100` |
 | 部署期 | 三个工作空间 + Agent + PX4 + 真实传感器 | 人工编排 | `src/px4_powerplant_mission/README.md:65-86`；`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:29` |
 
@@ -109,7 +109,7 @@ flowchart LR
   CT --> FIX["test/fixtures 冻结 oracle"]
   HT["Host pytest"] --> HS["Host 运行时"]
   HS --> PY2["px4_powerplant_mission.localization.uwb"]
-  CT --> SDF["p2_room.sdf / p2_two_rooms.sdf"]
+  CT --> SDF["room.sdf / two_rooms.sdf"]
 ```
 
 `[事实]` `reference_parity` 现在读取 `test/fixtures`，不再 import Python legacy；`ros_contract` 仍启动 Python localization/EV 节点，并设置 `ROS_DOMAIN_ID=173`。Host 测试通过 `PYTHONPATH:.:/home/pawn/px4_ros_ws/src/px4_powerplant_mission` 复用解算器（`Host/README.md:95-100`）。`[推断]` 跨仓库测试仍依赖主工作区源码/install。
@@ -199,7 +199,7 @@ flowchart LR
 | Gazebo 模型 ↔ P2 配置 | 雷达偏移工作树 0.18（未提交）、提交 0.32；`p2_simulation.yaml` 期望 0.42（base_link 0.24 + 0.18） | 干净检出/子模块更新会改变建图输入 | `Tools/simulation/gz/models/x500_depth/model.sdf:17`；`x500_base/model.sdf:4`；`src/px4_powerplant_mission/config/p2_simulation.yaml:6-8` |
 | Gazebo 分支 ↔ `.gitmodules` | `.gitmodules` 声明 PX4 上游 `main`；实际检出 fork `powerplant-sim` 的 2dda48c | `git submodule update --remote` 会丢 `powerplant` world/雷达 | `drone-simulation/.gitmodules:75-78`；`git -C Tools/simulation/gz remote -v` |
 | Host ↔ 主工作区解算器 | Host 运行时 import `solve_uwb_ranges`；记录源码 SHA-256 | 主工作区升级可能改变 Host 行为；无版本断言 | `Host/uwb_hardware_bridge/solver.py:6-20`；`Host/uwb_hardware_bridge/processing.py:119,241-249` |
-| 主工作区 ↔ Gazebo 世界名 | 手工用 `worlds/powerplant.sdf`；P2 用 `test/worlds/p2_*.sdf`，但两者 world name 都是 `powerplant` | 话题 `/world/powerplant/*` 相同；模型/内容不同 | `src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:258`；`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:46`；`powerplant.sdf:3` |
+| 主工作区 ↔ Gazebo 世界名 | 手工用 `worlds/powerplant.sdf`；P2 用 `validation/sitl/worlds/*.sdf`，但两者 world name 都是 `powerplant` | 话题 `/world/powerplant/*` 相同；模型/内容不同 | `validation/sitl/run_acceptance.py:258`；`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:46`；`powerplant.sdf:3` |
 | 主工作区 ↔ UWB 话题 | 仿真 `/uwb/pose`、`/uwb/quality`，硬件 `/uwb/hardware/*` | profile 配错会导致无数据但不报错 | `src/px4_powerplant_mission/config/localization_simulation.yaml`；`localization_hardware.yaml` |
 
 `[推断]` 项目没有“版本矩阵”文件；上述耦合靠 README、脚本默认值和人工记忆维持。`[建议]` 至少在 CI/部署清单中加入：`px4_msgs` SHA、PX4 `git describe`、gz 子模块 SHA、Host 解算器 SHA、`gz sdf -p` 的传感器偏移。
@@ -222,9 +222,9 @@ flowchart LR
 | 反模式 | 表现 | 影响 | 证据 |
 |---|---|---|---|
 | 跨仓库源码 import | Host 直接 import 主工作区包 | 部署必须同时安装/`source` 两个工作区；版本漂移不可见 | `Host/uwb_hardware_bridge/solver.py:12`；`Host/package.xml:18` |
-| 冻结 oracle 维护 | C++ `reference_parity` 读 `test/fixtures`；`ros_contract` 仍启动 Python 定位/EV | fixture 与 C++ 行为漂移需评审；Python 只保留运行节点 | `test/test_reference_parity.py`；`test/test_ros_contract.py` |
+| 冻结 oracle 维护 | C++ `reference_parity` 读 `test/fixtures`；`ros_contract` 仍启动 Python 定位/EV | fixture 与 C++ 行为漂移需评审；Python 只保留运行节点 | `src/px4_powerplant_mission_cpp/test/test_reference_parity.py`；`validation/tests/test_ros_contract.py` |
 | 字符串 JSON 契约 | 定位/地图/UWB 质量均为 `String` | 无 schema、无编译期检查；一端字段变更另一端静默拒绝 | `src/px4_powerplant_mission_cpp/P0_VALIDATION.md:42-58`；`localization/inputs.py:80-118` |
-| 绝对路径 | YOLO Python、照片目录、P2 PX4 根目录 | 换用户/换机器（Jetson）即失效 | `src/px4_powerplant_mission/launch/powerplant_system.launch.py:69`；`src/px4_powerplant_mission/config/powerplant.yaml:363`；`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:106` |
+| 绝对路径 | YOLO Python、照片目录、P2 PX4 根目录 | 换用户/换机器（Jetson）即失效 | `src/px4_powerplant_mission/launch/powerplant_system.launch.py:69`；`src/px4_powerplant_mission/config/powerplant.yaml:363`；`validation/sitl/run_acceptance.py:106` |
 | 子模块 URL 自引用 | `.gitmodules` 的 `./src/...` | 干净 clone 无法按文档取子模块 | `.gitmodules:1-6`；`.gitignore:12-13` |
 
 ## 7. 依赖验收建议

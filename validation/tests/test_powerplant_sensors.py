@@ -5,7 +5,8 @@ import importlib.util
 import math
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/verify_powerplant_sensor_samples.py'
+VALIDATION = Path(__file__).resolve().parents[1]
+SCRIPT = VALIDATION / 'sensors/verify_samples.py'
 spec = importlib.util.spec_from_file_location('powerplant_sensor_geometry', SCRIPT)
 geometry = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(geometry)
@@ -80,7 +81,7 @@ def test_single_layer_scan_reaches_geometry_comparison_instead_of_false_smoke_ex
     assert result['clean_samples'] == 3 and not result['excluded']
 
 
-CORE = SCRIPT.with_name('powerplant_lidar_rays.py')
+CORE = VALIDATION / 'sensors/lidar_rays.py'
 core_spec = importlib.util.spec_from_file_location('powerplant_lidar_sampling', CORE)
 sampling = importlib.util.module_from_spec(core_spec)
 core_spec.loader.exec_module(sampling)

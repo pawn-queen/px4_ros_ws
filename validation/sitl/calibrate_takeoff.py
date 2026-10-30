@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run the fixed nonzero vertical-I grid serially, then freeze two stage passes.
 
-Source the normal ROS/P0 environment first. Arguments after '--' are passed to
-run_p2_sitl.py; scene, calibration candidate, stage and output are owned here.
+Source the normal ROS environment first. Arguments after '--' are passed to
+run_acceptance.py; scene, calibration candidate, stage and output are owned here.
 All failures and attempts are retained. No flight-time parameter write occurs.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 ROOT=Path(__file__).resolve().parent
-spec=importlib.util.spec_from_file_location('controller',ROOT/'p2_sitl_controller.py')
+spec=importlib.util.spec_from_file_location('controller',ROOT/'controller_profile.py')
 controller=importlib.util.module_from_spec(spec);spec.loader.exec_module(controller)
 
 
@@ -42,7 +42,7 @@ def main():
             pair=[]
             for attempt in (1,2):
                 run=out/f'{policy}_I_{candidate:g}_attempt_{attempt}'
-                command=[sys.executable,str(ROOT/'run_p2_sitl.py'),'--scenario','powerplant',
+                command=[sys.executable,str(ROOT/'run_acceptance.py'),'--scenario','powerplant',
                     '--stop-after','scan','--controller-profile',str(args.profile.resolve()),
                     '--takeoff-policy',policy,'--controller-calibration-candidate',str(candidate),
                     '--output-dir',str(run),*extra]
@@ -63,7 +63,7 @@ def main():
                 # Freeze first, then run the explicitly separate algorithm
                 # ablation; its outcome is a comparison, never a calibration pass.
                 ablation=out/'governor_off_ablation'
-                command=[sys.executable,str(ROOT/'run_p2_sitl.py'),'--scenario','powerplant',
+                command=[sys.executable,str(ROOT/'run_acceptance.py'),'--scenario','powerplant',
                     '--stop-after','scan','--controller-profile',str(frozen),
                     '--governor-ablation','--output-dir',str(ablation),*extra]
                 process=subprocess.run(command)

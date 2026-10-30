@@ -6,7 +6,7 @@
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 \
-  src/px4_powerplant_mission_cpp/scripts/derive_sitl_body_envelope.py \
+  validation/model/body_envelope.py \
   --tilt-rad 0.35 \
   --check-profile src/px4_powerplant_mission/config/p2_simulation.yaml \
   --report src/px4_powerplant_mission_cpp/research_sources/sitl_body_envelope.json

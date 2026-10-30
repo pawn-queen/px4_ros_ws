@@ -151,7 +151,7 @@ jobs:
           px4_root="${PX4_ROOT:-$HOME/drone-simulation}"
           world="$px4_root/Tools/simulation/gz/worlds/default.sdf"
           if [ "$SCENARIO" = "room" ]; then
-            world="$PWD/src/px4_powerplant_mission_cpp/test/worlds/p2_room.sdf"
+            world="$PWD/validation/sitl/worlds/room.sdf"
           fi
           echo "world=$world"
           WORKSPACE_SETUP="$PWD/install/setup.bash" \

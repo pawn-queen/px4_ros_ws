@@ -229,7 +229,7 @@ flowchart LR
 
 ### 7.2 现有运行器与用户要求存在明确差异
 
-[run_p2_sitl.py](scripts/run_p2_sitl.py) 当前在启动及评估读取处使用 `test/worlds/p2_{scenario}.sdf`（核查时约第 258、467 行）。这些文件也叫 `world name="powerplant"`，但不是上述正式 `powerplant.sdf`。因此现有 `p2_room`、`p2_two_rooms` 报告不能作为指定电厂场景验收报告；也不能仅根据 `/world/powerplant/...` 话题名判断加载了正确文件。
+[run_acceptance.py](../../validation/sitl/run_acceptance.py) 当前在启动及评估读取处使用 `validation/sitl/worlds/{scenario}.sdf`（核查时约第 258、467 行）。这些文件也叫 `world name="powerplant"`，但不是上述正式 `powerplant.sdf`。因此现有 `p2_room`、`p2_two_rooms` 报告不能作为指定电厂场景验收报告；也不能仅根据 `/world/powerplant/...` 话题名判断加载了正确文件。
 
 后续运行器适配应让启动、真值评估、碰撞检查和 manifest 指向同一个实际世界及其依赖。**本轮没有修改运行器，也没有声称它已经提供新的 `--world` 参数。** 简化世界仍可用于算法单测和故障复现，但最终任务完成、探索覆盖、巡检覆盖、制动和性能结论必须来自指定电厂场景。
 
@@ -296,6 +296,6 @@ flowchart LR
 | S12 | Ruibin Zhang, Lun Pan, Zelong Xia, Jialiang Hou, Fei Gao, *DPNet: Efficient Dead-End Prediction and Avoidance for Vision-Based UAV Navigation*, arXiv 2026-08-17。[原文](https://arxiv.org/abs/2608.16640)、[官方关联入口](https://github.com/ZJU-FAST-Lab/Primitive-Planner) | 近期 RGB-D 死胡同预测；未核实正式发表，不把论文重规划频率等同于本项目发布频率 |
 | S13 | [Real-Time-SVSDF-Planner 官方仓库](https://github.com/ZJU-FAST-Lab/Real-Time-SVSDF-Planner) | 任意形状重规划的代码线索；本次没有核实关联正式论文与完整性能数据 |
 | L1 | [P1 实施](P1_IMPLEMENTATION.md)、[P2 实施](P2_IMPLEMENTATION.md)、[验证](P2_VALIDATION.md)、[迁移记录](MIGRATION_STATUS.md) | 当前已经实现的能力与飞行验收边界 |
-| L2 | [实际 powerplant.sdf](/home/pawn/drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf)、[power-plant 模型](/home/pawn/drone-simulation/Tools/simulation/gz/models/power-plant/model.sdf)、[现有运行器](scripts/run_p2_sitl.py) | 本地场景事实与正式验收缺口 |
+| L2 | [实际 powerplant.sdf](/home/pawn/drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf)、[power-plant 模型](/home/pawn/drone-simulation/Tools/simulation/gz/models/power-plant/model.sdf)、[现有运行器](../../validation/sitl/run_acceptance.py) | 本地场景事实与正式验收缺口 |
 
 本轮未复制上游算法源码、未更换框架、未调整飞控参数、未启动仿真。所有改进幅度、创新假设和正式电厂场景验收结论均留待后续实验。

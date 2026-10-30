@@ -1,6 +1,6 @@
 # 仓库、目录与依赖映射
 
-> **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…`、`scripts/…` 相对于 `src/px4_powerplant_mission_cpp/`；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
+> **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…` 相对于 `src/px4_powerplant_mission_cpp/`；`validation/…`、`tools/…` 相对于仓库根；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
 
 > 证据基线：2026-10-26。本文只描述**本地实际可访问**的三个工作空间；无法访问的仓库、硬件和远端 Issue 明确标为 `[待核实]`。  
 > 标签：`[事实]` / `[推断]` / `[建议]` / `[待核实]`。  
@@ -16,7 +16,7 @@
 
 | 仓库/目录 | 远端与版本 | 规模/状态 | 角色 |
 |---|---|---|---|
-| `px4_ros_ws` | `github.com/pawn-queen/px4_ros_ws`；`main`；HEAD `9931daf7`；工作树含本次 Python legacy 删除/fixture 迁移 | 本次删除修改/删除多文件；新增 `test/fixtures/`；与 `origin/main` 同步 | 机载任务栈主工作区 |
+| `px4_ros_ws` | `github.com/pawn-queen/px4_ros_ws`；`main`；HEAD `04a0ccbf`；工作树含本次 validation 拆分 | 脚本/测试迁移多文件；新增 `validation/`、`tools/env/`；与 `origin/main` 同步 | 机载任务栈主工作区 |
 | `px4_ros_ws/src/px4_msgs` | PX4 官方 `github.com/PX4/px4_msgs`；gitlink `7abb737`；版本 2.0.1 | 255 个跟踪文件；246 个 `msg`；干净 | PX4 uORB 消息的 ROS 2 映射 |
 | `px4_ros_ws/src/px4_ros_com` | PX4 官方 `github.com/PX4/px4_ros_com`；gitlink `86e9aeb`（`beta-384`） | 28 个跟踪文件；干净；已安装 | 官方示例/`frame_transforms`，**业务包未引用** |
 | `drone-simulation` | `git@github.com:pawn-queen/drone-simulation.git`；`main`；HEAD `d0a0e3cc3c`；`v1.17.0-alpha1-1645-gd0a0e3cc3c`；49,681 个提交；上游基点 `89806574`（2026-04-29） | 13,819 个跟踪文件；约 8.8 GB（`build/` 7.6 GB 未跟踪）；本地相对基点仅 2 个文件、+15/−1；`Tools/simulation/gz` 有 1 个未提交模型修改 | PX4 分支 + Gazebo 仿真资源 |
@@ -50,12 +50,13 @@ px4_ros_ws/
 │   │   ├── test/                 # 8 个 Python 测试文件
 │   │   └── rviz/                 # powerplant_visualization.rviz
 │   └── px4_powerplant_mission_cpp/ # ament_cmake：C++ 建图/规划/控制
-│       ├── config/               # p0 依赖锁定
+│       ├── config/               # runtime 配置与资产锁
 │       ├── include/              # 16 个 .hpp
 │       ├── src/                  # 21 个 .cpp
-│       ├── scripts/              # P0 基线 / P2 SITL / GCS / 包络推导
-│       ├── test/                 # C++ 测试 + fixtures + p2_*.sdf 世界
+│       ├── test/                 # C++ 测试 + frozen fixtures
 │       └── research_sources/     # SITL 机体包络证据
+├── validation/                   # 验证/SITL/模型/传感器/基线（不安装）
+├── tools/env/                    # 本机 ROS/Cyclone 环境工具
 ├── build/ install/ log/          # 构建/安装/运行产物（未跟踪）
 ├── .p0_deps/                     # 可选 Cyclone DDS 本地解包（未跟踪）
 └── .venv/                        # YOLO 推理依赖（未跟踪）
@@ -121,8 +122,8 @@ drone-simulation/
 |---|---|---|
 | 构建两个业务包 | `colcon build --symlink-install --packages-up-to px4_powerplant_mission --executor sequential --parallel-workers 1 --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3 -DCMAKE_BUILD_TYPE=Release` | `src/px4_powerplant_mission/README.md:32-39` |
 | 仅构建 C++ | `colcon build --packages-select px4_powerplant_mission_cpp ...` | `src/px4_powerplant_mission_cpp/P0_VALIDATION.md:84-91` |
-| 测试基线 | `bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh` | `src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh:1-19` |
-| 完整 SITL 验收 | `run_p2_sitl.py --scenario room --detection-mode replay` | `src/px4_powerplant_mission_cpp/P2_VALIDATION.md:31-47`；`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:249-329` |
+| 测试基线 | `bash validation/baseline/run_baseline.sh` | `validation/baseline/run_baseline.sh:1-25` |
+| 完整 SITL 验收 | `python3 validation/sitl/run_acceptance.py --scenario room --detection-mode replay` | `src/px4_powerplant_mission_cpp/P2_VALIDATION.md:31-47`；`validation/sitl/run_acceptance.py:249-329` |
 | 启动任务栈 | `ros2 launch px4_powerplant_mission powerplant_system.launch.py` | `src/px4_powerplant_mission/README.md:79-86` |
 | 传感器桥 | `ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py` | `src/px4_powerplant_mission/launch/gz_sensor_bridge.launch.py:42-58` |
 | RViz | `ros2 launch px4_powerplant_mission visualization.launch.py` | `src/px4_powerplant_mission/launch/visualization.launch.py:10-27` |
@@ -135,12 +136,12 @@ drone-simulation/
 |---|---|---|
 | 构建并启动 PX4 SITL | `PX4_GZ_WORLD=powerplant make px4_sitl gz_x500_depth` | `src/px4_powerplant_mission/README.md:72-77` |
 | 世界选择 | 机型脚本 `4002_gz_x500_depth` 继承 `4001_gz_x500`，后者读取 `PX4_GZ_WORLD` | `drone-simulation/ROMFS/px4fmu_common/init.d-posix/airframes/4001_gz_x500:17`；`4002_gz_x500_depth:11-24` |
-| 已构建二进制 | `build/px4_sitl_default/bin/px4`（约 56 MB） | 本机 `ls -lh`；`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:256-257` |
+| 已构建二进制 | `build/px4_sitl_default/bin/px4`（约 56 MB） | 本机 `ls -lh`；`validation/sitl/run_acceptance.py:256-257` |
 | Gazebo | 系统 `gz sim 8.11.0`；`powerplant` world | 本机 `gz sim --versions`；`Tools/simulation/gz/worlds/powerplant.sdf:3` |
 
-`[事实]` `gz_x500_depth` 不是 PX4 `Makefile` 里的手写目标，而是 `gz_bridge` 的 CMake 自定义目标：它扫描 `Tools/simulation/gz/worlds/*.sdf` 与 `airframes/*_gz_*` 生成 `gz_<model>[_<world>]`（`src/modules/simulation/gz_bridge/CMakeLists.txt:43-44,98-120`）；`make px4_sitl gz_x500_depth` 仍可用，因为该目标已生成到 `build.ninja`。`[事实]` 手工仿真使用 `drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf`，而 P2 脚本使用主工作区的 `test/worlds/p2_<scenario>.sdf`（`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:258`）；两者 world name 都是 `powerplant`，但内容/模型不同。`[推断]` 这是“同一个世界名、两套世界文件”的隐性耦合。
+`[事实]` `gz_x500_depth` 不是 PX4 `Makefile` 里的手写目标，而是 `gz_bridge` 的 CMake 自定义目标：它扫描 `Tools/simulation/gz/worlds/*.sdf` 与 `airframes/*_gz_*` 生成 `gz_<model>[_<world>]`（`src/modules/simulation/gz_bridge/CMakeLists.txt:43-44,98-120`）；`make px4_sitl gz_x500_depth` 仍可用，因为该目标已生成到 `build.ninja`。`[事实]` 手工仿真使用 `drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf`，而 P2 脚本使用主工作区的 `validation/sitl/worlds/<scenario>.sdf`（`validation/sitl/run_acceptance.py:258`）；两者 world name 都是 `powerplant`，但内容/模型不同。`[推断]` 这是“同一个世界名、两套世界文件”的隐性耦合。
 
-`[事实]` `run_p2_sitl.py` 自己启动 Agent、Gazebo、PX4、GCS、传感器桥和任务栈（`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:319-329`），是当前唯一把三套进程串起来的仿真入口；它不构建 PX4（`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:29`）。
+`[事实]` `run_acceptance.py` 自己启动 Agent、Gazebo、PX4、GCS、传感器桥和任务栈（`validation/sitl/run_acceptance.py:319-329`），是当前唯一把三套进程串起来的仿真入口；它不构建 PX4（`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:29`）。
 
 ### 5.3 UWB 工作区
 
@@ -162,7 +163,7 @@ drone-simulation/
 | Micro XRCE-DDS Agent | `/usr/local/bin/MicroXRCEAgent`；源码 `/home/pawn/Micro-XRCE-DDS-Agent` v2.4.3 | PX4 ↔ ROS 2 DDS 桥 | `src/px4_powerplant_mission/README.md:65-70`；本机 `--version` 不可用但源码 tag 为 v2.4.3 |
 | Gazebo | 8.11.0 | 仿真传感器/世界 | 本机 `gz sim --versions` |
 | PX4 另一 checkout | `/home/pawn/PX4-Autopilot`，`v1.17.0-alpha1-1334-gdd2530bb09`，约 4.4 GB | 与 `drone-simulation` 重复；未参与任务栈 | 本机 `git log/du` |
-| QGroundControl | `~/QGroundControl-x86_64.AppImage` | 可选 GCS；P2 用独立 `p2_sitl_gcs.py` | 本机文件；`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:41-45` |
+| QGroundControl | `~/QGroundControl-x86_64.AppImage` | 可选 GCS；P2 用独立 `gcs_heartbeat.py` | 本机文件；`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:41-45` |
 | 真实飞控/电调/电机 | 未连接 | 实机执行层 | `[待核实]` |
 | 真实相机/雷达/深度驱动 | 仓库内无包 | 实机传感器输入 | `src/` 下仅 4 个 `package.xml` |
 | Jetson 部署仓库/镜像 | 未发现 | 机载部署 | `[待核实]`；全仓无 Jetson/aarch64 业务代码 |
@@ -172,7 +173,7 @@ drone-simulation/
 
 | 对象 | 本地是否存在 | 实际关系 | 证据 |
 |---|---|---|---|
-| PX4 上游 `PX4/PX4-Autopilot` | 存在另一 checkout `/home/pawn/PX4-Autopilot`（`v1.17.0-alpha1-1334-gdd2530bb09`，2026-04-04） | `drone-simulation` 是它的 fork/衍生；任务栈不直接依赖这份 checkout，默认用 `drone-simulation/build/px4_sitl_default` | 本机 `git log/describe`；`run_p2_sitl.py:106,256-257` |
+| PX4 上游 `PX4/PX4-Autopilot` | 存在另一 checkout `/home/pawn/PX4-Autopilot`（`v1.17.0-alpha1-1334-gdd2530bb09`，2026-04-04） | `drone-simulation` 是它的 fork/衍生；任务栈不直接依赖这份 checkout，默认用 `drone-simulation/build/px4_sitl_default` | 本机 `git log/describe`；`run_acceptance.py:106,256-257` |
 | `px4_msgs` | 是主工作区 gitlink，内容存在 | 任务栈的编译/运行消息依赖；与本地 PX4 有轻微字段漂移 | `src/px4_msgs`；`CMakeLists.txt:10`；见 D2 |
 | `px4_ros_com` | 是主工作区 gitlink，已安装 | 官方示例；两个业务包均未引用 | `src/px4_ros_com/package.xml`；业务包 `package.xml` 无引用 |
 | UWB 部署/上位机仓库 | 存在独立的 `UWB-loaclization`（不是 `px4_ros_ws` 的子目录） | Host 作为独立 ROS 2 包运行，通过 import 复用主工作区解算器 | `Host/package.xml:18`；`Host/uwb_hardware_bridge/solver.py:12` |
@@ -229,7 +230,7 @@ flowchart TB
 | `e5f795d2` | 2026-10-25 | 文档更新 | 历史提交 |
 | `4800616b` | 2026-10-26 | P2 轨迹/拓扑/巡检入库 | P2 源码/测试/文档成为提交内容 |
 | `9931daf7` | 2026-10-30 | CI smoke/测试加固 | 本次删除前的当前 HEAD |
-| 工作树 | 2026-10-30 | 删除 Python legacy + fixture 迁移 | **未提交**，见 [D1](architecture-debt.md#d1-本次删除改动未提交) |
+| 工作树 | 2026-10-30 | validation 拆分：脚本/测试/世界迁移 | **未提交**，见 [D1](architecture-debt.md#d1-本次-validation-拆分未提交) |
 
 `[事实]` 当前 `main` 与 `origin/main` 已同步（`git rev-list --left-right --count` 为 0/0）。
 
@@ -247,7 +248,7 @@ flowchart TB
 - `[事实]` gz 子模块的 `.gitmodules` 声明 PX4 上游 `main`，实际检出 fork 的 `powerplant-sim` 分支；`git submodule update --remote` 会丢失 `powerplant` world 与雷达模型。`[建议]` 改为记录 fork URL + 固定 SHA，或在 `.gitmodules` 中明确分支。
 - `[事实]` `px4_msgs` 与本仓库 PX4 的 246 个消息中 242 个逐字节相同；`FailsafeFlags` 少 `gnss_lost`、`AuxGlobalPosition` 少 `SOURCE_LEO`，其余关键消息（`VehicleOdometry` 等）一致。`[推断]` 主用话题大概率兼容，`failsafe_flags`/`AuxGlobalPosition` 有字段漂移风险。
 - `[事实]` `drone-simulation` 的构建版本宏是 `v1.17.0-alpha1-1643-g31136c9043`，落后 HEAD 的 1645 两个提交；`build/` 7.6 GB 未跟踪。`[推断]` 二进制与源码不是严格同一提交，排障时不能只信 `git describe`。
-- `[事实]` P2 运行器使用 `test/worlds/p2_*.sdf` 并把模型复制到 `local_models`（`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:258,313`）；手工流程使用 `Tools/simulation/gz/worlds/powerplant.sdf`。应用话题 `/model/x500_depth/...`（`src/px4_powerplant_mission/launch/powerplant_system.launch.py:108-111`）与 Gazebo 实例名 `x500_depth_0`（`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:997`）并不完全一致，视频/真值桥的命名耦合靠配置和 README 维持。`[待核实]` 这是否会导致某些桥接话题在 P2 中缺失，需要用实际 `gz topic -l` 验证。
+- `[事实]` P2 运行器使用 `validation/sitl/worlds/*.sdf` 并把模型复制到 `local_models`（`validation/sitl/run_acceptance.py:258,313`）；手工流程使用 `Tools/simulation/gz/worlds/powerplant.sdf`。应用话题 `/model/x500_depth/...`（`src/px4_powerplant_mission/launch/powerplant_system.launch.py:108-111`）与 Gazebo 实例名 `x500_depth_0`（`validation/sitl/run_acceptance.py:997`）并不完全一致，视频/真值桥的命名耦合靠配置和 README 维持。`[待核实]` 这是否会导致某些桥接话题在 P2 中缺失，需要用实际 `gz topic -l` 验证。
 
 ## 11. 待核实与缺口
 

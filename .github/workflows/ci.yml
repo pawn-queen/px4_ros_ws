@@ -34,6 +34,7 @@ jobs:
           python3 -m compileall -q src/px4_powerplant_mission/px4_powerplant_mission
           python3 -m compileall -q src/px4_powerplant_mission/test
           python3 -m compileall -q src/px4_powerplant_mission_cpp/test
+          python3 -m compileall -q validation tools
           echo "compileall OK"
 
   python-unit:
@@ -142,7 +143,7 @@ jobs:
           #   eigen/libopencv-dev 同理
           #   ros_gz_bridge 只在仿真运行期需要，拉进来会多装一整套 Gazebo
           #   iceoryx_* 测试用的是默认 RMW
-          sudo apt-get install -y libjsoncpp-dev libeigen3-dev libopencv-dev python3-numpy python3-pytest
+          sudo apt-get install -y libjsoncpp-dev libeigen3-dev libopencv-dev python3-numpy python3-pytest python3-scipy
           rosdep install -y --rosdistro jazzy --ignore-src \
             --from-paths src/px4_powerplant_mission src/px4_powerplant_mission_cpp src/px4_msgs \
             --skip-keys "ros_gz_bridge iceoryx_posh iceoryx_hoofs jsoncpp ament_python"
@@ -204,8 +205,8 @@ jobs:
           set -eo pipefail
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          # ^test_ 只匹配 15 个 ament_add_gtest 目标；下面 9 个 ament_add_pytest_test
-          # 依赖 gz / pymavlink / DDS 发现，留给 simulation.yml。
+          # ^test_ 只匹配 15 个 ament_add_gtest 目标；其余 pytest 目标
+          # 依赖 gz / pymavlink / DDS 发现，留给 simulation.yml 或 run_baseline。
           colcon test \
             --packages-select px4_powerplant_mission_cpp \
             --executor sequential \
@@ -224,3 +225,12 @@ jobs:
             --executor sequential \
             --ctest-args -j1 -R "^reference_parity$" --output-on-failure
           colcon test-result --test-result-base build/px4_powerplant_mission_cpp --verbose
+
+      - name: Run offline validation tests
+        run: |
+          set -eo pipefail
+          python3 -m pytest -p no:cacheprovider -q \
+            validation/tests/test_powerplant_assets.py \
+            validation/tests/test_powerplant_sensors.py \
+            validation/tests/test_powerplant_probes.py \
+            validation/tests/test_ground_support_audit.py

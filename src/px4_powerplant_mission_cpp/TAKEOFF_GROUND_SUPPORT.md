@@ -37,11 +37,11 @@ lowest_contact_z = p.z + min_i((R × q_i).z)
 
 ## 3. 从真实资产生成静态证据
 
-[`derive_sitl_body_envelope.py`](scripts/derive_sitl_body_envelope.py) 的 `derive_ground_support()` 独立提取完整展开模型中的 `base_link_collision_1` 至 `_4`，包含四个起落架盒体的 **32 个角点**。它们用于不同姿态下寻找最低支撑点，不代表 32 个点同时接地。
+[`body_envelope.py`](../../validation/model/body_envelope.py) 的 `derive_ground_support()` 独立提取完整展开模型中的 `base_link_collision_1` 至 `_4`，包含四个起落架盒体的 **32 个角点**。它们用于不同姿态下寻找最低支撑点，不代表 32 个点同时接地。
 
 水平状态下，真正最低的底轨为 `_3/_4`。其八个下表面角点满足：`x=±0.125 m`，`y=±0.1245/±0.1395 m`，`z=0.013 m`。对本次审计的 `0.35 rad` 总倾角范围及旋翼任意偏航，解析界证明非起落架碰撞体仍高于底轨的保守支持界，间距约 **32.285 mm**。支点缺失、可动支点、未知形状或支持优先性不能证明时，拒绝生成模型。
 
-[`powerplant_takeoff_audit.py`](scripts/powerplant_takeoff_audit.py) 的 `generate_ground_support_model()` 完成以下绑定与核查：
+[`takeoff_audit.py`](../../validation/model/takeoff_audit.py) 的 `generate_ground_support_model()` 完成以下绑定与核查：
 
 1. 核对原机体审计记录的四份 SDF 哈希及实际展开 SDF 哈希，确认机体包络参数包含真实模型。
 2. 从实际 `powerplant.sdf` 解析水平支持平面，核对高度、法向及其覆盖范围。
@@ -132,7 +132,7 @@ flowchart TD
 本次静态核查直接使用实际 `/home/pawn/drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf` 和完整机体资源：
 
 - [audit_actual.json](../../log/issue3_takeoff/20261028_143128/audit_actual.json)：`verified=true`、`passed=true`；机体源版本、展开版本、起落架优先支持、接地至起飞棱柱分离和已知水平支持面五项检查全部通过。
-- [audit_tests.log](../../log/issue3_takeoff/20261028_143128/audit_tests.log) 与 [audit_tests.xml](../../log/issue3_takeoff/20261028_143128/audit_tests.xml)：[`test_ground_support_audit.py`](test/test_ground_support_audit.py) 的 **12 项独立 fixture 测试通过**，耗时 `0.70 s`。
+- [audit_tests.log](../../log/issue3_takeoff/20261028_143128/audit_tests.log) 与 [audit_tests.xml](../../log/issue3_takeoff/20261028_143128/audit_tests.xml)：[`test_ground_support_audit.py`](../../validation/tests/test_ground_support_audit.py) 的 **12 项独立 fixture 测试通过**，耗时 `0.70 s`。
 
 测试覆盖参考点换算、完整起落架、低位非起落架障碍、倾角范围、模型与参数身份、源文件变化、展开变化、支持面覆盖，以及旧 `0..0.04 m` 间隙内障碍的拒绝。
 

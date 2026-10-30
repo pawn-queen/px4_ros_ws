@@ -7,13 +7,14 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-SCRIPTS=Path(__file__).resolve().parents[1]/'scripts'
+ROOT=Path(__file__).resolve().parents[2]
+SCRIPTS=ROOT/'validation/sitl'
 def module(name):
     spec=importlib.util.spec_from_file_location(name,SCRIPTS/(name+'.py'))
     value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
-controller=module('p2_sitl_controller')
-flight=module('p2_flight_evidence')
-BASE=Path(__file__).resolve().parents[2]/'px4_powerplant_mission/config/p2_sitl_controller.yaml'
+controller=module('controller_profile')
+flight=module('flight_evidence')
+BASE=ROOT/'src/px4_powerplant_mission/config/p2_sitl_controller.yaml'
 
 
 def resolved(tmp_path,candidate=2):
@@ -153,7 +154,7 @@ def test_frozen_success_cannot_be_manufactured_from_wrong_scope_or_one_pass(tmp_
 
 
 def test_inherited_unlisted_pid_override_cannot_enter_profile(monkeypatch):
-    runner=module('run_p2_sitl')
+    runner=module('run_acceptance')
     monkeypatch.setenv('PX4_PARAM_MPC_Z_VEL_P_ACC','999')
     monkeypatch.setattr(runner.sys,'argv',['run','--scenario','powerplant','--stop-after','scan',
         '--controller-profile',str(BASE),'--controller-calibration-candidate','2'])

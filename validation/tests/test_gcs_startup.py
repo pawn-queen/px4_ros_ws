@@ -3,7 +3,7 @@ import importlib.util
 from pathlib import Path
 import pytest
 
-SCRIPT=Path(__file__).resolve().parents[1]/"scripts/p2_sitl_gcs.py"
+SCRIPT=Path(__file__).resolve().parents[1]/"sitl/gcs_heartbeat.py"
 spec=importlib.util.spec_from_file_location("p2_gcs_startup",SCRIPT)
 gcs=importlib.util.module_from_spec(spec);spec.loader.exec_module(gcs)
 

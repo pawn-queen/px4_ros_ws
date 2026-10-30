@@ -25,8 +25,8 @@
 cd /home/pawn/px4_ros_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-source src/px4_powerplant_mission_cpp/scripts/p0_ros_env.sh
-bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
+source tools/env/ros_env.sh
+bash validation/baseline/run_baseline.sh
 ```
 
 拓扑用例检查房间核心与门户、三维上下连接、未知/占据门洞、狭窄空间退化、区域 ID 与 epoch、区域候选/前沿名额、滞回、真实时序回调及安装旋转后的视场。它们检查程序行为，不声称输出了真实建筑语义房间。
@@ -34,7 +34,7 @@ bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
 ## 2. 先准备，不启动仿真
 
 ```bash
-/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+/usr/bin/python3 validation/sitl/run_acceptance.py \
   --scenario powerplant --detection-mode none --stop-after scan --prepare-only \
   --output-dir log/issue3_powerplant_prepared
 ```
@@ -46,7 +46,7 @@ bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
 ## 3. 启动隔离的真实 SITL 链路
 
 ```bash
-/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+/usr/bin/python3 validation/sitl/run_acceptance.py \
   --scenario powerplant --detection-mode none --sensor-profile cpu \
   --stop-after scan --timeout 240 --output-dir log/issue3_powerplant_scan
 ```
@@ -54,12 +54,12 @@ bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
 该示例只验收起飞与初扫的有限范围，并显式使用 CPU 降载；不是已执行的通过记录。接入和完整局部任务入口为：
 
 ```bash
-/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+/usr/bin/python3 validation/sitl/run_acceptance.py \
   --scenario powerplant --detection-mode none --sensor-profile cpu \
   --roi-access-test --stop-after roi-access --timeout 300 \
   --output-dir log/issue3_powerplant_roi_access
 
-/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+/usr/bin/python3 validation/sitl/run_acceptance.py \
   --scenario powerplant --detection-mode yolo --sensor-profile native \
   --stop-after mission --timeout 360 --output-dir log/issue3_powerplant_mission
 ```
@@ -75,7 +75,7 @@ bash src/px4_powerplant_mission_cpp/scripts/run_p0_baseline.sh
 - runner 的确认柱体半径为 1.5 m。实际电厂测试柱体高 6.2 m、起飞/返航相对 home 为 5 m；回归房间分别为 4.2/3 m。配置中的确认不是物理证明，电厂仍需使用当前资产的独立接触/完整机体净空证据。共享默认的 `takeoff_region_confirmed=false` 和 `auto_start=false` 保持。
 - `p2_simulation.yaml` 提供从 Gazebo 模型解析的导航参考—相机/雷达偏置及包络；实机 `p2_hardware.yaml` 仍需真实标定。
 
-以下 `room/two_rooms` 的命令仅用于算法/故障回归，不具有正式电厂场景验收资格。附带 `p2_room.sdf` 是有地面、顶棚、四面墙及对比纹理目标的闭合室内；`p2_two_rooms.sdf` 增加已知几何可通的门洞。世界里的目标真值只供测试检测器生成检测框，不送给探索器作为已知航点或目标坐标。
+以下 `room/two_rooms` 的命令仅用于算法/故障回归，不具有正式电厂场景验收资格。附带 `room.sdf` 是有地面、顶棚、四面墙及对比纹理目标的闭合室内；`two_rooms.sdf` 增加已知几何可通的门洞。世界里的目标真值只供测试检测器生成检测框，不送给探索器作为已知航点或目标坐标。
 
 仿真入口在请求 START 前，要求定位 ready 和 vehicle status fresh 在同一 localization epoch 连续保持至少 3 秒仿真时间且 4 秒墙钟时间；任一条件失效或 epoch 改变均重新累计。这只是测试初始化稳定等待，不放宽正式节点的健康、时钟或起飞门控。请求时的双时钟等待证据记录在 events.jsonl。
 
@@ -88,7 +88,7 @@ START 前还必须取得真实 GCS 参数读回，并验证启动微上升高度
 无 GPU 的本机可以显式选择独立的 CPU 验收负载：
 
 ```bash
-/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+/usr/bin/python3 validation/sitl/run_acceptance.py \
   --scenario room --detection-mode replay --sensor-profile cpu \
   --timeout 300 --output-dir log/p2_sitl_cpu
 ```
@@ -102,7 +102,7 @@ Manifest 记录两套原始/有效 SDF 路径与 SHA256、相机配置尺寸/频
 `--detection-mode replay` 使用真实 Gazebo RGB、RGB CameraInfo 和采样时刻插值的导航位姿，将测试目标的已知几何投影为检测框，再原样转发这一张 RGB 的像素和采样时间。它不绘制假目标、不生成假深度、不写入假空闲地图。该模式验证目标输入后的 RGB-D 注册、目标关联、表面建模、拍照、质量、覆盖和返航链路；**不验证 YOLO 的分类与检测能力**。
 
 ```bash
-/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+/usr/bin/python3 validation/sitl/run_acceptance.py \
   --scenario room --detection-mode yolo --timeout 300 \
   --output-dir log/p2_sitl_yolo
 ```
@@ -114,7 +114,7 @@ Manifest 记录两套原始/有效 SDF 路径与 SHA256、相机配置尺寸/频
 真实 YOLO 是否能识别附带合成目标，与推理结果是否正确保留曝光和原始像素分别判断。完整 `--detection-mode yolo` 飞行仍保留原来的巡检/照片/覆盖要求；没有识别目标会使完整任务验收失败，同时报告独立的 `yolo_image_chain_checks`。
 
 ```bash
-/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+/usr/bin/python3 validation/sitl/run_acceptance.py \
   --scenario room --detection-mode yolo --sensor-profile cpu \
   --image-chain-only --timeout 90 --output-dir log/p2_yolo_image_chain
 ```
@@ -128,11 +128,11 @@ Manifest 记录两套原始/有效 SDF 路径与 SHA256、相机配置尺寸/频
 ### 多房间与受控制动场景
 
 ```bash
-/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+/usr/bin/python3 validation/sitl/run_acceptance.py \
   --scenario two_rooms --detection-mode replay --timeout 360 \
   --output-dir log/p2_sitl_two_rooms
 
-/usr/bin/python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+/usr/bin/python3 validation/sitl/run_acceptance.py \
   --scenario room --detection-mode replay --inject-obstacle --timeout 360 \
   --output-dir log/p2_sitl_braking
 ```

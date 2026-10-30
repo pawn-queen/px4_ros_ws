@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Isolated PX4/Gazebo P2 acceptance run; never connects to an existing flight.
 
-Source ROS, the workspace and scripts/p0_ros_env.sh before running. --prepare-only
+Source ROS, the workspace and tools/env/ros_env.sh before running. --prepare-only
 writes the resolved configuration/commands without starting simulation or ROS.
 Detection replay projects a known *test object* into genuine Gazebo RGB frames;
 it is explicitly not a test of YOLO inference or unknown-target discovery.
@@ -43,15 +43,17 @@ def json_dumps(value, **kwargs):
     return json.dumps(value, default=encode_numpy, **kwargs)
 
 
-PACKAGE = Path(__file__).resolve().parents[1]
-WORKSPACE = PACKAGE.parents[1]
-_contact_spec=importlib.util.spec_from_file_location("powerplant_contact_monitor", Path(__file__).with_name("powerplant_contact_monitor.py"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE = REPO_ROOT / "src/px4_powerplant_mission_cpp"
+VALIDATION_ROOT = REPO_ROOT / "validation"
+WORKSPACE = REPO_ROOT
+_contact_spec=importlib.util.spec_from_file_location("powerplant_contact_monitor", VALIDATION_ROOT/"model/contact_monitor.py")
 contact_support=importlib.util.module_from_spec(_contact_spec)
 _contact_spec.loader.exec_module(contact_support)
-_controller_spec=importlib.util.spec_from_file_location("p2_sitl_controller", Path(__file__).with_name("p2_sitl_controller.py"))
+_controller_spec=importlib.util.spec_from_file_location("controller_profile", Path(__file__).with_name("controller_profile.py"))
 controller_support=importlib.util.module_from_spec(_controller_spec)
 _controller_spec.loader.exec_module(controller_support)
-_flight_spec=importlib.util.spec_from_file_location("p2_flight_evidence", Path(__file__).with_name("p2_flight_evidence.py"))
+_flight_spec=importlib.util.spec_from_file_location("flight_evidence", Path(__file__).with_name("flight_evidence.py"))
 flight_support=importlib.util.module_from_spec(_flight_spec)
 _flight_spec.loader.exec_module(flight_support)
 
@@ -128,7 +130,7 @@ def takeoff_startup_evidence(parameters, observed_px4_parameters):
 def scenario_world(args):
     if args.scenario == "powerplant":
         return args.px4_root / "Tools/simulation/gz/worlds/powerplant.sdf"
-    return PACKAGE / "test/worlds" / f"p2_{args.scenario}.sdf"
+    return Path(__file__).resolve().parent / "worlds" / f"{args.scenario}.sdf"
 
 
 def capture_runtime_identity(args,config_path,local_models,asset_audit):
@@ -140,7 +142,7 @@ def capture_runtime_identity(args,config_path,local_models,asset_audit):
               'dirty_paths':git('status','--porcelain=v1','-z').decode().split('\0')}
     identity['dirty_paths']=[p for p in identity['dirty_paths'] if p]
     source_paths=[]
-    for folder in (PACKAGE/'src',PACKAGE/'include',PACKAGE/'scripts',
+    for folder in (PACKAGE/'src',PACKAGE/'include',VALIDATION_ROOT,
                    WORKSPACE/'src/px4_powerplant_mission/px4_powerplant_mission',
                    WORKSPACE/'src/px4_powerplant_mission/launch',
                    WORKSPACE/'src/px4_powerplant_mission/config'):
@@ -667,7 +669,7 @@ def verified_body_envelope(models, parameters, audit_path):
     expected={"x500_depth","x500","x500_base","OakD-Lite"}
     hashes=audit.get("source_sdf_sha256",{})
     if {Path(path).parent.name for path in hashes} != expected:
-        raise RuntimeError("incomplete SDF body audit; rerun derive_sitl_body_envelope.py")
+        raise RuntimeError("incomplete SDF body audit; rerun validation/model/body_envelope.py")
     for path,digest in hashes.items():
         actual=models/Path(path).parent.name/"model.sdf"
         if hashlib.sha256(actual.read_bytes()).hexdigest()!=digest:
@@ -751,7 +753,7 @@ def prepare(args):
     takeoff_audit_path = output / "takeoff_domain_audit.json"
     if args.scenario=="powerplant":
         spec=importlib.util.spec_from_file_location("powerplant_takeoff_audit",
-            PACKAGE/"scripts/powerplant_takeoff_audit.py")
+            VALIDATION_ROOT/"model/takeoff_audit.py")
         takeoff_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(takeoff_module)
         takeoff_audit=takeoff_module.audit_takeoff_domain(world,
             args.px4_root/"Tools/simulation/gz/models",{**mission,**profile},home=(0,0,.1))
@@ -859,7 +861,7 @@ def prepare(args):
         ("agent", ["MicroXRCEAgent", "udp4", "-p", str(args.agent_port)], runtime),
         ("gazebo", gz, runtime),
         ("px4", [str(binary), "-d", "-i", "0", "-w", str(rootfs), str(build / "etc")], rootfs),
-        ("gcs", [sys.executable, str(PACKAGE / "scripts/p2_sitl_gcs.py"),
+        ("gcs", [sys.executable, str(Path(__file__).resolve().parent / "gcs_heartbeat.py"),
                  "--output-dir", str(output), "--startup-timeout", str(args.startup_timeout)], runtime),
         ("sensors", ["ros2", "launch", "px4_powerplant_mission", "gz_sensor_bridge.launch.py"], runtime),
         ("mission", ["ros2", "launch", "px4_powerplant_mission", "powerplant_system.launch.py",

@@ -8,15 +8,16 @@ import struct
 
 import pytest
 
-SCRIPTS=Path(__file__).resolve().parents[1]/'scripts'
+VALIDATION=Path(__file__).resolve().parents[1]
+SCRIPTS=VALIDATION/'model'
 
 def load(name):
     spec=importlib.util.spec_from_file_location(name,SCRIPTS/(name+'.py'))
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     return module
 
-body=load('derive_sitl_body_envelope')
-auditor=load('powerplant_takeoff_audit')
+body=load('body_envelope')
+auditor=load('takeoff_audit')
 
 
 def expanded_body(*, missing=None, low_camera=False):

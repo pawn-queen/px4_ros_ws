@@ -40,8 +40,8 @@ ROI未知量按稀疏已知格与ROI总格数计算，不枚举整个ROI。局�
 ## 验证入口与边界
 
 ```bash
-# 先source ROS、workspace和scripts/p0_ros_env.sh
-python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+# 先source ROS、workspace和tools/env/ros_env.sh
+python3 validation/sitl/run_acceptance.py \
   --scenario powerplant --sensor-profile cpu --detection-mode none \
   --stop-after scan --timeout 240
 # ROI外起点的接入进展：额外 --roi-access-test --stop-after roi-access
@@ -50,7 +50,7 @@ python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
 
 CPU profile、原始传感器负载、有限阶段及完整任务分别报告。有限阶段必须观察真实阶段进展，再经land服务与landed/disarmed完成；不能称为完整巡检或全飞行通过。真实电厂不复用小房间的已知圆柱检测重放，未提供真实标注fixture时拒绝此模式。几何真值和动态探针只进入评估器，不作为在线地图、目标或航点。
 
-`validate_powerplant_physics.py` 在同一个实际world中创建临时动态探针，保留接触、位姿、阳性对照及自由通行记录；完整对照只做退化/重复清理，不做减面。性能组固定原始传感器、种子和负载，每组30 s预热+60 s采样。无接触消息本身不能证明空闲，渲染深度/GPU雷达正常也不能证明物理mesh正确。
+`validation/model/validate_physics.py` 在同一个实际world中创建临时动态探针，保留接触、位姿、阳性对照及自由通行记录；完整对照只做退化/重复清理，不做减面。性能组固定原始传感器、种子和负载，每组30 s预热+60 s采样。无接触消息本身不能证明空闲，渲染深度/GPU雷达正常也不能证明物理mesh正确。
 
 实际结果与尚未完成项目见 ISSUE3_VALIDATION.md；软件测试和几何检查不代替物理接触、传感器、性能和SITL证据。
 
@@ -64,7 +64,7 @@ Gazebo的GPU雷达实际采用立方体纹理最近邻采样。离线验证将�
 
 ```bash
 GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA \
-python3 src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py \
+python3 validation/sitl/run_acceptance.py \
   --scenario powerplant --sensor-profile cpu \
   --cpu-camera-rate-hz 5 --cpu-lidar-rate-hz 5 \
   --render-context display --detection-mode none --stop-after scan

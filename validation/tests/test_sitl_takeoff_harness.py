@@ -7,7 +7,9 @@ import shutil
 from types import SimpleNamespace
 import pytest
 
-SCRIPT=Path(__file__).resolve().parents[1]/'scripts/powerplant_contact_monitor.py'
+ROOT=Path(__file__).resolve().parents[2]
+VALIDATION=ROOT/'validation'
+SCRIPT=VALIDATION/'model/contact_monitor.py'
 spec=importlib.util.spec_from_file_location('contact_acceptance',SCRIPT)
 contact=importlib.util.module_from_spec(spec);spec.loader.exec_module(contact)
 
@@ -274,7 +276,7 @@ def test_ack_witness_is_not_replaced_by_later_state_and_requires_independent_inp
 
 
 def test_explicit_controller_calibration_needs_real_readback():
-    runner_path=SCRIPT.with_name('run_p2_sitl.py')
+    runner_path=VALIDATION/'sitl/run_acceptance.py'
     spec=importlib.util.spec_from_file_location('runner_controller_calibration',runner_path)
     runner=importlib.util.module_from_spec(spec);spec.loader.exec_module(runner)
     args=SimpleNamespace(px4_hover_thrust=.7463328867,px4_z_velocity_integral=None)

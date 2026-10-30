@@ -235,7 +235,7 @@ def generate_ground_support_model(world, models, body_audit, parameters,
     expanded_hash=hashlib.sha256(expanded.stdout.encode()).hexdigest()
     if expanded_hash!=audit.get("expanded_sdf_sha256"):
         raise RuntimeError("expanded body changed since the body audit")
-    module_path=Path(__file__).with_name("derive_sitl_body_envelope.py")
+    module_path=Path(__file__).with_name("body_envelope.py")
     spec=importlib.util.spec_from_file_location("audited_sitl_support_geometry",module_path)
     body_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(body_module)
     support=body_module.derive_ground_support(expanded.stdout,alpha)

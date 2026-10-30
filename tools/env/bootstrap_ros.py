@@ -11,14 +11,14 @@ import urllib.request
 
 
 def main():
-    package = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--prefix', type=Path, default=package.parents[1] / '.p0_deps')
+    parser.add_argument('--prefix', type=Path, default=repo_root / '.p0_deps')
     args = parser.parse_args()
     release = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
     if release.get('VERSION_CODENAME', '').strip('"') != 'noble' or platform.machine() != 'x86_64':
         parser.error('pinned packages require Ubuntu noble amd64; install the matching ROS middleware for this platform')
-    lock = json.loads((package / 'config/p0_ros_dependencies.json').read_text())
+    lock = json.loads(Path(__file__).with_name('ros_dependencies.json').read_text())
     # Use the repository's pinned SHA256 values; a changed mirror payload fails.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with tempfile.TemporaryDirectory(prefix='powerplant_p0_') as temporary:

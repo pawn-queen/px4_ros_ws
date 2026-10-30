@@ -8,7 +8,7 @@ Gazebo 的单层原生 LaserScan 在当前 gz-sensors 8.2.2 中产生 `vertical_
 
 第二个问题是实际 GPU 渲染方向。gz-rendering 8.2.3 的 [Ogre2GpuRays 实现](https://github.com/gazebosim/gz-rendering/blob/gz-rendering8_8.2.3/ogre2/src/Ogre2GpuRays.cc) 分两遍生成扫描：第一遍渲染六个透视立方体面，第二遍用一张 float32 UV 表按最近邻取样。当前 360×1 扫描的立方体面尺寸为 128×128。其像素中心方向与消息名义连续角度存在量化差异，可能打到薄件的另一侧或跨过遮挡边缘。
 
-`powerplant_lidar_rays.py` 依源码依次计算：
+`lidar_rays.py` 依源码依次计算：
 
 1. 按 `CreateSampleTexture` 的角度推进顺序构造 `(yaw × pitch) × ray`，保留 gz-math 四元数运算顺序。
 2. 按 `SampleCubemap` 的分面规则得到 UV，再写成 float32。
@@ -33,7 +33,7 @@ Gazebo 的单层原生 LaserScan 在当前 gz-sensors 8.2.2 中产生 `vertical_
 
 ## 显式使用和版本门控
 
-`verify_powerplant_sensor_samples.py` 默认继续使用 `--lidar-ray-convention nominal`。只有显式指定 `gz-rendering8-cubemap-nearest` 时才采用上述方向，且必须同时具备：
+`verify_samples.py` 默认继续使用 `--lidar-ray-convention nominal`。只有显式指定 `gz-rendering8-cubemap-nearest` 时才采用上述方向，且必须同时具备：
 
 - 新捕获中 `/proc/.../maps` 记录的已审核 gz-rendering 8.2.3、OgreNext/GL3Plus 2.3.3 库及哈希；当前文件也必须仍匹配。
 - Ogre 运行日志注册的唯一材质、compositor 和三个 GLSL shader 路径，以及实际文件哈希、日志哈希。

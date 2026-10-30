@@ -2,7 +2,7 @@
 
 > **2026-10-30 更新**：Python mapper/controller 已删除；launch 不再接受 `mapping_package`/`control_package`，mapper/controller 固定为 `px4_powerplant_mission_cpp`。本文中“Python 回退/双栈”段落是删除前历史。
 
-> **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…`、`scripts/…` 相对于 `src/px4_powerplant_mission_cpp/`；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
+> **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…` 相对于 `src/px4_powerplant_mission_cpp/`；`validation/…`、`tools/…` 相对于仓库根；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
 
 > 证据基线：2026-10-26。本文区分**代码支持的运行方式**、**本机实际观察到的运行方式**和**目标但未证实的运行方式**。  
 > 标签：`[事实]` / `[推断]` / `[建议]` / `[待核实]`。  
@@ -34,7 +34,7 @@ flowchart LR
     BR["ros_gz_bridge<br/>clock / truth / sensors"]
     PX4["PX4 SITL<br/>build/px4_sitl_default/bin/px4"]
     AG["MicroXRCEAgent<br/>udp4:8889（P2）或 8888（手工）"]
-    GCS["p2_sitl_gcs.py<br/>MAVLink 14550→18570"]
+    GCS["gcs_heartbeat.py<br/>MAVLink 14550→18570"]
   end
 
   subgraph APP["ROS 2 任务栈"]
@@ -68,9 +68,9 @@ flowchart LR
   GCS -->|"MAVLink 心跳（只读参数）"| PX4
 ```
 
-`[事实]` 上图的进程组合由 `src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:319-329` 实际启动：`agent`、`gazebo`、`px4`、`gcs`、`sensors`、`mission`；GUI 是可选项（`:330-331`）。手工运行时，README 只要求 Agent、PX4/Gazebo、任务 launch 三个终端（`src/px4_powerplant_mission/README.md:65-86`），传感器桥和 RViz 另开（`src/px4_powerplant_mission/README.md:209-227`）。
+`[事实]` 上图的进程组合由 `validation/sitl/run_acceptance.py:319-329` 实际启动：`agent`、`gazebo`、`px4`、`gcs`、`sensors`、`mission`；GUI 是可选项（`:330-331`）。手工运行时，README 只要求 Agent、PX4/Gazebo、任务 launch 三个终端（`src/px4_powerplant_mission/README.md:65-86`），传感器桥和 RViz 另开（`src/px4_powerplant_mission/README.md:209-227`）。
 
-`[事实]` **两套 world 不要混淆**：手工流程启动 `drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf`（内含 `power-plant` 模型）；P2 运行器启动主工作区 `test/worlds/p2_<scenario>.sdf`（`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:258`），两者 world name 都是 `powerplant`，因此 `/world/powerplant/*` 话题名相同但场景内容不同。`[推断]` 对照报告/截图时必须注明用的是哪套 world。
+`[事实]` **两套 world 不要混淆**：手工流程启动 `drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf`（内含 `power-plant` 模型）；P2 运行器启动主工作区 `validation/sitl/worlds/<scenario>.sdf`（`validation/sitl/run_acceptance.py:258`），两者 world name 都是 `powerplant`，因此 `/world/powerplant/*` 话题名相同但场景内容不同。`[推断]` 对照报告/截图时必须注明用的是哪套 world。
 
 ### 2.2 launch 默认行为
 
@@ -90,15 +90,15 @@ flowchart LR
 | `use_control` | `false` | 默认不启 Offboard |
 | `yolo_python` | `/home/pawn/px4_ros_ws/.venv/bin/python` | 绝对路径 |
 
-`[事实]` launch 本身**不启动** Gazebo 传感器桥；它只启动 `/clock` 和真值桥（`:90-116`）。传感器桥需要单独 `gz_sensor_bridge.launch.py`，P2 脚本把它作为独立的 `sensors` 进程启动（`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:325`）。`[推断]` 只运行 `powerplant_system.launch.py` 时，`/depth_camera`、`/camera`、`/mapping_lidar` 可能为空，建图不会产生有效地图。
+`[事实]` launch 本身**不启动** Gazebo 传感器桥；它只启动 `/clock` 和真值桥（`:90-116`）。传感器桥需要单独 `gz_sensor_bridge.launch.py`，P2 脚本把它作为独立的 `sensors` 进程启动（`validation/sitl/run_acceptance.py:325`）。`[推断]` 只运行 `powerplant_system.launch.py` 时，`/depth_camera`、`/camera`、`/mapping_lidar` 可能为空，建图不会产生有效地图。
 
 ### 2.3 P2 隔离参数
 
-`[事实]` P2 脚本为每次验收创建独立运行目录，并设置（`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:290-317`）：
+`[事实]` P2 脚本为每次验收创建独立运行目录，并设置（`validation/sitl/run_acceptance.py:290-317`）：
 
 - `ROS_DOMAIN_ID=25`、`GZ_PARTITION=powerplant-p2-<pid>`、`GZ_IP=127.0.0.1`；
 - Agent 端口 `8889`，`PX4_PARAM_UXRCE_DDS_PRT=8889`；
-- `PX4_GZ_WORLD=powerplant`、`PX4_SIM_MODEL=gz_x500_depth`、`PX4_GZ_MODELS` 指向本地模型或外部模型；P2 的 Gazebo server 实际加载 `test/worlds/p2_<scenario>.sdf`（`:258`）；
+- `PX4_GZ_WORLD=powerplant`、`PX4_SIM_MODEL=gz_x500_depth`、`PX4_GZ_MODELS` 指向本地模型或外部模型；P2 的 Gazebo server 实际加载 `validation/sitl/worlds/<scenario>.sdf`（`:258`）；
 - `PX4_PARAM_UXRCE_DDS_SYNCT=0`，定位/EV 的 `px4_timestamp_domain=ros`（`:276-279`；`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:45`）；
 - 独立 `px4_rootfs`，`etc` 只读符号链接到构建产物（`:285-289`）。
 
@@ -213,7 +213,7 @@ flowchart LR
 
 ## 5. Jetson 实机（待核实）
 
-`[事实]` 在 `px4_ros_ws`、`UWB-loaclization` 的源码/文档中检索 `jetson|aarch64|arm64|orin`，没有业务命中；仓库没有 `Dockerfile`、`*.service`、`docker-compose*`、`setup.sh`/`install.sh`。`config/p0_ros_dependencies.json:2` 明确限定 `ubuntu-noble-amd64`，`src/px4_powerplant_mission_cpp/scripts/bootstrap_p0_ros.py:24-26` 对非 `noble`/非 `x86_64` 直接报错。
+`[事实]` 在 `px4_ros_ws`、`UWB-loaclization` 的源码/文档中检索 `jetson|aarch64|arm64|orin`，没有业务命中；仓库没有 `Dockerfile`、`*.service`、`docker-compose*`、`setup.sh`/`install.sh`。`tools/env/ros_dependencies.json:2` 明确限定 `ubuntu-noble-amd64`，`tools/env/bootstrap_ros.py:24-26` 对非 `noble`/非 `x86_64` 直接报错。
 
 `[待核实]` 因此以下都**不是已证实事实**：
 
@@ -259,7 +259,7 @@ flowchart LR
 | 主题 | 仿真 | 实机 | 证据 |
 |---|---|---|---|
 | 时钟源 | Gazebo `/clock`；`use_sim_time=true` | 墙钟；`use_sim_time=false` | `src/px4_powerplant_mission/launch/powerplant_system.launch.py:55`；`localization_hardware.yaml` |
-| PX4 时间域 | P2 锁步用 `px4_timestamp_domain=ros`，`UXRCE_DDS_SYNCT=0` | 默认 `system`，依赖 uXRCE 时间同步 | `src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:276-279,300`；`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:82-84` |
+| PX4 时间域 | P2 锁步用 `px4_timestamp_domain=ros`，`UXRCE_DDS_SYNCT=0` | 默认 `system`，依赖 uXRCE 时间同步 | `validation/sitl/run_acceptance.py:276-279,300`；`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:82-84` |
 | 坐标 | PX4 NED/FRD ↔ ROS ENU/FLU；`map` 与 PX4 local NED 原点对齐 | 同左，需实测锚点/外参 | `common/frames.py:1-12`；`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:62-76` |
 | UWB 时间 | 每个 Gazebo 采样时间生成一组测距 | Host 用测量 UTC 时间，保留到 `timestamp_sample` | `uwb_simulator_node.py:232-245`；`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:82-84` |
 | 健康/epoch | `status_stamp_ns/sequence/localization_epoch`；PX4 reset/时钟回退换 epoch | 同左 | `localization_node.py:591-651`；`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:42-58` |
@@ -271,8 +271,9 @@ flowchart LR
 
 | 检查 | 结果 | 证据 |
 |---|---|---|
-| C++/契约测试 | 400 项，0 失败 | 本机 `colcon test-result --test-result-base build/px4_powerplant_mission_cpp` |
+| runtime C++/契约测试 | 392 项，0 失败 | 本机 `colcon test-result --test-result-base build/px4_powerplant_mission_cpp` |
 | Python 回归 | 72 项，0 失败（删除 legacy 后） | 本机 `pytest src/px4_powerplant_mission/test` |
+| validation 回归 | 148 项，0 失败 | 本机 `pytest validation/tests` |
 | 最新完整 SITL | **未通过**：`passed=false`，`exit_reason=mission_fault`；阶段 `IDLE→START→SAFE_TAKEOFF→FAULT` | `log/p2_sitl_cpu_17/report.json` |
 | 失败原因 | `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE`，在起飞段触发安全停止 | `log/p2_sitl_cpu_17/events.jsonl` |
 | 原始传感器负载 | 未通过健康启动；CPU 10 Hz 仍慢于实时 | `src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:32` |

@@ -1,8 +1,8 @@
 # 室内无人机项目：系统架构总览（决策者版）
 
 > **文档性质**：架构普查（初始只读）+ 2026-10-30 Python legacy 删除实施记录；本次删除已按用户明确授权执行。
-> **证据基线**：2026-10-30，`px4_ros_ws` 工作树（HEAD `9931daf7` + 本次未提交的 Python legacy 删除/fixture 迁移）、`UWB-loaclization` 工作树（HEAD `fb5f43d`）、`drone-simulation` 工作树（HEAD `d0a0e3cc3c`，`Tools/simulation/gz` 子模块有未提交修改）。
-> **重要前提**：下文描述的是**当前工作树**，不是某个干净提交的可复现状态。本次 Python legacy 删除与 fixture 迁移尚未提交，见 [architecture-debt.md](architecture-debt.md#d1-本次删除改动未提交)。
+> **证据基线**：2026-10-30，`px4_ros_ws` 工作树（HEAD `04a0ccbf` + 本次未提交的 validation 拆分）、`UWB-loaclization` 工作树（HEAD `fb5f43d`）、`drone-simulation` 工作树（HEAD `d0a0e3cc3c`，`Tools/simulation/gz` 子模块有未提交修改）。
+> **重要前提**：下文描述的是**当前工作树**，不是某个干净提交的可复现状态。本次 validation 拆分尚未提交，见 [architecture-debt.md](architecture-debt.md#d1-本次-validation-拆分未提交)。
 >
 > 标签约定：`[事实]` 有文件、行号或命令输出支撑；`[推断]` 由事实推导但未实测；`[建议]` 改进方向；`[待核实]` 本地无证据。
 >
@@ -10,7 +10,7 @@
 
 > **2026-10-30 更新**：Python mapper/controller 已按确认方案删除；`px4_powerplant_mission` 现在只提供定位、UWB、外部视觉桥和 YOLO，建图/控制只由 C++ 包提供。本文中“Python 回退/双栈/旧实现”的段落是删除前历史，当前状态以本注记和 `MIGRATION_STATUS.md` 为准。
 
-> **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…`、`scripts/…` 相对于 `src/px4_powerplant_mission_cpp/`；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
+> **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…` 相对于 `src/px4_powerplant_mission_cpp/`；`validation/…`、`tools/…` 相对于仓库根；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
 
 ## 一句话结论
 
@@ -81,18 +81,18 @@ flowchart LR
 | 判断 | 结论 | 证据 |
 |---|---|---|
 | 两个业务包可构建、可安装 | `[事实]` 本机 `install/` 有 Python 包、C++ 可执行；C++ 可执行是指向 `build/` 的符号链接 | `install/px4_powerplant_mission_cpp/lib/px4_powerplant_mission_cpp/`；`src/px4_powerplant_mission/README.md:32-39` |
-| 单元/契约测试 | `[事实]` 删除 legacy 后本机 C++ 测试 400 项、0 失败；Python 测试 72 项、0 失败 | 本机 `colcon test-result`；`pytest src/px4_powerplant_mission/test` |
+| 单元/契约测试 | `[事实]` 删除 legacy 后本机 runtime C++ 392 项、validation 148 项、Python 72 项，均 0 失败 | 本机 `colcon test-result`；`pytest validation/tests`；`pytest src/px4_powerplant_mission/test` |
 | 完整 SITL 飞行 | `[事实]` 2026-10-29 实际电厂 20 个 A–D/I 候选均未通过起飞初扫，未进入 `HOVER_SCAN` | `src/px4_powerplant_mission_cpp/ISSUE3_VALIDATION.md:3`；`TAKEOFF_RESPONSE_SYNC.md:106-112` |
 | 原始传感器负载 SITL | `[事实]` 文档称原始渲染负载未通过健康启动，CPU 档 10 Hz 仍慢于实时；2.5 Hz CPU 档接近实时，但完整流程未通过 | `src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:32`；`src/px4_powerplant_mission_cpp/P2_VALIDATION.md:56-70` |
 | 实机 UWB → EV → PX4 | `[未证实]` Host 测试仅假串口/PTY/mock，未接实板；README 明确“不声称已经执行无线测距” | `Host/README.md:102-111`；`C:\Users\pawn-\UWB-loaclization\AGENTS.md:36` |
 | 实机相机/雷达/建图/控制 | `[未证实]` 主工作区没有真实相机/雷达驱动包，硬件 profile 仍使用 `/depth_camera`、`/mapping_lidar`、`/camera` 等话题名；`p2_hardware.yaml` 的运动参数默认未标定 | `src/` 下仅 4 个 `package.xml`；`config/powerplant.yaml:6,105-108,168`；`config/p2_hardware.yaml:1-10` |
-| Jetson 部署 | `[待核实]` 仓库内无 Jetson/aarch64 代码、Dockerfile、systemd 单元或部署脚本 | 全仓 `grep -ri jetson/aarch64/arm64` 无业务命中；`config/p0_ros_dependencies.json:2` 限定 `ubuntu-noble-amd64` |
+| Jetson 部署 | `[待核实]` 仓库内无 Jetson/aarch64 代码、Dockerfile、systemd 单元或部署脚本 | 全仓 `grep -ri jetson/aarch64/arm64` 无业务命中；`tools/env/ros_dependencies.json:2` 限定 `ubuntu-noble-amd64` |
 
 ## 决策者需要关注的六个问题
 
 | # | 问题 | 影响 | 证据/详情 |
 |---|---|---|---|
-| 1 | **本次删除改动未提交** | 干净检出仍是删除前版本；fixture/入口变更无法复现 | [D1](architecture-debt.md#d1-本次删除改动未提交)；`git status` |
+| 1 | **本次 validation 拆分未提交** | 干净检出仍是拆分前路径；脚本/测试/CI 变更无法复现 | [D1](architecture-debt.md#d1-本次-validation-拆分未提交)；`git status` |
 | 2 | **PX4/Gazebo/消息版本靠人工同步** | Gazebo 雷达安装偏移依赖子模块未提交修改；`FailsafeFlags`/`AuxGlobalPosition` 字段集与本地 PX4 不一致；两套 world 同名 | [D2](architecture-debt.md#d2-跨仓库版本与模型偏移漂移) |
 | 3 | **没有实机/Jetson 部署闭环** | 不能回答“上机后怎么启动、怎么回滚、怎么监控” | [D3](architecture-debt.md#d3-jetson-实机部署路径缺失) |
 | 4 | **DDS 通信依赖本机 Cyclone + LOCALHOST 临时配置** | Windows Host、跨计算机、Jetson 的链路未验证 | [D4](architecture-debt.md#d4-dds-通信依赖本机临时配置) |
@@ -101,7 +101,7 @@ flowchart LR
 
 ## 建议的下一步（不改代码）
 
-1. **先冻结可复现基线**：提交本次 Python legacy 删除、fixture、测试/文档迁移；修正 `.gitmodules`/`.gitattributes`、提交或回退 Gazebo 雷达偏移；在干净 clone 上重跑构建与 SITL。`[建议]`
+1. **先冻结可复现基线**：提交本次 validation 拆分、测试/文档迁移；修正 `.gitmodules`/`.gitattributes`、提交或回退 Gazebo 雷达偏移；在干净 clone 上重跑构建与 SITL。`[建议]`
 2. **定义唯一部署目标**：确认 Jetson 型号、Ubuntu/ROS 版本、UWB/Host 与飞控的连接方式；补一份部署清单和 systemd/容器方案，再谈性能。`[建议]`
 3. **把 DDS 选型变成验收项**：在目标机器上分别验证 Cyclone 与 Fast DDS、同机/跨机、Windows Host 到 WSL/Jetson 的发现与传输。`[建议]`
 4. **完成一次受控实机地面链**：单 Anchor—Tag 已知距离 → 四锚非共面 → Host→EV→PX4 EKF，逐级记录串口、时间、残差与拒绝原因。`[建议]`

@@ -1,6 +1,6 @@
 # 架构问题清单与影响证据
 
-> **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…`、`scripts/…` 相对于 `src/px4_powerplant_mission_cpp/`；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
+> **路径约定**：仓库级路径写作 `src/px4_powerplant_mission/...` 或 `src/px4_powerplant_mission_cpp/...`；包内短路径 `config/…`、`launch/…`、`nodes/…` 相对于 `src/px4_powerplant_mission/`，`src/…`、`include/…`、`test/…` 相对于 `src/px4_powerplant_mission_cpp/`；`validation/…`、`tools/…` 相对于仓库根；`UWB/…`、`Host/…` 相对于 `C:\Users\pawn-\UWB-loaclization\`；`Tools/simulation/gz/…`、`ROMFS/…` 相对于 `/home/pawn/drone-simulation/`。
 
 > 证据基线：2026-10-26 工作树。本文只记录**已观察到的结构性问题**，不把“功能未完成”一律算作架构债务。  
 > 标签：`[事实]` / `[推断]` / `[建议]` / `[待核实]`。  
@@ -23,7 +23,7 @@
 
 | ID | 严重度 | 问题 | 直接影响 | 证据 |
 |---|---|---|---|---|
-| D1 | **S2** | 本次 Python legacy 删除改动未提交 | 干净检出仍是删除前版本；fixture/入口变更无法复现 | `git status` 的删除/修改/`?? fixtures` |
+| D1 | **S2** | 本次 validation 拆分改动未提交 | 干净检出仍是拆分前路径；脚本/测试/CI 变更无法复现 | `git status` 的 rename/修改/`?? validation` |
 | D2 | **S1** | PX4/Gazebo/消息版本靠人工同步 | `FailsafeFlags` 字段漂移；雷达偏移/世界依赖未提交修改 | `px4_msgs` vs PX4；gz `M model.sdf` |
 | D3 | **S1** | Jetson/实机部署路径缺失 | 无法回答“上机怎么启动/回滚/监控” | 无 aarch64/Docker/systemd；`.p0_deps` 仅 amd64 |
 | D4 | **S1** | DDS 依赖本机 Cyclone+LOCALHOST 临时配置 | 跨机/Windows Host/Jetson 通信未证明 | `src/px4_powerplant_mission_cpp/P0_VALIDATION.md:62-78` |
@@ -52,24 +52,24 @@ flowchart TB
 
 ## 3. 详细条目
 
-### D1 本次删除改动未提交
+### D1 本次 validation 拆分未提交
 
 **事实**
 
-- 删除前仓库为 `9931daf7` 且工作树干净。
-- 删除完成后工作树包含：Python legacy 源码/测试的删除、`setup.py`/launch/CI/README 修改，以及 `test/fixtures/` 新增文件。
-- 尚未提交；干净检出仍是删除前版本。
+- 拆分前仓库为 `04a0ccbf` 且工作树干净。
+- 当前工作树包含：脚本从 `src/px4_powerplant_mission_cpp/scripts/` 迁到 `validation/` 和 `tools/env/`，validation 测试迁到 `validation/tests/`，以及 CMake/CI/文档修改。
+- 尚未提交；干净检出仍是拆分前路径。
 
 **影响**
 
-- `[推断]` 在提交前，删除结果、fixture 和测试迁移无法从仓库历史复现。
-- `[事实]` 若现在切回 HEAD，Python legacy 和新 fixture 都不会同时存在，测试/文档状态不一致。
+- `[推断]` 在提交前，新 validation 模块、迁移后的测试和 CI 步骤无法从仓库历史复现。
+- `[事实]` 若现在切回 HEAD，旧脚本路径和旧 CMake pytest 目标仍然存在，和新文档不一致。
 
 **建议**
 
-1. 将删除、fixture、测试迁移和文档作为一个可构建提交。
-2. 在干净 clone 上重跑 C++/Python 测试与 `run_p0_baseline.sh`。
-3. 在提交信息中注明 Q9=A 已被用户明确豁免，避免把删除误读为飞行验收。
+1. 将脚本移动、测试迁移、CMake/CI 修改和文档作为一个可构建提交。
+2. 在干净 clone 上重跑 `validation/baseline/run_baseline.sh`。
+3. 在提交信息中注明本轮只迁移 runtime/validation 边界，不改变飞行行为。
 
 **置信度**：事实。
 
@@ -93,7 +93,7 @@ flowchart TB
 - gz 子模块实际是 `pawn-queen/PX4-gazebo-models` 的 `powerplant-sim` 分支（`2dda48c`），但 `drone-simulation/.gitmodules:75-78` 声明 PX4 上游 `main`。
 - 唯一未提交修改：`Tools/simulation/gz/models/x500_depth/model.sdf:17` 从 `0 0 0.32` 改为 `0 0 0.18`（雷达下移 14 cm）。
 - `x500_base/model.sdf:4` 的 `base_link` 在模型原点上方 0.24 m；`0.24 + 0.18 = 0.42`，与 `config/p2_simulation.yaml:8` 的 `lidar_translation_flu: [0.0, 0.0, 0.42]` 一致；提交版 `0.32` 会得到 0.56。
-- 手工仿真用 `drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf`；P2 用主工作区 `test/worlds/p2_<scenario>.sdf`（`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:258`），两者 world name 都是 `powerplant`，内容/模型不同。
+- 手工仿真用 `drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf`；P2 用主工作区 `validation/sitl/worlds/<scenario>.sdf`（`validation/sitl/run_acceptance.py:258`），两者 world name 都是 `powerplant`，内容/模型不同。
 
 **影响**
 
@@ -118,8 +118,8 @@ flowchart TB
 
 - `px4_ros_ws`、`UWB-loaclization` 中没有 Jetson/aarch64/arm64/Orin 业务代码或文档。
 - 没有 `Dockerfile`、`*.service`、`docker-compose*`、`setup.sh`/`install.sh`。
-- `config/p0_ros_dependencies.json:2` 仅 `ubuntu-noble-amd64`；`src/px4_powerplant_mission_cpp/scripts/bootstrap_p0_ros.py:24-26` 对非 noble/非 x86_64 直接报错。
-- `src/px4_powerplant_mission/launch/powerplant_system.launch.py:69` 的 `yolo_python`、`src/px4_powerplant_mission/config/powerplant.yaml:363` 的 `inspection_photo_dir`、`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:106` 的 PX4 根目录都是绝对路径。
+- `tools/env/ros_dependencies.json:2` 仅 `ubuntu-noble-amd64`；`tools/env/bootstrap_ros.py:24-26` 对非 noble/非 x86_64 直接报错。
+- `src/px4_powerplant_mission/launch/powerplant_system.launch.py:69` 的 `yolo_python`、`src/px4_powerplant_mission/config/powerplant.yaml:363` 的 `inspection_photo_dir`、`validation/sitl/run_acceptance.py:106` 的 PX4 根目录都是绝对路径。
 - `drone-simulation/build/px4_sitl_default/rootfs/gz_env.sh` 也硬编码 `/home/pawn/drone-simulation`。
 
 **影响**
@@ -144,7 +144,7 @@ flowchart TB
 **事实**
 
 - `src/px4_powerplant_mission_cpp/P0_VALIDATION.md:64-78` 记录：当前主机默认 Fast DDS 同机进程出现单向发现、无数据/服务响应；回环 UDP/显式 locator/TCP 对照未恢复，根因未确定。
-- 采用 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` + `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` 后同机跨进程恢复（`scripts/p0_ros_env.sh:12-13`）。
+- 采用 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` + `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` 后同机跨进程恢复（`tools/env/ros_env.sh:12-13`）。
 - 该配置只影响当前 shell；文档明确“不验证 Windows Host、跨计算机 DDS、Agent/PX4 与 Cyclone 的完整互通”（`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:78`）。
 - UWB Host 的 README 也记录：本机 WSL Fast DDS 跨进程最小复现失败，ROS 测试仅同进程（`Host/README.md:111`）。
 
@@ -196,7 +196,7 @@ flowchart TB
 - 最新完整 SITL 报告：`log/p2_sitl_cpu_17/report.json`，`passed=false`，`exit_reason=mission_fault`；阶段 `IDLE→START→SAFE_TAKEOFF→FAULT`；失败项包括 `all_required_phases`、`phase_order`、`landed_and_disarmed_completion`、`no_mission_fault`、`topology_built`、`inspection_result_explicit`、`actual_photo_and_surface_evidence`。
 - `events.jsonl`：`safety_stop` / `mission_fault` 原因为 `MOTION_TRACKING_ERROR_EXCEEDS_CERTIFICATE`。
 - 文档记录：原始渲染负载未通过健康启动；CPU 10 Hz 仍慢于实时；2.5 Hz CPU 档接近实时但完整流程未通过（`src/px4_powerplant_mission_cpp/MIGRATION_STATUS.md:32`）。
-- 单元/契约测试：删除 legacy 后本机 C++ 400 项、Python 72 项均 0 失败；这不等于飞行验收。
+- 单元/契约测试：删除 legacy 后本机 runtime C++ 392 项、validation 148 项、Python 72 项均 0 失败；这不等于飞行验收。
 - 实机：Host 仅假串口/PTY/mock；主工作区没有真实传感器驱动；无实飞记录（`Host/README.md:102-111`；`src/px4_powerplant_mission_cpp/P0_VALIDATION.md:78`）。
 
 **影响**
@@ -246,8 +246,8 @@ flowchart TB
 
 **事实**
 
-- 绝对路径：`yolo_python=/home/pawn/px4_ros_ws/.venv/bin/python`（`src/px4_powerplant_mission/launch/powerplant_system.launch.py:69`）、`inspection_photo_dir=/home/pawn/px4_ros_ws/inspection_photos`（`src/px4_powerplant_mission/config/powerplant.yaml:363`）、`--px4-root` 默认 `/home/pawn/drone-simulation`（`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:106`）、`gz_env.sh` 硬编码（drone 报告）。
-- 时间域：仿真 `use_sim_time=true` + `/clock`；实机 `use_sim_time=false` + 系统时钟；P2 锁步把 `px4_timestamp_domain` 改为 `ros`、`UXRCE_DDS_SYNCT=0`（`src/px4_powerplant_mission_cpp/scripts/run_p2_sitl.py:276-279,300`）；实机默认 `system`（`src/px4_powerplant_mission/config/powerplant.yaml:14`；`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:82-84`）。
+- 绝对路径：`yolo_python=/home/pawn/px4_ros_ws/.venv/bin/python`（`src/px4_powerplant_mission/launch/powerplant_system.launch.py:69`）、`inspection_photo_dir=/home/pawn/px4_ros_ws/inspection_photos`（`src/px4_powerplant_mission/config/powerplant.yaml:363`）、`--px4-root` 默认 `/home/pawn/drone-simulation`（`validation/sitl/run_acceptance.py:106`）、`gz_env.sh` 硬编码（drone 报告）。
+- 时间域：仿真 `use_sim_time=true` + `/clock`；实机 `use_sim_time=false` + 系统时钟；P2 锁步把 `px4_timestamp_domain` 改为 `ros`、`UXRCE_DDS_SYNCT=0`（`validation/sitl/run_acceptance.py:276-279,300`）；实机默认 `system`（`src/px4_powerplant_mission/config/powerplant.yaml:14`；`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:82-84`）。
 - UWB Host 使用测量 UTC 时间；EV 在仿真中把 ROS 样本年龄映射到系统通信时钟（`src/px4_powerplant_mission/LOCALIZATION_DEPLOYMENT.md:84`）。
 
 **影响**
@@ -320,7 +320,7 @@ flowchart TB
 
 **事实**
 
-- `.github/workflows/` 已存在；完整 SITL 仍由 `run_p2_sitl.py` 人工触发。
+- `.github/workflows/` 已存在；完整 SITL 仍由 `run_acceptance.py` 人工触发。
 - 18 个 tracked `.pyc` 已随本次删除移除；`.gitignore` 已有 `__pycache__/`。
 - `px4_ros_com` 已安装但业务包未引用；`src/px4_msgs`、`src/px4_ros_com` 同时被 `.gitignore` 和 `.gitmodules` 管理。
 - `drone-simulation` 的 `build/` 7.6 GB 未跟踪；`UWB/build` 94 MB；gz 子模块有 30 MB STL 和 Windows `:Zone.Identifier` 文件；未发现 Git LFS 配置。

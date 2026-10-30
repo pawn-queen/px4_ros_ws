@@ -8,10 +8,12 @@ import sys
 import struct
 import pytest
 
-SCRIPT=Path(__file__).resolve().parents[1]/'scripts/run_p2_sitl.py'
+ROOT=Path(__file__).resolve().parents[2]
+VALIDATION=ROOT/'validation'
+SCRIPT=VALIDATION/'sitl/run_acceptance.py'
 spec=importlib.util.spec_from_file_location('powerplant_sitl_acceptance',SCRIPT)
 runner=importlib.util.module_from_spec(spec);spec.loader.exec_module(runner)
-audit_spec=importlib.util.spec_from_file_location('takeoff_auditor',SCRIPT.with_name('powerplant_takeoff_audit.py'))
+audit_spec=importlib.util.spec_from_file_location('takeoff_auditor',VALIDATION/'model/takeoff_audit.py')
 auditor=importlib.util.module_from_spec(audit_spec);audit_spec.loader.exec_module(auditor)
 
 
@@ -337,7 +339,7 @@ def test_takeoff_audit_refuses_collision_candidate_and_binds_actual_config(tmp_p
 
 def test_collision_comparison_verifies_actual_nested_mesh_selection(tmp_path):
     import numpy as np
-    s=SCRIPT.with_name('validate_powerplant_physics.py')
+    s=VALIDATION/'model/validate_physics.py'
     spec=importlib.util.spec_from_file_location('collision_physics',s)
     physics=importlib.util.module_from_spec(spec);spec.loader.exec_module(physics)
     root=tmp_path/'assets';original=root/'models/power-plant';original.mkdir(parents=True)
@@ -371,7 +373,7 @@ def test_collision_comparison_verifies_actual_nested_mesh_selection(tmp_path):
 
 @pytest.mark.parametrize('binding',['valid','missing','same_resource'])
 def test_performance_comparison_requires_two_actual_bound_resources(tmp_path,binding):
-    p=SCRIPT.with_name('summarize_powerplant_benchmarks.py');s=importlib.util.spec_from_file_location('benchmark_compare',p)
+    p=VALIDATION/'support/summarize_benchmarks.py';s=importlib.util.spec_from_file_location('benchmark_compare',p)
     compare=importlib.util.module_from_spec(s);s.loader.exec_module(compare)
     for variant in ('complete','simplified'):
         for repeat in (1,2,3):

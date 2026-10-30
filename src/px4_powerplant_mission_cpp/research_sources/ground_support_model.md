@@ -14,11 +14,11 @@ PX4 保留的 SITL 导航参考是 **x500_depth 模型原点**；实体 `base_li
 
 ## 几何与版本证明
 
-`derive_sitl_body_envelope.derive_ground_support` 在原包络审计之外独立提取 `base_link_collision_1` 至 `_4` 的32个模型原点FLU角点。控制端应旋转这些点并取最低高度；它们不是32个同时接地的点。
+`body_envelope.derive_ground_support` 在原包络审计之外独立提取 `base_link_collision_1` 至 `_4` 的32个模型原点FLU角点。控制端应旋转这些点并取最低高度；它们不是32个同时接地的点。
 
 最低底轨为 `_3/_4`。水平姿态下的8个底部点为 x=±0.125m，y=±0.1245/±0.1395m，z=0.013m。完整0.35rad总倾角与旋翼任意偏航的解析界还证明：非起落架碰撞体的最低高度大于底轨最高高度约32.285mm。因此该支持模型不会用机身、相机或旋翼充当地面支点。未知形状、缺少起落架、移动支点、参考点变化或支持优先性无法证明时拒绝生成。
 
-`powerplant_takeoff_audit.generate_ground_support_model` 验证原body审计的4份SDF SHA和展开SDF SHA，再审计实际world。地面碰撞平面的法向/高度/有限显示范围必须覆盖整个确认区域；原始与简化mesh、其他碰撞实体须与z=0至6.3m的审计棱柱分离。原来的连通部件外部种子证明继续保留，接地面作为允许接触的独立几何，不标为空闲空间。
+`takeoff_audit.generate_ground_support_model` 验证原body审计的4份SDF SHA和展开SDF SHA，再审计实际world。地面碰撞平面的法向/高度/有限显示范围必须覆盖整个确认区域；原始与简化mesh、其他碰撞实体须与z=0至6.3m的审计棱柱分离。原来的连通部件外部种子证明继续保留，接地面作为允许接触的独立几何，不标为空闲空间。
 
 生成的 `model_revision` 是世界、递归资源、完整机体、支持点、审计器和参数指纹SHA的正63bit标识，便于ROS int64和C++缓存一致绑定。资源或标定变化不得沿用旧支持证据。
 
