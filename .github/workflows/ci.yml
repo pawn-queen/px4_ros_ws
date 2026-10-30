@@ -126,10 +126,30 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Setup ROS 2 Jazzy
-        uses: ros-tooling/setup-ros@0.7.19
-        with:
-          required-ros-distributions: jazzy
+      # 不用 ros-tooling/setup-ros：它在 Ubuntu 上装的是 ros-jazzy-desktop
+      # （实测 131 个包，含 rviz / demo 节点 / depthimage_to_laserscan），
+      # 而这个仓库只需要 base + 构建工具。少装一半以上，环境模型不变：
+      # 仍然是 apt 从 packages.ros.org 装，和你本机同源。
+      - name: Install ROS 2 Jazzy (ros-base)
+        run: |
+          set -eo pipefail
+          sudo apt-get update
+          sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+            -o /usr/share/keyrings/ros-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu noble main" \
+            | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ros-jazzy-ros-base
+          # rosdep / colcon / vcstool 不在 ros-base 里，由 ros-dev-tools 提供；
+          # 元包不可用时退回逐个包。
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ros-dev-tools \
+            || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                 python3-colcon-common-extensions python3-rosdep python3-vcstool
+          set +u; . /opt/ros/jazzy/setup.bash; set -u
+          command -v ros2 rosdep colcon
+          ros2 --version
+          echo "ros-jazzy packages installed: $(dpkg -l 2>/dev/null | grep -c 'ros-jazzy')"
 
       - name: rosdep install
         run: |

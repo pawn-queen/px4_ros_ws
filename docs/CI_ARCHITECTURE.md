@@ -16,7 +16,11 @@
 `ci.yml` 走的是：
 
 ```
-ros-tooling/setup-ros (Jazzy) → rosdep install → colcon build → ctest -R "^test_"
+apt 装 `ros-jazzy-ros-base` + `ros-dev-tools` → rosdep install → colcon build → `ctest -R "^test_"`。
+
+**为什么不用 `ros-tooling/setup-ros`**：它在 Ubuntu 上装的是 `ros-jazzy-desktop`（实测 131 个包，含 rviz、demo 节点、`depthimage_to_laserscan`），而本仓库只需要 base 和构建工具。改成直接 apt 装 `ros-base` 后，环境来源仍然是 `packages.ros.org`，和开发机同源，只是少装一半以上。
+
+**缓存**：`px4_msgs` 的构建产物按键到子模块 commit 缓存（它的 246 条消息代码生成占大头，ccache 无效）；C++ 包用 ccache。实测 Build 步骤 661 s → 35 s。
 ```
 
 不需要 Gazebo，不需要 PX4 源码树，所以能在 hosted 上跑。
