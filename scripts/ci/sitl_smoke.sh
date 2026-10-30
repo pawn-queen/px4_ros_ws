@@ -88,6 +88,14 @@ GZ_WORLDS=$PX4_ROOT/Tools/simulation/gz/worlds
 [ -d "$GZ_MODELS" ] || fail "missing Gazebo models dir: $GZ_MODELS"
 export GZ_SIM_RESOURCE_PATH="$GZ_MODELS:$GZ_WORLDS${GZ_SIM_RESOURCE_PATH:+:$GZ_SIM_RESOURCE_PATH}"
 note "GZ_SIM_RESOURCE_PATH=$GZ_SIM_RESOURCE_PATH"
+
+# PX4 自己的 gz 系统插件（MotorFailurePlugin 等）编在 build 里，不在系统路径上。
+# 不设这个变量时 Gazebo 会报 "Could not find shared library"，模型虽然解析成功，
+# 但机体系统起不来，PX4 永远拿不到 IMU/气压计，也就不会发布 /fmu/out/*。
+GZ_PLUGINS=$PX4_ROOT/build/px4_sitl_default/src/modules/simulation/gz_plugins
+[ -d "$GZ_PLUGINS" ] || fail "missing PX4 gz plugins dir: $GZ_PLUGINS"
+export GZ_SIM_SYSTEM_PLUGIN_PATH="$GZ_PLUGINS${GZ_SIM_SYSTEM_PLUGIN_PATH:+:$GZ_SIM_SYSTEM_PLUGIN_PATH}"
+note "GZ_SIM_SYSTEM_PLUGIN_PATH=$GZ_SIM_SYSTEM_PLUGIN_PATH"
 export PX4_GZ_MODEL=PX4
 export PX4_SIM_MODEL=gz_x500_depth
 export PX4_SYS_AUTOSTART=4002
