@@ -79,6 +79,15 @@ export GZ_IP=127.0.0.1
 export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-$(shuf -i 30-60 -n 1)}
 export ROS2CLI_ENABLE_DAEMON=0
 export PX4_GZ_STANDALONE=1
+
+# Gazebo 需要知道模型和世界在哪。PX4 自己的 make px4_sitl 会设这两个变量，
+# 我们直接拉起 gz 时必须自己设，否则 world 里的 file://x500_depth/model.sdf
+# 解析不到（"Unable to find uri"）。
+GZ_MODELS=$PX4_ROOT/Tools/simulation/gz/models
+GZ_WORLDS=$PX4_ROOT/Tools/simulation/gz/worlds
+[ -d "$GZ_MODELS" ] || fail "missing Gazebo models dir: $GZ_MODELS"
+export GZ_SIM_RESOURCE_PATH="$GZ_MODELS:$GZ_WORLDS${GZ_SIM_RESOURCE_PATH:+:$GZ_SIM_RESOURCE_PATH}"
+note "GZ_SIM_RESOURCE_PATH=$GZ_SIM_RESOURCE_PATH"
 export PX4_GZ_MODEL=PX4
 export PX4_SIM_MODEL=gz_x500_depth
 export PX4_SYS_AUTOSTART=4002
