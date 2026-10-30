@@ -6,16 +6,16 @@
 
 | 内容 | 原实现 | P1 实现 | 代码 |
 | --- | --- | --- | --- |
-| 射线空闲更新 | 沿射线按半体素间隔取点 | 精确跨越体素边界，只给具有正长度交段的格子增加空闲证据 | [raycast.hpp](include/px4_powerplant_mission_cpp/raycast.hpp)、[voxel_grid.cpp](src/voxel_grid.cpp) |
-| 深度采样 | 固定像素步长 | 按深度、投影足迹、深度/有效性边缘细分 tile，保留真实像素并限制射线预算 | [depth_sampling.hpp](include/px4_powerplant_mission_cpp/depth_sampling.hpp)、[voxel_mapper_node.cpp](src/voxel_mapper_node.cpp) |
-| 前沿和净空 | 每次规划从全图重复计算 | 分类差分驱动局部更新；不可变分片索引供规划快照共享 | [planning_index.cpp](src/planning_index.cpp)、[map_snapshot.cpp](src/map_snapshot.cpp) |
-| 相机可见性 | 核心默认对称 FOV | 使用成功融合帧匹配的 CameraInfo 与实际尺寸、主点，构成非对称矩形视锥 | [scan_coverage.hpp](include/px4_powerplant_mission_cpp/scan_coverage.hpp)、[frontier_planner.cpp](src/frontier_planner.cpp) |
-| 时间与收益 | 主要按路程除速度 | 对每个候选偏航分别计入转向、观察停留与返航转向，再筛选预算和评分 | [frontier_planner.cpp](src/frontier_planner.cpp) |
-| 初扫完成 | 固定步数和新融合计数 | 实际深度射线方向覆盖率、稳定悬停、真实标定和已知空闲首段共同决定 | [mission_state_machine.cpp](src/mission_state_machine.cpp) |
-| 重规划 | 空结果含义不明；全局地图版本变就丢弃 | 明确失败原因、局部搜索不足后扩大搜索；按依赖区域与最新安全条件检查异步结果 | [mission_planning.cpp](src/mission_planning.cpp) |
-| 视点记忆 | 一个位置看过就永久跳过 | 记录位置与偏航 bin；附近几何变化后允许重新观察 | [mission_state_machine.cpp](src/mission_state_machine.cpp)、[mission_planning.cpp](src/mission_planning.cpp) |
+| 射线空闲更新 | 沿射线按半体素间隔取点 | 精确跨越体素边界，只给具有正长度交段的格子增加空闲证据 | [raycast.hpp](../../src/px4_powerplant_mission_cpp/include/px4_powerplant_mission_cpp/raycast.hpp)、[voxel_grid.cpp](../../src/px4_powerplant_mission_cpp/src/voxel_grid.cpp) |
+| 深度采样 | 固定像素步长 | 按深度、投影足迹、深度/有效性边缘细分 tile，保留真实像素并限制射线预算 | [depth_sampling.hpp](../../src/px4_powerplant_mission_cpp/include/px4_powerplant_mission_cpp/depth_sampling.hpp)、[voxel_mapper_node.cpp](../../src/px4_powerplant_mission_cpp/src/voxel_mapper_node.cpp) |
+| 前沿和净空 | 每次规划从全图重复计算 | 分类差分驱动局部更新；不可变分片索引供规划快照共享 | [planning_index.cpp](../../src/px4_powerplant_mission_cpp/src/planning_index.cpp)、[map_snapshot.cpp](../../src/px4_powerplant_mission_cpp/src/map_snapshot.cpp) |
+| 相机可见性 | 核心默认对称 FOV | 使用成功融合帧匹配的 CameraInfo 与实际尺寸、主点，构成非对称矩形视锥 | [scan_coverage.hpp](../../src/px4_powerplant_mission_cpp/include/px4_powerplant_mission_cpp/scan_coverage.hpp)、[frontier_planner.cpp](../../src/px4_powerplant_mission_cpp/src/frontier_planner.cpp) |
+| 时间与收益 | 主要按路程除速度 | 对每个候选偏航分别计入转向、观察停留与返航转向，再筛选预算和评分 | [frontier_planner.cpp](../../src/px4_powerplant_mission_cpp/src/frontier_planner.cpp) |
+| 初扫完成 | 固定步数和新融合计数 | 实际深度射线方向覆盖率、稳定悬停、真实标定和已知空闲首段共同决定 | [mission_state_machine.cpp](../../src/px4_powerplant_mission_cpp/src/mission_state_machine.cpp) |
+| 重规划 | 空结果含义不明；全局地图版本变就丢弃 | 明确失败原因、局部搜索不足后扩大搜索；按依赖区域与最新安全条件检查异步结果 | [mission_planning.cpp](../../src/px4_powerplant_mission_cpp/src/mission_planning.cpp) |
+| 视点记忆 | 一个位置看过就永久跳过 | 记录位置与偏航 bin；附近几何变化后允许重新观察 | [mission_state_machine.cpp](../../src/px4_powerplant_mission_cpp/src/mission_state_machine.cpp)、[mission_planning.cpp](../../src/px4_powerplant_mission_cpp/src/mission_planning.cpp) |
 
-研究依据与适用边界见 [research.md](research.md)：借鉴 R1 的体素遍历思想，以及 R3/R5 的增量处理思路。本项目没有完整移植 FUEL、FALCON 或其它论文系统，也没有据此继承其性能或安全保证。
+研究依据与适用边界见 [研究依据](../research/native-stack-research.md)：借鉴 R1 的体素遍历思想，以及 R3/R5 的增量处理思路。本项目没有完整移植 FUEL、FALCON 或其它论文系统，也没有据此继承其性能或安全保证。
 
 ## 2. 精确射线：正长度交段与命中优先
 
@@ -184,6 +184,6 @@ receiver 保存至多 64 条、共 200000 个变化格的版本历史。旧计�
 bash validation/baseline/run_baseline.sh
 ```
 
-名字保留以便复现原基线；新增 P1 测试会随 CMake 一并执行。主要新增验证为：独立 DDA 几何 oracle、薄障碍像素与预算、随机增量索引与全量参考、实际非对称相机视锥、转向/停留预算、方向记忆、覆盖初扫、迟到旧观测和规划依赖区域。实际数量和结果记录在 [MIGRATION_STATUS.md](MIGRATION_STATUS.md)。
+名字保留以便复现原基线；新增 P1 测试会随 CMake 一并执行。主要新增验证为：独立 DDA 几何 oracle、薄障碍像素与预算、随机增量索引与全量参考、实际非对称相机视锥、转向/停留预算、方向记忆、覆盖初扫、迟到旧观测和规划依赖区域。实际数量和结果记录在 [docs/history/migration-status.md](../history/migration-status.md)。
 
 仍需完整 PX4/Gazebo、真实设备标定和大地图/YOLO 并行负载评测。当前没有实飞速度提升、覆盖率提升百分比或运行时延保证；连续机体碰撞、制动余量和动态障碍预测继续属于后续阶段。

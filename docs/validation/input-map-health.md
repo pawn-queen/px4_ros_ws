@@ -19,7 +19,7 @@
 
 ## 起飞区域与启动
 
-共享配置位于 [powerplant.yaml](../px4_powerplant_mission/config/powerplant.yaml)。默认：
+共享配置位于 [powerplant.yaml](../../src/px4_powerplant_mission/config/powerplant.yaml)。默认：
 
 ```yaml
 takeoff_region_confirmed: false
@@ -93,8 +93,8 @@ bash validation/baseline/run_baseline.sh
 
 入口先运行真实双进程话题/服务探针，再串行执行 C++、Python/C++ 对照、跨进程契约和 Python 回归。失败以非零状态退出，不跳过通信失败。结果保存在 `log/p0_baseline/` 与 `build/px4_powerplant_mission_cpp/test_results/`，可在同一提交/配置下重放比较。
 
-此入口也已纳入后续 P1 的射线/采样、增量索引、视场/时间预算、实际覆盖与视点确认测试；脚本名称保留。新参数及融合观测元数据见 [P1_IMPLEMENTATION.md](P1_IMPLEMENTATION.md)。
+此入口也已纳入后续 P1 的射线/采样、增量索引、视场/时间预算、实际覆盖与视点确认测试；脚本名称保留。新参数及融合观测元数据见 [docs/design/mapping-and-frontier.md](../design/mapping-and-frontier.md)。
 
 可重放输入覆盖：有效采样后重复/乱序/退化、冻结接收、坐标 epoch 重置与迟到旧 epoch、地图指纹不匹配、相对高平台起飞、起飞柱体障碍、各运动阶段失去导航、降落超时和 landed/disarmed 确认。跨进程重放用合成 ROS/PX4 消息，不启动 Gazebo、Agent、真实飞控或任何电机。
 
-本轮实际构建/测试数量和剩余验收见 [MIGRATION_STATUS.md](MIGRATION_STATUS.md)。完整飞行仍需按原项目步骤验证 UWB→EV→PX4→导航→地图→任务链、飞控降级行为、动力学跟踪和真实传感器标定。
+本轮实际构建/测试数量和剩余验收见 [docs/history/migration-status.md](../history/migration-status.md)。完整飞行仍需按原项目步骤验证 UWB→EV→PX4→导航→地图→任务链、飞控降级行为、动力学跟踪和真实传感器标定。

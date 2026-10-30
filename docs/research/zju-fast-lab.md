@@ -17,7 +17,7 @@
 - 地图、速度、定位或时钟异常不能由高信息收益抵消；安全检查先筛选，收益函数只比较已经合格的候选。
 - 正式仿真验收使用 **`/home/pawn/drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf` 及其实际依赖模型**。测试小房间、点云演示、指令直接转里程计的演示不代替这一场景。
 
-本地依据：[当前实施记录](MIGRATION_STATUS.md)、[P1 原理](P1_IMPLEMENTATION.md)、[P2 原理](P2_IMPLEMENTATION.md)、[P2 验证边界](P2_VALIDATION.md)、[构建关系](CMakeLists.txt)。
+本地依据：[当前实施记录](../history/migration-status.md)、[P1 原理](../design/mapping-and-frontier.md)、[P2 原理](../design/motion-and-inspection.md)、[P2 验证边界](../validation/sitl-acceptance.md)、[构建关系](../../src/px4_powerplant_mission_cpp/CMakeLists.txt)。
 
 ## 2. 先分清成果归属
 
@@ -40,7 +40,7 @@
 
 ## 3. 本项目已经实现的基线
 
-下面以当前实现为基线，不能把 [旧 research.md 的历史问题表](research.md) 直接当作现有缺口。当前提交已包含 P2，不沿用旧架构普查中“P2 仍未提交”的时间截面结论。
+下面以当前实现为基线，不能把 [旧研究的历史问题表](native-stack-research.md) 直接当作现有缺口。当前提交已包含 P2，不沿用旧架构普查中“P2 仍未提交”的时间截面结论。
 
 | 能力 | 已实现内容 | 本次研究应继续回答的问题 |
 |---|---|---|
@@ -51,7 +51,7 @@
 | 运动 | 五次直线段、速度/加速度限制、实测停稳、独立 50 Hz 执行、持续停止包络 | 是否在同等安全条件下减少停车次数和计算尾延迟？ |
 | 巡检 | RGB-D 注册、目标确认、稳定面片、质量与保存成功后提交覆盖 | 是否能更准确预测哪次观察会产出一张有效照片，并减少低收益补拍？ |
 
-主要代码入口：[voxel_mapper_node.cpp](src/voxel_mapper_node.cpp)、[planning_index.cpp](src/planning_index.cpp)、[frontier_planner.cpp](src/frontier_planner.cpp)、[mission_planning.cpp](src/mission_planning.cpp)、[motion.cpp](src/motion.cpp)、[motion_runtime.cpp](src/motion_runtime.cpp)、[topology.cpp](src/topology.cpp)、[inspection.cpp](src/inspection.cpp)。上一轮记录的 316 个直接用例通过是软件基线；本轮没有重跑，完整指定场景飞行仍没有通过依据。[验证记录](P2_VALIDATION.md)
+主要代码入口：[voxel_mapper_node.cpp](../../src/px4_powerplant_mission_cpp/src/voxel_mapper_node.cpp)、[planning_index.cpp](../../src/px4_powerplant_mission_cpp/src/planning_index.cpp)、[frontier_planner.cpp](../../src/px4_powerplant_mission_cpp/src/frontier_planner.cpp)、[mission_planning.cpp](../../src/px4_powerplant_mission_cpp/src/mission_planning.cpp)、[motion.cpp](../../src/px4_powerplant_mission_cpp/src/motion.cpp)、[motion_runtime.cpp](../../src/px4_powerplant_mission_cpp/src/motion_runtime.cpp)、[topology.cpp](../../src/px4_powerplant_mission_cpp/src/topology.cpp)、[inspection.cpp](../../src/px4_powerplant_mission_cpp/src/inspection.cpp)。上一轮记录的 316 个直接用例通过是软件基线；本轮没有重跑，完整指定场景飞行仍没有通过依据。[验证记录](../validation/sitl-acceptance.md)
 
 ## 4. 逐项借鉴：方法、适配位置和边界
 
@@ -61,7 +61,7 @@
 
 **本项目建议。** 优先借鉴“只对碰撞相关部分计算代价”和有限候选的局部改良，先优化已有直线骨架的捷径、视点终端方向和时间分配，保留现有五次轨迹作为可比较的基线。新的候选只有同时满足实际首局部段和完整去返检查，才允许交给执行器。
 
-**接口与限制。** 入口在 `mission_planning.cpp → build_motion_plan()` 的后台准备路径。当前 [MotionPlan](include/px4_powerplant_mission_cpp/motion.hpp) 保存的是 `QuinticMotionLeg`，任意 B-spline 不能直接塞入该类型。若以后采用曲线，必须扩展内部轨迹求值、连续扫掠验证、时间对齐和停止尾段连接测试；外层状态机、健康门控和 PX4 接口继续保持。论文的计算速度不能作为本机 p99 承诺，优化器“找到解”也不代替本项目的未知区禁入与停止检查。
+**接口与限制。** 入口在 `mission_planning.cpp → build_motion_plan()` 的后台准备路径。当前 [MotionPlan](../../src/px4_powerplant_mission_cpp/include/px4_powerplant_mission_cpp/motion.hpp) 保存的是 `QuinticMotionLeg`，任意 B-spline 不能直接塞入该类型。若以后采用曲线，必须扩展内部轨迹求值、连续扫掠验证、时间对齐和停止尾段连接测试；外层状态机、健康门控和 PX4 接口继续保持。论文的计算速度不能作为本机 p99 承诺，优化器“找到解”也不代替本项目的未知区禁入与停止检查。
 
 ### 4.2 GCOPTER / MINCO：统一考虑时间、平滑和机体可执行约束
 
@@ -214,7 +214,7 @@ flowchart LR
 | 烟雾 | `smoke_emitter` 位于 `(5,10,8)`，发射体 size `10,10,15`，rate 8，lifetime 20 | 只确认存在粒子效果；对 RGB、深度、激光的实际测量影响需要运行测量，不能直接称为真实烟雾传感器退化模型 |
 | 当前任务 ROI | 共享配置约为 x `[-24,34]`、y `[-9,49]`、z `[3.5,7]` | 当前任务边界不等于整个电厂模型；全场覆盖分母必须预先明确 |
 
-模型来源：[power-plant/model.sdf](/home/pawn/drone-simulation/Tools/simulation/gz/models/power-plant/model.sdf)、[land_zone/model.config](/home/pawn/drone-simulation/Tools/simulation/gz/models/land_zone/model.config)、[land_zone.sdf](/home/pawn/drone-simulation/Tools/simulation/gz/models/land_zone/land_zone.sdf)、[共享参数](../px4_powerplant_mission/config/powerplant.yaml)。本次只记录这些事实，不修模型或参数。
+模型来源：[power-plant/model.sdf](/home/pawn/drone-simulation/Tools/simulation/gz/models/power-plant/model.sdf)、[land_zone/model.config](/home/pawn/drone-simulation/Tools/simulation/gz/models/land_zone/model.config)、[land_zone.sdf](/home/pawn/drone-simulation/Tools/simulation/gz/models/land_zone/land_zone.sdf)、[共享参数](../../src/px4_powerplant_mission/config/powerplant.yaml)。本次只记录这些事实，不修模型或参数。
 
 为确保后续是同一个场景，记录本次读取文件的 SHA256：
 
@@ -295,7 +295,7 @@ flowchart LR
 | S11 | *Radar-Diffusion*, RA-L 2024。[arXiv](https://arxiv.org/abs/2403.08460)、[官方代码](https://github.com/ZJU-FAST-Lab/Radar-Diffusion) | 毫米波数据前提与不能直接替代真实空闲证据 |
 | S12 | Ruibin Zhang, Lun Pan, Zelong Xia, Jialiang Hou, Fei Gao, *DPNet: Efficient Dead-End Prediction and Avoidance for Vision-Based UAV Navigation*, arXiv 2026-08-17。[原文](https://arxiv.org/abs/2608.16640)、[官方关联入口](https://github.com/ZJU-FAST-Lab/Primitive-Planner) | 近期 RGB-D 死胡同预测；未核实正式发表，不把论文重规划频率等同于本项目发布频率 |
 | S13 | [Real-Time-SVSDF-Planner 官方仓库](https://github.com/ZJU-FAST-Lab/Real-Time-SVSDF-Planner) | 任意形状重规划的代码线索；本次没有核实关联正式论文与完整性能数据 |
-| L1 | [P1 实施](P1_IMPLEMENTATION.md)、[P2 实施](P2_IMPLEMENTATION.md)、[验证](P2_VALIDATION.md)、[迁移记录](MIGRATION_STATUS.md) | 当前已经实现的能力与飞行验收边界 |
+| L1 | [P1 实施](../design/mapping-and-frontier.md)、[P2 实施](../design/motion-and-inspection.md)、[验证](../validation/sitl-acceptance.md)、[迁移记录](../history/migration-status.md) | 当前已经实现的能力与飞行验收边界 |
 | L2 | [实际 powerplant.sdf](/home/pawn/drone-simulation/Tools/simulation/gz/worlds/powerplant.sdf)、[power-plant 模型](/home/pawn/drone-simulation/Tools/simulation/gz/models/power-plant/model.sdf)、[现有运行器](../../validation/sitl/run_acceptance.py) | 本地场景事实与正式验收缺口 |
 
 本轮未复制上游算法源码、未更换框架、未调整飞控参数、未启动仿真。所有改进幅度、创新假设和正式电厂场景验收结论均留待后续实验。
