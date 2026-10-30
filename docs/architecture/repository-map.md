@@ -16,7 +16,7 @@
 
 | 仓库/目录 | 远端与版本 | 规模/状态 | 角色 |
 |---|---|---|---|
-| `px4_ros_ws` | `github.com/pawn-queen/px4_ros_ws`；`main`；HEAD `7741be72`；工作树干净 | 文档迁移已提交；新增 `GLOSSARY.md`、`docs/README.md`、`docs/adr/`；与 `origin/main` 同步 | 机载任务栈主工作区 |
+| `px4_ros_ws` | `github.com/pawn-queen/px4_ros_ws`；`main`；HEAD `3ff1107b`；当前工作树 | 文档迁移已提交；新增 `GLOSSARY.md`、`docs/README.md`、`docs/adr/`；与 `origin/main` 同步 | 机载任务栈主工作区 |
 | `px4_ros_ws/src/px4_msgs` | PX4 官方 `github.com/PX4/px4_msgs`；gitlink `7abb737`；版本 2.0.1 | 255 个跟踪文件；246 个 `msg`；干净 | PX4 uORB 消息的 ROS 2 映射 |
 | `px4_ros_ws/src/px4_ros_com` | PX4 官方 `github.com/PX4/px4_ros_com`；gitlink `86e9aeb`（`beta-384`） | 28 个跟踪文件；干净；已安装 | 官方示例/`frame_transforms`，**业务包未引用** |
 | `drone-simulation` | `git@github.com:pawn-queen/drone-simulation.git`；`main`；HEAD `d0a0e3cc3c`；`v1.17.0-alpha1-1645-gd0a0e3cc3c`；49,681 个提交；上游基点 `89806574`（2026-04-29） | 13,819 个跟踪文件；约 8.8 GB（`build/` 7.6 GB 未跟踪）；本地相对基点仅 2 个文件、+15/−1；`Tools/simulation/gz` 有 1 个未提交模型修改 | PX4 分支 + Gazebo 仿真资源 |

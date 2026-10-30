@@ -82,7 +82,8 @@
 | `launch/powerplant_system.launch.py` | Python launch | 启动定位/EV/时钟/真值/UWB/建图/YOLO/控制 | 默认 8 个节点条件；profile 切换；PX4 话题版本后缀 | `:12-151` |
 | `launch/gz_sensor_bridge.launch.py` | Python launch | Gazebo 图像/深度/雷达/点云 → ROS | 6 组 bridge；默认长 RGB 话题名 | `:13-58` |
 | `launch/visualization.launch.py` | Python launch | RViz + 预置配置 | `use_sim_time=true` | `:10-27` |
-| `config/powerplant.yaml` | YAML | 共享参数总表 | 话题、UWB anchors、建图、控制、巡检、坐标 | `:1-378` |
+| `config/powerplant.yaml` | YAML | 共享参数总表 | 话题、UWB anchors、建图、控制、巡检、坐标 | `:1-419` |
+| `config/runtime_profiles.json` | JSON | profile → localization/motion 配置和 use_* 默认值 | `simulation` / `hardware` | 新增 profile manifest |
 | `config/localization_simulation.yaml` | YAML | 仿真 UWB 源/姿态开关 | `/uwb/pose`，允许真值姿态 | `:1-13` |
 | `config/localization_hardware.yaml` | YAML | 实机 UWB 源/姿态开关 | `/uwb/hardware/*`，禁止姿态 | `:1-13` |
 | `config/p2_simulation.yaml` | YAML | SITL 相机/雷达外参、机体包络、起飞 bootstrap | `motion_model_configured=true` | `:1-26` |

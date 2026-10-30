@@ -1,6 +1,6 @@
 # px4_powerplant_mission
 
-面向 PX4 的 ROS2 Jazzy 任务包，定位与外部视觉支持仿真和实机共用。仿真入口为 `PX4_GZ_WORLD=powerplant make px4_sitl gz_x500_depth`。默认由独立的 `px4_powerplant_mission_cpp` 包执行体素建图、三维规划和 Offboard 控制；定位、UWB、外部视觉桥和 YOLO 继续使用 Python。它不包含硬件驱动；`localization_profile=simulation` 使用仿真 UWB，`hardware` 接入独立的 UWB Host。雷达/深度相机/相机通过 Gazebo bridge 或真实驱动接入。定位部署、接口变更、时间与标定要求见 [定位部署说明](LOCALIZATION_DEPLOYMENT.md)。当前工程已在 `drone-simulation/Tools/simulation/gz/models/x500_depth/model.sdf` 中给 `x500_depth` 增加了 360 度平面 `mapping_lidar`，原启动命令不需要改。
+面向 PX4 的 ROS2 Jazzy 任务包，定位与外部视觉支持仿真和实机共用。仿真入口为 `PX4_GZ_WORLD=powerplant make px4_sitl gz_x500_depth`。默认由独立的 `px4_powerplant_mission_cpp` 包执行体素建图、三维规划和 Offboard 控制；定位、UWB、外部视觉桥和 YOLO 继续使用 Python。它不包含硬件驱动；新入口 `profile=simulation` 使用仿真 UWB，`profile=hardware` 接入独立的 UWB Host；旧 `localization_profile` 参数保留兼容。雷达/深度相机/相机通过 Gazebo bridge 或真实驱动接入。定位部署、接口变更、时间与标定要求见 [定位部署说明](LOCALIZATION_DEPLOYMENT.md)。当前工程已在 `drone-simulation/Tools/simulation/gz/models/x500_depth/model.sdf` 中给 `x500_depth` 增加了 360 度平面 `mapping_lidar`，原启动命令不需要改。
 
 ## 包结构
 
@@ -410,7 +410,7 @@ P2 仿真安装与运动参数由 `config/p2_simulation.yaml` 覆盖；`hardware
 
 本轮已完成 P2 软件逻辑核查，316 个直接回归用例通过；飞控/动力学参数由用户调整，完整飞行尚未验收。安全模型和标定参数应在任务开始前设置，调整后在上锁状态重启节点/任务；本轮不提供飞行中热切换机体、制动或误差模型的保证。上述微上升和时长仍是仿真初值，参数核对通过不等于实际推力或跟踪表现通过。
 
-实机运动覆盖文件通过 `motion_config_file:=/绝对路径/实测_motion.yaml` 传入，优先级高于共享配置及默认profile选择。该文件同时配置mapper与controller的同一安装约定。
+实机运动覆盖文件通过 `motion_config_file:=/绝对路径/实测_motion.yaml` 传入，优先级高于共享配置及 profile 默认。该文件同时配置mapper与controller的同一安装约定。
 
 2026-10-29续改已接入起飞响应同步、软制动恢复锁存、独立控制配置和实际物理验收；最终506项直接软件回归通过。真实电厂允许的五个积分候选均未完成起飞初扫，未冻结控制配置，后续主链不能宣布可用。前述微上升时长仅证明参考意图已发送，实际离地仍要求起落架净空和连续新样本。入口与结果见 [起飞响应说明](../../docs/design/takeoff-response-sync.md) 和 [最新验收记录](../../docs/validation/issue3-actual-plant.md)。
 
