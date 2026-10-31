@@ -117,3 +117,96 @@ def test_mission_requires_explicit_frozen_profile_before_any_setup():
     result = subprocess.run(["bash", str(ENTRY), "mission"], env=env, capture_output=True, text=True)
     assert result.returncode == 2
     assert "requires an explicit frozen" in result.stderr
+
+
+def dds_program():
+    return ENTRY.read_text().split("<<'PYDDS'\n", 1)[1].split("\nPYDDS\n", 1)[0]
+
+
+@pytest.fixture
+def dds_fallback(tmp_path, monkeypatch):
+    """运行真实 shell 内嵌程序，只替换网络和系统解包边界。"""
+    import platform
+
+    payloads = {"dds-one": b"pinned package one", "dds-two": b"pinned package two"}
+    lock = tmp_path / "ros_dependencies.json"
+    lock.write_text(json.dumps({"packages": [{
+        "package": name, "version": "fixture-1", "sha256": hashlib.sha256(data).hexdigest(),
+        "url": f"https://mirrors.ustc.edu.cn/ros2/ubuntu/pool/{name}.deb",
+    } for name, data in payloads.items()]}))
+    output = tmp_path / "output"
+    output.mkdir()
+    prefix = tmp_path / "user-prefix"
+    real_read_text = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path == Path("/etc/os-release"):
+            return 'VERSION_CODENAME="noble"\n'
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(sys, "argv", ["dds-fallback", str(lock), str(prefix), str(output)])
+    return {"lock": lock, "prefix": prefix, "output": output, "payloads": payloads, "events": []}
+
+
+def execute_dds(fixture, monkeypatch, download):
+    def run(command, **kwargs):
+        if command[0] == "curl":
+            # Transport fallback keeps HTTPS and certificate verification.
+            assert command[command.index("--proto") + 1] == "=https"
+            assert command[command.index("--proto-redir") + 1] == "=https"
+            assert "--insecure" not in command and "-k" not in command
+            url = command[-1]
+            returncode, data = download(url)
+            fixture["events"].append(("curl", url, returncode))
+            if data is not None:
+                Path(command[command.index("--output") + 1]).write_bytes(data)
+            return subprocess.CompletedProcess(command, returncode)
+        assert command[:2] == ["dpkg-deb", "-x"]
+        assert kwargs.get("check") is True
+        fixture["events"].append(("extract", Path(command[2]).name, Path(command[2]).read_bytes()))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    exec(compile(dds_program(), str(ENTRY) + ":PYDDS", "exec"), {})
+
+
+def test_dds_extracts_only_after_every_package_passes_original_sha(dds_fallback, monkeypatch):
+    def download(url):
+        if "ustc.edu.cn" in url and url.endswith("dds-one.deb"):
+            return 35, None  # 原站连接失败后，使用镜像；并非忽略 TLS 校验。
+        name = Path(url).stem
+        return 0, dds_fallback["payloads"][name]
+
+    execute_dds(dds_fallback, monkeypatch, download)
+    events = dds_fallback["events"]
+    assert [event[0] for event in events] == ["curl", "curl", "curl", "extract", "extract"]
+    assert {event[2] for event in events if event[0] == "extract"} == set(dds_fallback["payloads"].values())
+    receipts = json.loads((dds_fallback["output"] / "middleware_fallback_receipts.json").read_text())
+    assert len(receipts) == 2
+    assert receipts[0]["url"].startswith("https://mirrors.tuna.tsinghua.edu.cn/")
+    assert all(row["sha256"] == hashlib.sha256(dds_fallback["payloads"][row["package"]]).hexdigest()
+               for row in receipts)
+
+
+def test_dds_later_hash_mismatch_prevents_even_prior_verified_package_extraction(dds_fallback, monkeypatch):
+    def download(url):
+        name = Path(url).stem
+        return 0, dds_fallback["payloads"][name] if name == "dds-one" else b"tampered package"
+
+    with pytest.raises(SystemExit, match="SHA256 mismatch: dds-two"):
+        execute_dds(dds_fallback, monkeypatch, download)
+    assert [event[0] for event in dds_fallback["events"]] == ["curl", "curl"]
+    assert not dds_fallback["prefix"].exists()
+    assert not (dds_fallback["output"] / "middleware_fallback_receipts.json").exists()
+
+
+def test_dds_all_download_channels_fail_without_extraction(dds_fallback, monkeypatch):
+    with pytest.raises(SystemExit, match="locked DDS dependency unavailable: dds-one"):
+        execute_dds(dds_fallback, monkeypatch, lambda url: (35, None))
+    events = dds_fallback["events"]
+    assert [event[0] for event in events] == ["curl", "curl"]
+    assert "ustc.edu.cn" in events[0][1] and "tuna.tsinghua.edu.cn" in events[1][1]
+    assert not dds_fallback["prefix"].exists()
+    assert not (dds_fallback["output"] / "middleware_fallback_receipts.json").exists()
