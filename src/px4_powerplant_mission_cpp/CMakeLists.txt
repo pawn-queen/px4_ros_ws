@@ -41,7 +41,6 @@ install(TARGETS powerplant_core powerplant_mission voxel_mapper_node offboard_mi
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
-install(FILES research_sources/sitl_body_envelope.json DESTINATION share/${PROJECT_NAME}/research_sources)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)

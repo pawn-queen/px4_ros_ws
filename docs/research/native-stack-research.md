@@ -34,7 +34,7 @@ START → SAFE_TAKEOFF → HOVER_SCAN → EXPLORE
 本次先使用用户指定的 Consensus 进行定向检索，再通过论文原文、作者项目页和出版信息补充核验。主要关注 2023—2026 年成果，同时保留直接影响实现选择的基础工作。这里的“最新”指截至调研日已核验的相关公开研究，不表示穷尽所有论文或建立统一性能排名。
 
 - [Consensus 完整研究线程](https://consensus.app/search/请完成一份中文研究综述面向当前-ros2px4-c-室内无人机自主探索与巡检项目研究截止2026-1/wSzMC0RaTjairsryp9SvDQ/)
-- [Consensus 检索引用元数据](../../src/px4_powerplant_mission_cpp/research_sources/consensus_sources.json)：保留原工具返回的 18 条记录；其中年份可能是预印本年份，不能直接当成正式出版年份。
+- [Consensus 检索引用元数据](consensus_sources.json)：保留原工具返回的 18 条记录；其中年份可能是预印本年份，不能直接当成正式出版年份。
 - 本文参考文献使用独立的 **R1—R14** 编号，包含补充检索，不与上述 JSON 的编号一一对应。论文结论和本项目工程建议在下文分开说明；没有将论文报告的加速比、安全性或覆盖率直接套用到本项目。
 
 调研时的历史验证记录为 Python 112 项、C++ 原生 17 项、Python/C++ 对照 26 项通过，跨进程 ROS 收不到数据。2026-10-25 的 P0/P1 实施后，本机采用临时 Cyclone DDS 配置恢复同机跨进程基线；当前通过 C++ 62 项、几何/算法对照 26 项、跨进程 ROS 7 项和 Python 113 项。默认 Fast DDS 故障根因仍未确定。**完整 PX4/Gazebo 飞行、真实飞控/UWB 接入和大型地图时延尚未完成验收。** 具体结果以 [docs/history/migration-status.md](../history/migration-status.md) 为准。

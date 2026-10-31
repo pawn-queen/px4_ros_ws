@@ -58,7 +58,7 @@ flowchart TB
 
 - `docs/project-context` 已以 `7741be72` 提交并合入 `main`。
 - C++ package 的 9 份阶段/工作项文档和研究文档已迁到根 `docs/design|validation|history|research`；新增 `GLOSSARY.md`、`docs/README.md`、`docs/adr/`。
-- CMake 的文档安装清单只安装 runtime README 和 `research_sources/sitl_body_envelope.json`。
+- CMake 的安装清单只安装 runtime README 与 `config/`；SITL 机体包络证据归 `validation/evidence/`，不随 ROS package 安装。
 - 当前工作树干净；本轮没有未提交的文档改动。
 
 **影响**

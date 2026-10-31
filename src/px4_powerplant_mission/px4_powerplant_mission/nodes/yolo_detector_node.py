@@ -62,7 +62,6 @@ class YoloDetectorNode(Node):
         self.declare_parameter("publish_source_image", True)
         self.declare_parameter("annotated_image_topic", "/powerplant/perception/yolo_annotated")
         self.declare_parameter("model_path", "models/yolo/best.pt")
-        self.declare_parameter("fallback_model_path", "models/yolo/yolov8n.pt")
         self.declare_parameter("ultralytics_repo", "")
         self.declare_parameter("confidence_threshold", 0.35)
         self.declare_parameter("iou_threshold", 0.45)
@@ -89,9 +88,11 @@ class YoloDetectorNode(Node):
 
         model_path = self._resolve_path(str(self.get_parameter("model_path").value))
         if not model_path.exists():
-            model_path = self._resolve_path(str(self.get_parameter("fallback_model_path").value))
-        if not model_path.exists():
-            self.get_logger().error(f"YOLO model not found: {model_path}")
+            self.get_logger().error(
+                f"YOLO model not found: {model_path}. Place the trained weights at "
+                "models/yolo/best.pt in the source package and rebuild, or pass an "
+                "absolute model_path."
+            )
             return
 
         try:

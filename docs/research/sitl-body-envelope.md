@@ -9,7 +9,7 @@ PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 \
   validation/model/body_envelope.py \
   --tilt-rad 0.35 \
   --check-profile src/px4_powerplant_mission/config/p2_simulation.yaml \
-  --report src/px4_powerplant_mission_cpp/research_sources/sitl_body_envelope.json
+  --report validation/evidence/sitl_body_envelope.json
 ```
 
 脚本使用 `SDF_PATH` 指向原始模型目录，调用 `gz sdf -p` 让 libsdformat 展开 merge includes；自行解析展开后的 relative_to 图，将碰撞体转换到未放置的 **x500_depth 模型原点**。该原点是当前保留 SITL 配置的 PX4 导航参考，不是高出 0.24 m 的实体 base_link。四个输入 SDF 和展开结果的 SHA256 保存在 JSON 中；模型变动后必须重新运行。

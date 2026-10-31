@@ -171,7 +171,6 @@ powerplant_yolo_detector:
     detections_topic: /powerplant/perception/yolo_detections
     annotated_image_topic: /powerplant/perception/yolo_annotated
     model_path: models/yolo/best.pt
-    fallback_model_path: models/yolo/yolov8n.pt
     ultralytics_repo: ""
     confidence_threshold: 0.35
     iou_threshold: 0.45

@@ -12,6 +12,7 @@
 | `model/` | 机体包络、接触、起飞域和物理审计 |
 | `sensors/` | 传感器样本与雷达方向验证 |
 | `support/` | 评估 fixture 和 benchmark 汇总 |
+| `evidence/` | 已冻结的标定/审计证据（JSON），由 `validation/` 脚本生成并入库 |
 | `archive/` | 已冻结的历史分析，不应被运行代码 import |
 | `tests/` | validation 自身的 pytest |
 
@@ -38,3 +39,4 @@ python3 -m pytest -q \
 - `validation/tests/test_ros_contract.py` 需要真实 ROS/DDS 运行时，不进 GitHub 离线 CI。
 - `validation/sitl/run_acceptance.py` 会启动 PX4/Gazebo/Agent/GCS，只应在隔离环境运行。
 - `validation/archive/` 是历史分析，不参与 CI，也不被 runtime 或 validation 入口 import。
+- `validation/evidence/` 是入库的冻结证据，不是 runtime 输入；修改它等于改验收基线，必须同时重跑生成脚本并更新对应 `docs/research/` 说明。

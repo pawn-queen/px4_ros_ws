@@ -47,6 +47,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = REPO_ROOT / "src/px4_powerplant_mission_cpp"
 VALIDATION_ROOT = REPO_ROOT / "validation"
 WORKSPACE = REPO_ROOT
+BODY_ENVELOPE_JSON = VALIDATION_ROOT / "evidence/sitl_body_envelope.json"
 _contact_spec=importlib.util.spec_from_file_location("powerplant_contact_monitor", VALIDATION_ROOT/"model/contact_monitor.py")
 contact_support=importlib.util.module_from_spec(_contact_spec)
 _contact_spec.loader.exec_module(contact_support)
@@ -717,7 +718,7 @@ def prepare(args):
     motion_profile = yaml.safe_load((WORKSPACE/"src/px4_powerplant_mission/config/p2_simulation.yaml").read_text())
     profile = motion_profile["powerplant_offboard_mission"]["ros__parameters"]
     body_audit=verified_body_envelope(args.px4_root/"Tools/simulation/gz/models",{**mission,**profile},
-                                      PACKAGE/"research_sources/sitl_body_envelope.json")
+                                      BODY_ENVELOPE_JSON)
     mission.update({
         "auto_start": False, "takeoff_region_confirmed": args.scenario!="powerplant",
         "takeoff_region_radius_m": 1.5,
@@ -765,7 +766,7 @@ def prepare(args):
         # has a sufficient separation proof for this operating column.
         mission["takeoff_region_confirmed"]=True
         ground_support_model=takeoff_module.generate_ground_support_model(world,
-            args.px4_root/"Tools/simulation/gz/models",PACKAGE/"research_sources/sitl_body_envelope.json",
+            args.px4_root/"Tools/simulation/gz/models",BODY_ENVELOPE_JSON,
             {**mission,**profile},home=(0,0,.1),floor_uncertainty_m=.01)
         (output/"ground_support_model.json").write_text(json_dumps(ground_support_model,indent=2,allow_nan=False))
         if not (ground_support_model.get("passed") and ground_support_model.get("verified")):
@@ -799,7 +800,7 @@ def prepare(args):
             takeoff_reference_governor_enabled=not getattr(args,'governor_ablation',False))
         if policy=='D':
             verified_body_envelope(args.px4_root/'Tools/simulation/gz/models',
-                {**mission,**profile,'motion_body_radius_m':.48},PACKAGE/'research_sources/sitl_body_envelope.json')
+                {**mission,**profile,'motion_body_radius_m':.48},BODY_ENVELOPE_JSON)
     motion_profile_path = runtime / "p2_sitl_motion.yaml"
     motion_profile_path.write_text(yaml.safe_dump(motion_profile, sort_keys=False))
     args.resolved_motion_profile_path = motion_profile_path

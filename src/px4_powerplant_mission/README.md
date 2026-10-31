@@ -376,7 +376,9 @@ ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py \
 
 ## YOLO 说明
 
-默认模型已经放在包内的 `models/yolo/best.pt`，回退模型是 `models/yolo/yolov8n.pt`。当前 `best.pt` 检测类别见 `models/yolo/data.yaml`，已有类别为 `gas_cylinders`。
+训练权重固定在包内 `models/yolo/best.pt`，检测类别为 `gas_cylinders`。模型缺失时节点只记录错误、不进行推理，不会回退到通用 COCO 权重；更换模型请用 `model_path` 指向实际权重。
+
+该权重的来源事实（取自 checkpoint 元数据与入库历史）：任务 `detect`，类别只有 `gas_cylinders`；训练 1200 epochs、batch 8，数据配置为 `dataset/my_first_project/data_local.yaml`，起始权重为 `runs/detect/gas_cylinders_boost_v2/weights/best.pt`；checkpoint 记录日期 2026-05-17，ultralytics 8.4.22；2026-05-13 首次随包入库，2026-05-18 更新。原 `models/yolo/data.yaml` 记录的训练布局为 `path: .`、`images/train`、`images/val`。训练数据集和训练 run 都不在本仓库内，因此该权重不能由本仓库重建。
 
 目标三维坐标的计算链路是：`/powerplant/perception/yolo_detections` 的 `bbox_xyxy` 取中心区域深度，使用 `/depth_camera/camera_info` 的内参反投影到相机光学坐标，再按 `camera_translation_flu` 和 `/powerplant/localization/odom` 姿态转换到 ENU `map` 坐标。RGB 与深度图需要来自同一前向相机或已近似对齐，否则目标坐标会有偏差。
 
