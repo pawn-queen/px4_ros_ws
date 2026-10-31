@@ -1,6 +1,6 @@
 # 改动与验证流程
 
-适用于本包后续的代码、配置、launch 和文档改动。完整的环境准备、PX4 参数、启动顺序及故障排查见 [README](../../README.md)。
+适用于本包后续的代码、配置、launch 和文档改动。完整的环境准备、PX4 参数、启动顺序及故障排查见 [包 README](../../../src/px4_powerplant_mission/README.md)。
 
 ## 1. 确认改动范围
 

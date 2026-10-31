@@ -1,6 +1,6 @@
 # px4_powerplant_mission 代理工作说明
 
-本文件适用于 `src/px4_powerplant_mission/` 下的工作。开始修改前，先读本包的 `README.md` 和 [改动与验证流程](.agents/workflows/change-and-verify.md)，并检查 `git status --short`；保留已有的未提交修改。
+本文件适用于 `src/px4_powerplant_mission/` 下的工作。开始修改前，先读本包的 `README.md` 和 [改动与验证流程](../../docs/agents/workflows/change-and-verify.md)，并检查 `git status --short`；保留已有的未提交修改。
 
 ## 项目约定
 
@@ -18,4 +18,4 @@
 
 - 新增或改名节点时同步检查 `setup.py`、launch 和 YAML；新增运行资源时检查 `setup.py` 的 `data_files`。
 - 修改话题、参数、任务阶段或操作步骤时同步更新 `README.md`。YOLO 推理依赖单列于 `requirements-yolo.txt`；工作区构建使用系统 Python。
-- 按 [改动与验证流程](.agents/workflows/change-and-verify.md) 做最小相关验证，并在交付时说明运行的命令、结果，以及未做的仿真验证。
+- 按 [改动与验证流程](../../docs/agents/workflows/change-and-verify.md) 做最小相关验证，并在交付时说明运行的命令、结果，以及未做的仿真验证。

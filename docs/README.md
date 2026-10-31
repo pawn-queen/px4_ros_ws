@@ -10,11 +10,12 @@
 | 构建/运行仿真 | [C++ runtime README](../src/px4_powerplant_mission_cpp/README.md)、[运行模式](architecture/runtime-modes.md) |
 | 跑验证/SITL | [validation/README](../validation/README.md) |
 | 改 runtime/validation 边界 | [ADR-0001](adr/0001-runtime-validation-seam.md) |
+| 新增/归档资产、权重或 evidence | [ADR-0003](adr/0003-artifact-placement.md) |
 | 改 Python/C++ JSON 契约 | [mission contract](design/mission-contract.md)、[ADR-0002](adr/0002-mission-contract.md) |
 | 查历史 P0/P1/P2 | [设计文档](design)、[验证记录](validation)、[历史](history) |
 | 做研究/实验 | [研究文档](research) |
 | 参与开发/CI/发布 | [CONTRIBUTING](CONTRIBUTING.md)、[CI 架构](CI_ARCHITECTURE.md)、[分支规范](BRANCHING.md)、[发布流程](RELEASE_PROCESS.md) |
-| 用 Agent 工作 | [AGENTS.md](../AGENTS.md)、[领域文档说明](agents/domain.md) |
+| 用 Agent 工作 | [AGENTS.md](../AGENTS.md)、[领域文档说明](agents/domain.md)、[改动与验证流程](agents/workflows/change-and-verify.md) |
 
 ## 文档分类
 
@@ -26,6 +27,7 @@
 | `research/` | 研究、外部资料和实验依据是什么？ | 参考/研究 |
 | `history/` | 过去的迁移和阶段记录是什么？ | 只读历史 |
 | `adr/` | 已经做出的结构决策有哪些？ | 决策记录 |
+| `agents/` | Agent 怎么在本仓库工作：领域文档、Issue/标签约定、改动与验证流程？ | 当前约定 |
 | 根目录 | 术语、开发流程、CI、发布、Agent 入口 | 跨项目 |
 
 ## 当前状态与历史

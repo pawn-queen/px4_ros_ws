@@ -42,7 +42,7 @@ px4_ros_ws/
 │   ├── px4_powerplant_mission/   # ament_python：定位/UWB/EV/YOLO + launch/config
 │   │   ├── config/               # powerplant.yaml + localization_* + p2_*
 │   │   ├── launch/               # system / gz_sensor_bridge / visualization
-│   │   ├── models/yolo/          # best.pt / yolov8n.pt（约 12 MB）
+│   │   ├── models/yolo/          # best.pt（单类别 gas_cylinders，约 6 MB）
 │   │   ├── px4_powerplant_mission/
 │   │   │   ├── common/           # frames / qos
 │   │   │   ├── localization/     # inputs / uwb / fusion
@@ -53,9 +53,8 @@ px4_ros_ws/
 │       ├── config/               # runtime 配置与资产锁
 │       ├── include/              # 16 个 .hpp
 │       ├── src/                  # 21 个 .cpp
-│       ├── test/                 # C++ 测试 + frozen fixtures
-│       └── research_sources/     # SITL 机体包络证据
-├── validation/                   # 验证/SITL/模型/传感器/基线（不安装）
+│       └── test/                 # C++ 测试 + frozen fixtures
+├── validation/                   # 验证/SITL/模型/传感器/基线 + evidence/（不安装）
 ├── tools/env/                    # 本机 ROS/Cyclone 环境工具
 ├── build/ install/ log/          # 构建/安装/运行产物（未跟踪）
 ├── .p0_deps/                     # 可选 Cyclone DDS 本地解包（未跟踪）

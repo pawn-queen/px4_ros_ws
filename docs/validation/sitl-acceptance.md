@@ -184,7 +184,7 @@ Manifest 记录两套原始/有效 SDF 路径与 SHA256、相机配置尺寸/频
 | 两包 Release 单编译任务构建 | 通过，最新 `log/p2_build_logic_review.log`（5 分 42 秒），编译未报告 warning/error |
 | C++、对照和跨进程 ROS | **204 项、零失败、零跳过**，`log/p2_baseline/native_logic_review_result.log`；其中 156 原生、26 对照、7 ROS，另含 15 个 CTest 外层结果 |
 | Python 共享算法/节点 | **127 项通过**，`log/p2_baseline/python_bootstrap.xunit.xml`（6.13 秒）；加上上述直接用例共 **316 项**，不重复计算 CTest 包装 |
-| SDF 机体包络解析检查 | 通过，10 个碰撞体、旋翼任意偏航与总倾角 ≤0.35 rad 的解析界；`research_sources/sitl_body_envelope.json`、`log/p2_body_audit_checks.json`。不代表实际制动响应已标定 |
+| SDF 机体包络解析检查 | 通过，10 个碰撞体、旋翼任意偏航与总倾角 ≤0.35 rad 的解析界；`validation/evidence/sitl_body_envelope.json`、`log/p2_body_audit_checks.json`。不代表实际制动响应已标定 |
 | 真实 YOLO 源图链路 | **通过独立范围**，`log/p2_sitl_yolo_image_chain/report.json`：3 次真实推理、3 次曝光/原始像素严格配对、零错配，未请求 START；目标框为 0，不代表检测精度或巡检成功 |
 | 静态导航参考/墙面投影 | `log/p2_sitl_cpu_11/report.json` 的静态子检查通过：28 帧、3024 个墙面点，真值/导航墙面残差 p95 约 0.0361/0.1949 m，导航模型原点误差 p95 约 0.0488 m；完整报告仍未通过 |
 | 完整室内飞行 | **尚未通过**。旧软件/参数下 CPU17 已完成微上升参考并进入下一上升段，随后触发跟踪保护，`log/p2_sitl_cpu_17/report.json` 保留失败。ULog 显示起飞整形产生向下速度参考及正积分偏置，推力/运动响应尚不符合配置；后续软件核查还发现采样时刻参考错配，已修复并通过独立回归。本轮不再调飞控参数或追加试飞，不能据旧失败判定新软件的完整飞行结果 |
