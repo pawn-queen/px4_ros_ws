@@ -62,12 +62,34 @@ PY
 set +u
 source /opt/ros/jazzy/setup.bash
 source "$workspace/install/setup.bash"
+# 仅在系统缺少所需 DDS 时，用现有锁定包补齐用户态依赖。
+# 缓存留在 checkout 外；不修改 apt、系统 ROS 或外部 PX4/model 树。
+if [[ ! -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]]; then
+  export P0_ROS_PREFIX="$lock_dir/ros-deps/opt/ros/jazzy"
+  if [[ ! -f "$P0_ROS_PREFIX/lib/librmw_cyclonedds_cpp.so" ]]; then
+    python3 "$workspace/tools/env/bootstrap_ros.py" --prefix "$lock_dir/ros-deps" \
+      2>&1 | tee "$output/middleware_bootstrap.log"
+  fi
+fi
 source "$workspace/tools/env/ros_env.sh"
 set -u
+python3 - "$output/middleware.json" <<'PYRMW'
+import json, sys
+from pathlib import Path
+import rclpy
+rclpy.init()
+try:
+    actual = rclpy.get_rmw_implementation_identifier()
+    Path(sys.argv[1]).write_text(json.dumps({'actual_rmw': actual}, indent=2))
+    if actual != 'rmw_cyclonedds_cpp':
+        raise SystemExit('unexpected ROS middleware: ' + actual)
+finally:
+    rclpy.shutdown()
+PYRMW
 for command_name in gz MicroXRCEAgent ros2; do
   command -v "$command_name" >/dev/null || { echo "required command missing: $command_name" >&2; exit 2; }
 done
-# 不让 WSL/Mesa 软件渲染覆盖悄悄进入原生 NVIDIA 对照实验。
+# 不让 WSL/Mesa 软件渲染覆盖悄悄进入原生 GPU 对照实验。
 for variable in GALLIUM_DRIVER MESA_D3D12_DEFAULT_ADAPTER_NAME LIBGL_ALWAYS_SOFTWARE; do
   [[ -z "${!variable:-}" ]] || { echo "incompatible renderer override is set: $variable" >&2; exit 2; }
 done
