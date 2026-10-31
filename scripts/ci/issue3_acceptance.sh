@@ -70,7 +70,8 @@ if [[ ! -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]]; then
     if ! python3 "$workspace/tools/env/bootstrap_ros.py" --prefix "$lock_dir/ros-deps" \
       2>&1 | tee "$output/middleware_bootstrap.log"; then
       # 原工具显式禁用代理；仅更换下载通道，版本/字节锁保持不变。
-      # curl 使用正常代理配置及 TLS 校验，所有包通过原 SHA 后才解压。
+      # curl 使用正常代理配置；官方公共 HTTP 源只用于原 SHA 锁定的包。
+      # HTTPS 通道继续校验证书，所有通道都必须逐包匹配原始字节锁。
       python3 - "$workspace/tools/env/ros_dependencies.json" "$lock_dir/ros-deps" "$output" <<'PYDDS'
 import hashlib, json, platform, subprocess, sys, tempfile
 from pathlib import Path
@@ -85,10 +86,15 @@ with tempfile.TemporaryDirectory(prefix='native-dds-') as temporary:
         target = Path(temporary) / (entry['package'] + '.deb')
         urls = [entry['url'], entry['url'].replace(
             'https://mirrors.ustc.edu.cn/ros2/ubuntu/',
-            'https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu/')]
+            'https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu/'), entry['url'].replace(
+            'https://mirrors.ustc.edu.cn/ros2/ubuntu/',
+            'http://packages.ros.org/ros2/ubuntu/')]
         for url in urls:
+            if not url.startswith(('https://', 'http://packages.ros.org/ros2/ubuntu/')):
+                raise SystemExit('unexpected DDS download origin')
+            protocol = '=https' if url.startswith('https://') else '=http'
             result = subprocess.run(['curl', '-q', '--fail', '--location', '--silent', '--show-error',
-                '--proto', '=https', '--proto-redir', '=https', '--connect-timeout', '10',
+                '--proto', protocol, '--proto-redir', protocol, '--connect-timeout', '10',
                 '--max-time', '30', '--retry', '1', '--output', str(target), url])
             if result.returncode != 0:
                 continue

@@ -153,9 +153,13 @@ def dds_fallback(tmp_path, monkeypatch):
 def execute_dds(fixture, monkeypatch, download):
     def run(command, **kwargs):
         if command[0] == "curl":
-            # Transport fallback keeps HTTPS and certificate verification.
-            assert command[command.index("--proto") + 1] == "=https"
-            assert command[command.index("--proto-redir") + 1] == "=https"
+            # HTTPS keeps certificate checks; public HTTP is the pinned official source.
+            url = command[-1]
+            protocol = "=https" if url.startswith("https://") else "=http"
+            if protocol == "=http":
+                assert url.startswith("http://packages.ros.org/ros2/ubuntu/")
+            assert command[command.index("--proto") + 1] == protocol
+            assert command[command.index("--proto-redir") + 1] == protocol
             assert "--insecure" not in command and "-k" not in command
             url = command[-1]
             returncode, data = download(url)
@@ -206,7 +210,29 @@ def test_dds_all_download_channels_fail_without_extraction(dds_fallback, monkeyp
     with pytest.raises(SystemExit, match="locked DDS dependency unavailable: dds-one"):
         execute_dds(dds_fallback, monkeypatch, lambda url: (35, None))
     events = dds_fallback["events"]
-    assert [event[0] for event in events] == ["curl", "curl"]
+    assert [event[0] for event in events] == ["curl", "curl", "curl"]
     assert "ustc.edu.cn" in events[0][1] and "tuna.tsinghua.edu.cn" in events[1][1]
     assert not dds_fallback["prefix"].exists()
     assert not (dds_fallback["output"] / "middleware_fallback_receipts.json").exists()
+
+
+def test_dds_official_public_fallback_requires_original_bytes(dds_fallback, monkeypatch):
+    def download(url):
+        if url.startswith("https://"):
+            return 35, None
+        return 0, dds_fallback["payloads"][Path(url).stem]
+
+    execute_dds(dds_fallback, monkeypatch, download)
+    receipts = json.loads((dds_fallback["output"] / "middleware_fallback_receipts.json").read_text())
+    assert len(receipts) == 2
+    assert all(row["url"].startswith("http://packages.ros.org/ros2/ubuntu/") for row in receipts)
+    assert sum(event[0] == "extract" for event in dds_fallback["events"]) == 2
+
+
+def test_dds_official_public_fallback_rejects_corrupt_bytes(dds_fallback, monkeypatch):
+    def download(url):
+        return (35, None) if url.startswith("https://") else (0, b"corrupt package")
+
+    with pytest.raises(SystemExit, match="SHA256 mismatch: dds-one"):
+        execute_dds(dds_fallback, monkeypatch, download)
+    assert not any(event[0] == "extract" for event in dds_fallback["events"])
