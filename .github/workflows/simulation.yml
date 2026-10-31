@@ -13,11 +13,20 @@ on:
       scenario:
         description: "SITL 场景"
         type: choice
-        options: [default, room]
+        options: [default, room, powerplant]
         default: default
       timeout_s:
         description: "链路启动超时（秒）"
         default: "180"
+      acceptance_scope:
+        description: "powerplant 专用验收范围；首次使用 prepare"
+        type: choice
+        options: [prepare, scan, calibrate, mission]
+        default: prepare
+      frozen_profile:
+        description: "powerplant mission 必填：本机此前生成的冻结控制配置路径"
+        type: string
+        default: ""
   pull_request:
     types: [labeled]
   push:
@@ -27,7 +36,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: sim-${{ github.ref }}
+  group: ubuntu-lab-sim-flight
   cancel-in-progress: false
 
 jobs:
@@ -69,7 +78,7 @@ jobs:
   diagnose:
     name: Runner environment
     needs: guard
-    if: needs.guard.outputs.allowed == 'true'
+    if: needs.guard.outputs.allowed == 'true' && github.event.inputs.scenario != 'powerplant'
     runs-on: [self-hosted, sim-heavy]
     timeout-minutes: 10
     steps:
@@ -105,7 +114,7 @@ jobs:
   build:
     name: Build workspace
     needs: [guard, diagnose]
-    if: needs.guard.outputs.allowed == 'true'
+    if: needs.guard.outputs.allowed == 'true' && github.event.inputs.scenario != 'powerplant'
     runs-on: [self-hosted, sim-heavy]
     timeout-minutes: 60
     steps:
@@ -124,7 +133,7 @@ jobs:
   smoke:
     name: Simulation chain smoke
     needs: [guard, build]
-    if: needs.guard.outputs.allowed == 'true'
+    if: needs.guard.outputs.allowed == 'true' && github.event.inputs.scenario != 'powerplant'
     runs-on: [self-hosted, sim-heavy]
     timeout-minutes: 20
     steps:
@@ -166,3 +175,43 @@ jobs:
           path: log/ci_sitl_smoke/
           if-no-files-found: ignore
           retention-days: 7
+
+  plant-acceptance:
+    name: Actual powerplant acceptance
+    needs: guard
+    if: needs.guard.outputs.allowed == 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.scenario == 'powerplant'
+    runs-on: [self-hosted, Linux, X64, sim-heavy]
+    timeout-minutes: 210
+    env:
+      PX4_ROOT: /home/gh-runner/drone-simulation
+      ACCEPTANCE_SCOPE: ${{ inputs.acceptance_scope }}
+      CONTROLLER_PROFILE: ${{ inputs.frozen_profile }}
+      NATIVE_OUTPUT_ROOT: /home/gh-runner/.cache/px4_ros_ws/evidence/${{ github.run_id }}_${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+          # 复用构建产物；证据另存 checkout 外，避免后续 smoke 清理。
+          clean: false
+
+      - name: Build native ROS workspace
+        run: |
+          set -eo pipefail
+          source /opt/ros/jazzy/setup.bash
+          colcon build --parallel-workers 4 \
+            --packages-up-to px4_powerplant_mission_cpp px4_powerplant_mission \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+
+      - name: Run actual plant acceptance
+        run: bash scripts/ci/issue3_acceptance.sh "$ACCEPTANCE_SCOPE"
+
+      - name: Upload evidence including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue3-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.NATIVE_OUTPUT_ROOT }}/
+          if-no-files-found: warn
+          compression-level: 2
+          retention-days: 14
