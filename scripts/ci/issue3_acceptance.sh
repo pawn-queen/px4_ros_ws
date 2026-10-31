@@ -67,8 +67,45 @@ source "$workspace/install/setup.bash"
 if [[ ! -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]]; then
   export P0_ROS_PREFIX="$lock_dir/ros-deps/opt/ros/jazzy"
   if [[ ! -f "$P0_ROS_PREFIX/lib/librmw_cyclonedds_cpp.so" ]]; then
-    python3 "$workspace/tools/env/bootstrap_ros.py" --prefix "$lock_dir/ros-deps" \
-      2>&1 | tee "$output/middleware_bootstrap.log"
+    if ! python3 "$workspace/tools/env/bootstrap_ros.py" --prefix "$lock_dir/ros-deps" \
+      2>&1 | tee "$output/middleware_bootstrap.log"; then
+      # 原工具显式禁用代理；仅更换下载通道，版本/字节锁保持不变。
+      # curl 使用正常代理配置及 TLS 校验，所有包通过原 SHA 后才解压。
+      python3 - "$workspace/tools/env/ros_dependencies.json" "$lock_dir/ros-deps" "$output" <<'PYDDS'
+import hashlib, json, platform, subprocess, sys, tempfile
+from pathlib import Path
+lock, prefix, output = map(Path, sys.argv[1:])
+release = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
+if release.get('VERSION_CODENAME', '').strip('"') != 'noble' or platform.machine() != 'x86_64':
+    raise SystemExit('pinned DDS fallback requires Ubuntu noble amd64')
+receipts = []
+with tempfile.TemporaryDirectory(prefix='native-dds-') as temporary:
+    verified = []
+    for entry in json.loads(lock.read_text())['packages']:
+        target = Path(temporary) / (entry['package'] + '.deb')
+        urls = [entry['url'], entry['url'].replace(
+            'https://mirrors.ustc.edu.cn/ros2/ubuntu/',
+            'https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu/')]
+        for url in urls:
+            result = subprocess.run(['curl', '-q', '--fail', '--location', '--silent', '--show-error',
+                '--proto', '=https', '--proto-redir', '=https', '--connect-timeout', '10',
+                '--max-time', '30', '--retry', '1', '--output', str(target), url])
+            if result.returncode != 0:
+                continue
+            if hashlib.sha256(target.read_bytes()).hexdigest() != entry['sha256']:
+                raise SystemExit('DDS fallback SHA256 mismatch: ' + entry['package'])
+            verified.append(target)
+            receipts.append({'package': entry['package'], 'version': entry['version'],
+                             'url': url, 'sha256': entry['sha256']})
+            break
+        else:
+            raise SystemExit('locked DDS dependency unavailable: ' + entry['package'])
+    prefix.mkdir(parents=True, exist_ok=True)
+    for target in verified:
+        subprocess.run(['dpkg-deb', '-x', str(target), str(prefix)], check=True)
+(output / 'middleware_fallback_receipts.json').write_text(json.dumps(receipts, indent=2))
+PYDDS
+    fi
   fi
 fi
 source "$workspace/tools/env/ros_env.sh"
