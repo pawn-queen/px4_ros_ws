@@ -386,3 +386,53 @@ def test_launch_motion_configuration_paths_build_graph_or_reject_missing_file(
     }
     assert {'offboard_mission_node', 'voxel_mapper_node'} <= executables
     assert len(graph) == 8
+
+
+@pytest.mark.parametrize('profile,override,expected', [
+    ('simulation', '', True),
+    ('hardware', '', False),
+    ('simulation', 'false', False),
+    ('hardware', 'true', True),
+])
+def test_launch_clock_parameter_is_boolean_for_every_runtime_node(
+        profile, override, expected, monkeypatch):
+    """在真实 launch→ROS 参数边界确认时钟开关类型，保留 profile 覆盖语义。"""
+    import importlib.util
+    from pathlib import Path
+
+    from launch import LaunchContext
+    from launch.actions import DeclareLaunchArgument, OpaqueFunction
+    from launch_ros.actions import Node
+
+    path = Path(__file__).parents[1] / 'launch/powerplant_system.launch.py'
+    spec = importlib.util.spec_from_file_location('clock_parameter_launch', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    observed = {}
+
+    def capture_node(*args, **kwargs):
+        for parameters in kwargs.get('parameters', []):
+            if isinstance(parameters, dict) and 'use_sim_time' in parameters:
+                observed[kwargs['name']] = parameters['use_sim_time']
+        return Node(*args, **kwargs)
+
+    monkeypatch.setattr(module, 'Node', capture_node)
+    context = LaunchContext()
+    context.launch_configurations['profile'] = profile
+    if override:
+        context.launch_configurations['use_sim_time'] = override
+    for action in module.generate_launch_description().entities:
+        if isinstance(action, DeclareLaunchArgument):
+            action.execute(context)
+        elif isinstance(action, OpaqueFunction):
+            action.execute(context)
+
+    assert set(observed) == {
+        'powerplant_localization', 'powerplant_external_vision_bridge',
+        'powerplant_uwb_simulator', 'powerplant_voxel_mapper',
+        'powerplant_yolo_detector', 'powerplant_offboard_mission',
+    }
+    for value in observed.values():
+        assert type(value) is bool
+        assert value is expected
+        assert Parameter('use_sim_time', value=value).type_ is Parameter.Type.BOOL

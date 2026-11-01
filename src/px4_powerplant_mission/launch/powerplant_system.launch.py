@@ -67,7 +67,7 @@ def _launch_setup(context, *args, **kwargs):
         if not path.is_file():
             raise RuntimeError(f"runtime profile {selected.name!r} references missing config: {path}")
 
-    use_sim_time = defaults["use_sim_time"]
+    use_sim_time = defaults["use_sim_time"] == "true"
     use_uwb = defaults["use_uwb"]
     use_gazebo_truth_bridge = defaults["use_gazebo_truth_bridge"]
     use_gazebo_clock_bridge = defaults["use_gazebo_clock_bridge"]
