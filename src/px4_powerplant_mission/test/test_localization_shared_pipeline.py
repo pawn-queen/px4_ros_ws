@@ -337,3 +337,52 @@ def test_launch_profile_disables_simulation_sources_for_hardware(profile, expect
     for name in ('use_uwb', 'use_gazebo_truth_bridge', 'use_gazebo_clock_bridge', 'use_sim_time'):
         assert (LaunchConfiguration(name).perform(context).lower() == 'true') == expected
     assert LaunchConfiguration('use_control').perform(context) == 'false'
+
+
+@pytest.mark.parametrize('profile', ['simulation', 'hardware'])
+@pytest.mark.parametrize('motion_override', ['default', 'explicit', 'missing'])
+def test_launch_motion_configuration_paths_build_graph_or_reject_missing_file(
+        profile, motion_override, tmp_path):
+    """执行真实 launch 配置，只构建启动图，不执行返回的 ROS 节点。"""
+    import importlib.util
+    from pathlib import Path
+    import re
+
+    from launch import LaunchContext
+    from launch.actions import DeclareLaunchArgument, OpaqueFunction
+    from launch.utilities import normalize_to_list_of_substitutions, perform_substitutions
+    from launch_ros.actions import Node
+
+    path = Path(__file__).parents[1] / 'launch/powerplant_system.launch.py'
+    spec = importlib.util.spec_from_file_location('motion_configuration_launch', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    context = LaunchContext()
+    context.launch_configurations['profile'] = profile
+    override = tmp_path / 'explicit_motion.yaml'
+    if motion_override == 'explicit':
+        source = module.PROFILES[profile].config_path(path.parent.parent, 'motion')
+        override.write_text(source.read_text())
+    if motion_override != 'default':
+        context.launch_configurations['motion_config_file'] = str(override)
+
+    setup = None
+    for action in module.generate_launch_description().entities:
+        if isinstance(action, DeclareLaunchArgument):
+            action.execute(context)
+        elif isinstance(action, OpaqueFunction):
+            setup = action
+    assert setup is not None
+    if motion_override == 'missing':
+        missing_message = re.escape(f'references missing config: {override}')
+        with pytest.raises(RuntimeError, match=missing_message):
+            setup.execute(context)
+        return
+
+    graph = setup.execute(context)
+    executables = {
+        perform_substitutions(context, normalize_to_list_of_substitutions(node.node_executable))
+        for node in graph if isinstance(node, Node)
+    }
+    assert {'offboard_mission_node', 'voxel_mapper_node'} <= executables
+    assert len(graph) == 8
