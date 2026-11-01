@@ -101,6 +101,7 @@ private:
   friend struct P2MissionTestAccess;
   friend struct RoiMissionTestAccess;
   friend struct GroundMissionTestAccess;
+  friend struct Px4TakeoffMissionTestAccess;
   void subscribe_vehicle();
   void subscribe_map();
   void subscribe_camera();
@@ -266,6 +267,15 @@ private:
 
   bool motion_brake_requested_ = false;
   bool takeoff_bootstrap_active_ = false;
+  bool px4_takeoff_handoff_started_ = false, px4_takeoff_strict_ack_ = false;
+  std::optional<Vec3> px4_takeoff_anchor_;
+  Px4TakeoffConfig px4_takeoff_config_;
+  std::string px4_takeoff_abort_reason_;
+  int64_t px4_takeoff_started_ros_ = 0, px4_takeoff_started_steady_ = 0;
+  void initialize_px4_takeoff();
+  bool update_px4_takeoff();
+  void update_px4_takeoff_input();
+  void append_px4_takeoff_evidence(JsonValue &) const;
   TakeoffProgress takeoff_progress_ = TakeoffProgress::StartupIntent;
   double takeoff_transition_budget_s_ = 12.;
   double takeoff_support_clearance_lower_m_ = -inf;

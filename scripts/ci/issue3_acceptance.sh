@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091  # ROS/workspace setup files belong to the target runner.
 # 手动运行实际电厂验收；只写本次日志和隔离运行资源，不修改 PX4/model 树。
-# 用法：issue3_acceptance.sh prepare|scan|calibrate|mission
+# 用法：issue3_acceptance.sh prepare|scan|calibrate|mission|takeoff-prepare|takeoff
 # PX4_ROOT、NATIVE_OUTPUT_ROOT 可显式配置；mission 必须给出 CONTROLLER_PROFILE。
 set -euo pipefail
 
 scope=${1:-prepare}
 case "$scope" in
-  prepare|scan|calibrate|mission) ;;
+  prepare|scan|calibrate|mission|takeoff-prepare|takeoff) ;;
   -h|--help)
-    echo 'usage: issue3_acceptance.sh prepare|scan|calibrate|mission'
+    echo 'usage: issue3_acceptance.sh prepare|scan|calibrate|mission|takeoff-prepare|takeoff'
     echo 'mission requires CONTROLLER_PROFILE pointing to an existing frozen profile'
     exit 0 ;;
   *) echo "unsupported acceptance scope: $scope" >&2; exit 2 ;;
@@ -148,6 +148,15 @@ Path(sys.argv[1]).write_text(json.dumps({'numpy_version': np.__version__,
     'scipy_path': scipy.__file__, 'sparse_operation_passed': True,
     'required_module_paths': modules}, indent=2))
 PYABI
+if [[ "$scope" == takeoff || "$scope" == takeoff-prepare ]]; then
+  ctest --test-dir "$workspace/build/px4_powerplant_mission_cpp" --output-on-failure -j 1 \
+    -R 'test_px4_takeoff|test_ground_mission|test_p2_motion|test_p2_mission' \
+    2>&1 | tee "$output/runtime_regression.log"
+  python3 -m pytest -q "$workspace/validation/tests/test_position_takeoff_acceptance.py" \
+    "$workspace/validation/tests/test_sitl_takeoff_harness.py" \
+    "$workspace/validation/tests/test_native_acceptance_entry.py" \
+    2>&1 | tee "$output/validation_regression.log"
+fi
 python3 - "$output/middleware.json" <<'PYRMW'
 import json, sys
 from pathlib import Path
@@ -290,6 +299,11 @@ common=(--px4-root "$px4_root" --detection-mode none --render-context egl
   --timeout "${ACCEPTANCE_TIMEOUT:-300}" --startup-timeout "${ACCEPTANCE_STARTUP_TIMEOUT:-120}")
 cd "$workspace"
 case "$scope" in
+  takeoff-prepare)
+    python3 validation/sitl/run_acceptance.py --scenario powerplant --stop-after hover \
+      --px4-position-takeoff --prepare-only --output-dir "$output/takeoff-prepare" "${common[@]}" ;;
+  takeoff)
+    python3 validation/sitl/run_takeoff_acceptance.py --output-dir "$output/takeoff" -- "${common[@]}" ;;
   prepare|scan)
     args=(validation/sitl/run_acceptance.py --scenario powerplant --stop-after scan
       --controller-profile "$profile" --controller-calibration-candidate 2 --takeoff-policy A

@@ -75,15 +75,24 @@ std::string OffboardMissionNode::takeoff_space_reason() const {
   const double radius = d("takeoff_region_radius_m"),
                height = d("takeoff_region_height_m"),
                takeoff = d("takeoff_height_m"),
-               clearance = d("explore_clearance_radius_m");
+               clearance = b("px4_takeoff_enabled") ? d("motion_body_radius_m")
+                                                     : d("explore_clearance_radius_m");
+  if (b("px4_takeoff_enabled") &&
+      (!std::isfinite(d("px4_takeoff_timeout_s")) || d("px4_takeoff_timeout_s") <= 0 ||
+       !std::isfinite(d("px4_takeoff_arrival_tolerance_m")) ||
+       d("px4_takeoff_arrival_tolerance_m") <= 0 ||
+       d("px4_takeoff_arrival_tolerance_m") >= takeoff ||
+       height < takeoff + d("px4_takeoff_arrival_tolerance_m") +
+                    d("motion_body_z_max_m")))
+    return "invalid PX4 position takeoff deadline, arrival tolerance or column height";
   const double bootstrap_height = d("motion_takeoff_bootstrap_height_m"),
                bootstrap_duration = d("motion_takeoff_bootstrap_duration_s");
-  if (!std::isfinite(bootstrap_height) || !std::isfinite(bootstrap_duration) ||
+  if (!b("px4_takeoff_enabled") && (!std::isfinite(bootstrap_height) || !std::isfinite(bootstrap_duration) ||
       bootstrap_height < 0 || bootstrap_duration < 0 ||
       ((bootstrap_height > 0 || bootstrap_duration > 0) &&
        (bootstrap_height <= 0 || bootstrap_duration <= 0 ||
         bootstrap_height >= takeoff ||
-        bootstrap_height > d("motion_tracking_position_tolerance_m"))))
+        bootstrap_height > d("motion_tracking_position_tolerance_m")))))
     return "takeoff bootstrap height/duration is invalid or uncalibrated";
   if (!std::isfinite(radius) || !std::isfinite(height) ||
       !std::isfinite(takeoff) || !std::isfinite(clearance) || clearance <= 0 ||
@@ -173,14 +182,18 @@ void OffboardMissionNode::engage() {
     return;
   const auto publications = motion_ ? motion_->publications() : 0;
   const auto motion = motion_ ? motion_->report() : MotionUpdate{};
-  if (!motion.valid || !motion.stopping_envelope) {
+  const bool fixed_takeoff = b("px4_takeoff_enabled") && phase_ == Phase::Takeoff &&
+                            !px4_takeoff_handoff_started_;
+  const auto takeoff = motion_ ? motion_->takeoff_report() : std::nullopt;
+  if ((fixed_takeoff && (!takeoff || takeoff->request_land)) ||
+      (!fixed_takeoff && (!motion.valid || !motion.stopping_envelope))) {
     warmup_ = 0;
     warmup_started_ = 0;
     motion_publication_base_ = publications;
     command_wait_ = "waiting for a valid stationary motion certificate";
     return;
   }
-  if (b("takeoff_ground_support_enabled") &&
+  if (!fixed_takeoff && b("takeoff_ground_support_enabled") &&
       ((phase_ != Phase::Takeoff && motion.certificate_kind != MotionCertificateKind::AirborneStrict) ||
        (phase_ == Phase::Takeoff &&
         motion.certificate_kind != takeoff_safety_stage_ &&

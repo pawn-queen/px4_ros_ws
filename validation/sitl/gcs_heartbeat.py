@@ -21,7 +21,7 @@ import struct
 import time
 
 READ_PARAMETERS = ("NAV_DLL_ACT", "COM_DL_LOSS_T", "COM_SPOOLUP_TIME", "MPC_TKO_RAMP_T",
-    "MPC_THR_HOVER", "MPC_Z_VEL_I_ACC", "THR_MDL_FAC", "MPC_THR_MAX") + tuple(
+    "MPC_THR_HOVER", "MPC_Z_VEL_I_ACC", "THR_MDL_FAC", "MPC_THR_MAX", "MPC_Z_VEL_MAX_UP") + tuple(
         f"SIM_GZ_EC_{kind}{i}" for i in range(1,5) for kind in ("MIN","MAX"))
 
 

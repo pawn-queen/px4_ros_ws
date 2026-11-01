@@ -78,6 +78,9 @@ inline void declare_voxel_mapper_parameters(rclcpp::Node &n) {
   n.declare_parameter<double>("grid_max_y_m", 50.0);
 }
 inline void declare_offboard_mission_parameters(rclcpp::Node &n) {
+  n.declare_parameter<bool>("px4_takeoff_enabled", false);
+  n.declare_parameter<double>("px4_takeoff_timeout_s", 60.);
+  n.declare_parameter<double>("px4_takeoff_arrival_tolerance_m", .20);
   n.declare_parameter<bool>("motion_model_configured", false);
   n.declare_parameter<bool>("motion_rounded_envelope_enabled", false);
   n.declare_parameter<std::string>("takeoff_transition_policy_id", "legacy");

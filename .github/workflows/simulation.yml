@@ -21,7 +21,7 @@ on:
       acceptance_scope:
         description: "powerplant 专用验收范围；首次使用 prepare"
         type: choice
-        options: [prepare, scan, calibrate, mission]
+        options: [prepare, scan, calibrate, mission, takeoff-prepare, takeoff]
         default: prepare
       frozen_profile:
         description: "powerplant mission 必填：本机此前生成的冻结控制配置路径"
@@ -183,6 +183,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, sim-heavy]
     timeout-minutes: 210
     env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
       PX4_ROOT: /home/gh-runner/drone-simulation
       ACCEPTANCE_SCOPE: ${{ inputs.acceptance_scope }}
       CONTROLLER_PROFILE: ${{ inputs.frozen_profile }}

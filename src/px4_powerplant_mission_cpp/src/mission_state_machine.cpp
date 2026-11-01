@@ -43,6 +43,9 @@ void OffboardMissionNode::start(Trigger::Response &response) {
   motion_publication_base_ = motion_ ? motion_->publications() : 0;
   motion_brake_requested_ = false;
   takeoff_bootstrap_active_ = false;
+  px4_takeoff_handoff_started_ = px4_takeoff_strict_ack_ = false;
+  px4_takeoff_anchor_.reset();
+  px4_takeoff_abort_reason_.clear();
   inspection_ = InspectionSession(inspection_config());
   inspection_.reset(localization_epoch_, uint64_t(ns()));
   inspection_classified_revision_ = 0;
@@ -103,6 +106,7 @@ void OffboardMissionNode::initialize() {
   mission_started_ = ns();
   mission_steady_ = steady_ns();
   reset_takeoff_safety();
+  if (b("px4_takeoff_enabled")) initialize_px4_takeoff();
   if (!takeoff_budget_reason_.empty()) {
     fault(takeoff_budget_reason_);
     return;
@@ -177,6 +181,10 @@ void OffboardMissionNode::tick() {
     stop_motion(explore_wait_);
     event("motion_plan_rejected");
   }
+  if (b("px4_takeoff_enabled") && phase_ == Phase::Takeoff) {
+    update_px4_takeoff();
+    return;
+  }
   update_takeoff_safety();
   if (phase_ == Phase::Landing) {
     publish_status();
@@ -211,6 +219,10 @@ void OffboardMissionNode::tick() {
     }
     command_wait_.clear();
     initialize();
+  }
+  if (b("px4_takeoff_enabled") && phase_ == Phase::Takeoff) {
+    update_px4_takeoff();
+    return;
   }
   auto health_reason = motion_health_reason();
   if (!health_reason.empty()) {
@@ -632,6 +644,11 @@ void OffboardMissionNode::enter_return(const std::string &reason) {
   event("return_home", p);
 }
 void OffboardMissionNode::enter_landing(const std::string &reason) {
+  if (b("px4_takeoff_enabled") && phase_ == Phase::Takeoff &&
+      px4_takeoff_abort_reason_.empty()) {
+    px4_takeoff_abort_reason_ = reason;
+    event("px4_takeoff_abort");
+  }
   cancel_jobs();
   phase_ = Phase::Landing;
   update_roi_access_budget();

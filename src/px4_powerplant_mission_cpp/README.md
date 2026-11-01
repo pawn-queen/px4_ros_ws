@@ -16,7 +16,7 @@ P2 软件审计覆盖采样时刻参考历史、HOLD 新鲜确认、规划器/�
 
 实际电厂场景使用单独简化的静态凹碰撞网格，同时保留原始视觉 STL。资产提交和内容哈希锁定真实场景验收入口。`explore_min/max_*` 定义任务收益和覆盖范围；起飞、初扫、安全接入和返航使用完整观测导航域。EXPLORE 内含受约束的 ROI_ACCESS 和 ROI_WORK 子模式，不要求已知航点。背景见 [Issue #3 实现](../../docs/design/issue3-collision-and-roi.md) 和 [实际验证状态](../../docs/validation/issue3-actual-plant.md)。
 
-起飞响应更新把启动参考和实测升力分开，加入早停认证制动和恢复锁存，并在启动前派生一个不可变的 SITL 地面过渡预算。独立控制器 profile 必须用实际 PX4 参数回读验证后才能解锁；它不修改 PX4 源码或硬件默认值。策略见 [起飞响应设计](../../docs/design/takeoff-response-sync.md)，实际飞行范围见 [Issue #3 验证](../../docs/validation/issue3-actual-plant.md)。
+固定位置起飞通过 `px4_takeoff_enabled` 显式启用：SAFE_TAKEOFF 发布 home 上方 5 m 的位置目标，速度/加速度前馈为 NaN，由 PX4 自带坡道与位置环完成爬升。它采用预先确认的柱体与漂移、倾角、健康、超高及固定期限监督；到高停稳后，以实际悬停状态建立首个严格 HOLD，确认后进入初扫。该路径不应用外部积分/悬停推力覆盖，也不运行旧地面证书、微上升和 A–D 标定；硬件默认关闭。设计取舍见 [ADR-0004](../../docs/adr/0004-px4-position-takeoff.md)，实际证据见 [Issue #3 验证](../../docs/validation/issue3-actual-plant.md)。关闭开关时保留旧起飞实现供回归。
 
 本轮 A–D 过渡策略使用固定 45 秒预算、圆角扫掠包络和有界参考选择，并保留原严格策略的原子恢复。20 个实际策略/积分候选均未通过起飞初扫；5 次获得严格 ACK，但后续严格爬升/恢复失败，均未进入 HOVER_SCAN，未冻结控制器 profile。主飞行、governor 消融和 ROI 验收仍未执行。最新记录见 [验证记录](../../docs/validation/issue3-actual-plant.md)。
 

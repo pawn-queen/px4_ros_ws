@@ -228,7 +228,8 @@ class ContactEvidence:
             on_plane=finite and all(abs(p[2]-self.plane_z)<=self.plane_error for p in positions)
             prearm=(phase in ('IDLE','START','SAFE_TAKEOFF') and state.get('arming_state')==1)
             postland=(phase=='COMPLETE' and state.get('arming_state')==1 and state.get('land_detected') is True)
-            allowed_phase=prearm or postland or phase=='LANDING' or (phase=='SAFE_TAKEOFF' and stage in ('GROUND_CONTACT','LIFTOFF_TRANSITION'))
+            allowed_phase=prearm or postland or phase=='LANDING' or (phase=='SAFE_TAKEOFF' and (stage in ('GROUND_CONTACT','LIFTOFF_TRANSITION') or
+                (state.get('px4_takeoff_enabled') is True and stage!='AIRBORNE_STRICT')))
             region=self.instrumentation.get('support_region')
             inside_region=bool(region and finite and all(
                 math.hypot(p[0]-region['center_enu_m'][0],p[1]-region['center_enu_m'][1])<=region['radius_m']

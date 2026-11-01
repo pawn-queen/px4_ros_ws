@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import copy
 import hashlib
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
@@ -57,6 +58,9 @@ _controller_spec.loader.exec_module(controller_support)
 _flight_spec=importlib.util.spec_from_file_location("flight_evidence", Path(__file__).with_name("flight_evidence.py"))
 flight_support=importlib.util.module_from_spec(_flight_spec)
 _flight_spec.loader.exec_module(flight_support)
+_position_spec=importlib.util.spec_from_file_location("position_takeoff_evidence", Path(__file__).with_name("position_takeoff_evidence.py"))
+position_support=importlib.util.module_from_spec(_position_spec)
+_position_spec.loader.exec_module(position_support)
 
 EXPECTED_PHASES = ["START", "SAFE_TAKEOFF", "HOVER_SCAN", "EXPLORE",
                    "TARGETING_CYCLE", "RETURN_HOME", "LANDING", "COMPLETE"]
@@ -82,6 +86,15 @@ def takeoff_startup_evidence(parameters, observed_px4_parameters):
     This verifies configuration only; it does not infer actual ramp state or
     replace the measured tracking/stop checks during flight.
     """
+    if parameters.get("px4_takeoff_enabled"):
+        readback = {name:observed_px4_parameters.get(name,{}).get("value") for name in
+            (("MPC_THR_HOVER","MPC_Z_VEL_I_ACC","COM_SPOOLUP_TIME","MPC_TKO_RAMP_T","MPC_Z_VEL_MAX_UP","THR_MDL_FAC","MPC_THR_MAX") + tuple(f"SIM_GZ_EC_{kind}{i}" for i in range(1,5) for kind in ("MIN","MAX")))}
+        valid=all(isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v) for v in readback.values())
+        ranges=[(readback.get(f"SIM_GZ_EC_MIN{i}"),readback.get(f"SIM_GZ_EC_MAX{i}")) for i in range(1,5)]
+        esc_valid=bool(valid and all(0<=low<high for low,high in ranges) and len(set(ranges))==1)
+        return {"passed":valid and esc_valid,"mode":"px4_position_only", "esc_ranges_consistent":esc_valid, "actual_read_only_parameters":readback,
+            "px4_parameters_modified_for_bootstrap":False,"actual_takeoff_ramp_state_observed":False,
+            "scope":"fresh isolated rootfs stock readback; no I/hover override; bootstrap proof is inapplicable"}
     height = parameters.get("motion_takeoff_bootstrap_height_m")
     duration = parameters.get("motion_takeoff_bootstrap_duration_s")
     tolerance = parameters.get("motion_tracking_position_tolerance_m")
@@ -186,7 +199,7 @@ def acceptance_scope(args):
     if getattr(args,'governor_ablation',False):return "powerplant_takeoff_scan_ablation"
     if args.scenario == "powerplant":
         return {"scan":"powerplant_takeoff_scan", "roi-access":"powerplant_roi_access",
-                "mission":"powerplant_local_roi_mission"}[args.stop_after]
+                "hover":"powerplant_takeoff_hover", "mission":"powerplant_local_roi_mission"}[args.stop_after]
     return "full_mission"
 
 
@@ -201,6 +214,16 @@ def resolve_render_context(requested, environment):
 
 def limited_stage_progress(stop_after, phases, events, state,
                            navigation_distance=0.0, truth_distance=0.0):
+    if stop_after == "hover":
+        required = ["START", "SAFE_TAKEOFF", "HOVER_SCAN"]
+        positions = [phases.index(p) for p in required if p in phases]
+        checks = {"initial_flight_phases_in_order":len(positions)==len(required) and positions==sorted(positions),
+            "currently_scanning":state.get("phase")=="HOVER_SCAN",
+            "strict_hold_acknowledged":state.get("takeoff_safety_stage")=="AIRBORNE_STRICT"
+                and state.get("motion_mode")=="HOLD" and state.get("motion_stop_certificate_valid") is True,
+            "navigation_healthy":bool(state.get("localization_ready"))}
+        return {"passed":all(checks.values()),"checks":checks,"scope":"takeoff_hover",
+            "task_roi_complete":False,"full_flight_acceptance":False}
     required = ["START", "SAFE_TAKEOFF", "HOVER_SCAN", "EXPLORE"]
     positions = [phases.index(p) for p in required if p in phases]
     checks = {"initial_flight_phases_in_order":len(positions)==len(required) and positions==sorted(positions),
@@ -463,7 +486,7 @@ def parse_args():
     p.add_argument("--detection-mode", choices=("replay", "yolo", "none"), default=None)
     p.add_argument("--powerplant-asset-lock", type=Path, default=PACKAGE/"config/powerplant_assets.json")
     p.add_argument("--roi-access-test", action="store_true", help="powerplant only: overlay a task ROI outside the launch point")
-    p.add_argument("--stop-after", choices=("scan", "roi-access", "mission"), default=None,
+    p.add_argument("--stop-after", choices=("hover", "scan", "roi-access", "mission"), default=None,
                    help="powerplant defaults to scan; regression rooms default to complete mission")
     p.add_argument("--render-context", choices=("auto", "display", "egl"), default="auto",
                    help="auto uses DISPLAY when available; egl explicitly requests headless rendering")
@@ -485,6 +508,10 @@ def parse_args():
                    help="explicit isolated MPC_Z_VEL_I_ACC calibration; default retains the airframe value")
     p.add_argument("--controller-profile", type=Path, default=None,
                    help="explicit isolated controller YAML; frozen profile required for formal mission")
+    p.add_argument("--px4-position-takeoff", action="store_true",
+                   help="actual powerplant only: fixed position-only PX4 takeoff with stock controller parameters")
+    p.add_argument("--takeoff-fault", choices=("drift", "timeout"), default=None,
+                   help="isolated position-takeoff guard test; controller-only odometry drift or fixed short timeout")
     p.add_argument("--takeoff-policy", choices=("legacy","A","B","C","D"),default=None)
     p.add_argument("--governor-ablation",action="store_true",
                    help="frozen-profile takeoff/scan comparison with reference governor disabled")
@@ -524,6 +551,19 @@ def parse_args():
         p.error("hover thrust must be finite and between zero and one")
     if args.px4_z_velocity_integral is not None and not (math.isfinite(args.px4_z_velocity_integral) and args.px4_z_velocity_integral>=0):
         p.error("vertical velocity integral must be finite and nonnegative")
+    if args.px4_position_takeoff:
+        if args.scenario != "powerplant" or args.image_chain_only:
+            p.error("position-only takeoff requires actual powerplant flight")
+        if (args.controller_profile is not None or args.controller_calibration_candidate is not None
+                or args.px4_hover_thrust is not None or args.px4_z_velocity_integral is not None
+                or args.takeoff_policy is not None or args.governor_ablation):
+            p.error("position-only takeoff forbids controller overrides and legacy calibration policies")
+        inherited=[name for name in os.environ if name.startswith("PX4_PARAM_")]
+        if inherited:p.error("stock position-only takeoff rejects inherited PX4 parameter overrides: "+", ".join(inherited))
+    if args.takeoff_fault is not None and (not args.px4_position_takeoff or args.stop_after != "hover"):
+        p.error("takeoff fault injection requires position-only takeoff and hover stage")
+    if args.stop_after == "hover" and not args.px4_position_takeoff:
+        p.error("hover stage requires position-only takeoff")
     if args.controller_profile is not None:
         if args.px4_hover_thrust is not None or args.px4_z_velocity_integral is not None:
             p.error("controller profiles cannot be combined with diagnostic PX4 parameter overrides")
@@ -790,8 +830,19 @@ def prepare(args):
     # model. Grant response mode only in this derived, hash-bound profile.
     audited_support = bool(ground_support_model and ground_support_model.get("verified")
                            and ground_support_model.get("passed"))
-    profile["takeoff_response_sync_enabled"] = audited_support
-    profile["takeoff_transition_budget_enabled"] = audited_support
+    position_takeoff = getattr(args,"px4_position_takeoff",False)
+    profile["px4_takeoff_enabled"] = position_takeoff
+    if position_takeoff:
+        profile.update(takeoff_ground_support_enabled=False,
+            takeoff_response_sync_enabled=False, takeoff_transition_budget_enabled=False,
+            takeoff_transition_policy_id="legacy", takeoff_reference_governor_enabled=False)
+        if getattr(args,"takeoff_fault",None)=="timeout":
+            profile["px4_takeoff_timeout_s"] = 8.0
+        if getattr(args,"takeoff_fault",None)=="drift":
+            mission["localized_odom_topic"] = "/validation/takeoff/localized_odom"
+    else:
+        profile["takeoff_response_sync_enabled"] = audited_support
+        profile["takeoff_transition_budget_enabled"] = audited_support
     policy=getattr(args,'resolved_controller_profile',{}).get('transition_policy',getattr(args,'takeoff_policy',None) or 'legacy')
     if policy!='legacy':
         if not audited_support:raise ValueError('transition policy requires actual audited powerplant support')
@@ -1048,7 +1099,7 @@ def monitor(args, processes):
     from gz.msgs10.contacts_pb2 import Contacts
     from gz.msgs10.world_stats_pb2 import WorldStatistics
     from nav_msgs.msg import Odometry
-    from px4_msgs.msg import TrajectorySetpoint, VehicleStatus, VehicleLandDetected
+    from px4_msgs.msg import TrajectorySetpoint, VehicleStatus, VehicleLandDetected, VehicleCommand
     from rosgraph_msgs.msg import Clock
     from rclpy.node import Node
     from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -1188,7 +1239,13 @@ def monitor(args, processes):
                                 ("uwb_status", "/uwb/status"),
                                 ("fusion", "/powerplant/map/fusion_status")):
                 self.create_subscription(String, topic, partial(self.health_sample,name), reliable)
+            self.takeoff_fault_rows=[]
+            self.vehicle_commands=[]
+            self.vehicle_states=[]
+            self.fault_odom_pub = (self.create_publisher(Odometry, "/validation/takeoff/localized_odom", reliable)
+                if getattr(args,"takeoff_fault",None)=="drift" else None)
             self.create_subscription(Odometry, "/powerplant/localization/odom", self.pose, reliable)
+            self.create_subscription(VehicleCommand, "/fmu/in/vehicle_command", self.vehicle_command, qos_profile_sensor_data)
             self.create_subscription(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", self.pva, qos_profile_sensor_data)
             status_topic = self.motion_parameters["vehicle_status_topic"]
             if status_topic=="/fmu/out/vehicle_status" and getattr(VehicleStatus,"MESSAGE_VERSION",0)>0:
@@ -1491,7 +1548,20 @@ def monitor(args, processes):
             if self.execution_active():
                 self.clock_rows.append({"wall":self.clock_wall,"sample_ns":self.clock_ns})
 
+        def vehicle_command(self, msg):
+            self.vehicle_commands.append({"sample_ns":int(msg.timestamp)*1000,"wall":time.monotonic(),
+                "command":int(msg.command)})
+
         def pose(self, msg):
+            if self.fault_odom_pub is not None:
+                altered=copy.deepcopy(msg)
+                if self.latest.get("phase")=="SAFE_TAKEOFF" and self.latest.get("arming_state")==VehicleStatus.ARMING_STATE_ARMED:
+                    offset=float(self.motion_parameters["takeoff_region_radius_m"])-float(self.motion_parameters["motion_body_radius_m"])+.2
+                    altered.pose.pose.position.x+=offset
+                    self.takeoff_fault_rows.append({"source_stamp_ns":stamp(msg),"wall":time.monotonic(),
+                        "offset_enu_m":[offset,0.,0.],"source_position_enu_m":[msg.pose.pose.position.x,msg.pose.pose.position.y,msg.pose.pose.position.z],
+                        "injected_position_enu_m":[altered.pose.pose.position.x,altered.pose.pose.position.y,altered.pose.pose.position.z]})
+                self.fault_odom_pub.publish(altered)
             p, q, v = msg.pose.pose.position, msg.pose.pose.orientation, msg.twist.twist.linear
             quat = np.array([q.w, q.x, q.y, q.z])
             point = np.array([p.x, p.y, p.z])
@@ -1553,22 +1623,31 @@ def monitor(args, processes):
                     self.measured_vz=max(self.measured_vz,abs(float(self.latest_velocity[2])))
 
         def pva(self, msg):
+            sample_ns=int(msg.timestamp)*1000
+            phase_state=next((s for s in reversed(self.status_history)
+                if s.get("mission_status_stamp_ns",0)<=sample_ns),self.latest)
             row = {"wall": time.monotonic(), "timestamp": msg.timestamp,
                    "position": list(msg.position), "velocity": list(msg.velocity),
                    "acceleration": list(msg.acceleration), "yaw": float(msg.yaw),
-                   "yawspeed": float(msg.yawspeed),"execution_active":bool(self.execution_active())}
+                   "yawspeed": float(msg.yawspeed),"execution_active":bool(self.execution_active()),"phase":phase_state.get("phase")}
             values = row["position"] + row["velocity"] + row["acceleration"] + [row["yaw"], row["yawspeed"]]
-            self.bad_pva += not all(math.isfinite(x) for x in values)
+            position_only=(getattr(args,"px4_position_takeoff",False)
+                and row["phase"] in ("START","SAFE_TAKEOFF")
+                and all(math.isfinite(x) for x in row["position"]+[row["yaw"]])
+                and all(math.isnan(x) for x in row["velocity"]+row["acceleration"]+[row["yawspeed"]]))
+            row["position_only_takeoff"] = position_only
+            self.bad_pva += not (position_only or all(math.isfinite(x) for x in values))
             self.setpoints.append(row)
-            self.pva_file.write(json_dumps(row) + "\n")
+            self.pva_file.write(json_dumps(clean_json(row),allow_nan=False) + "\n")
 
         def execution_evidence(self):
             # Compare at the navigation *sampling* time using two enclosing
             # references. Callback arrival order and a nearest-future sample do
             # not define the reference the vehicle was supposed to follow.
-            refs=sorted(self.setpoints,key=lambda r:r["timestamp"])
+            refs=sorted((r for r in self.setpoints if not r.get("position_only_takeoff")),key=lambda r:r["timestamp"])
             times=[r["timestamp"]*1000 for r in refs]
-            active=[r for r in self.navigation_rows if r["execution_active"]]
+            all_active=[r for r in self.navigation_rows if r["execution_active"]]
+            active=[r for r in all_active if not (getattr(args,"px4_position_takeoff",False) and r["phase"]=="SAFE_TAKEOFF")]
             policy_schedule=controller_support.tracking_policy_schedule(self.status_history,self.motion_parameters)
             certificates=[]
             unmatched=excluded=0
@@ -1637,12 +1716,12 @@ def monitor(args, processes):
             def intervals(rows,field,scale=1):
                 return [(b[field]-a[field])*scale for a,b in zip(rows,rows[1:])]
             execution_pva=[r for r in self.setpoints if r["execution_active"]]
-            nav_wall=summary(intervals(active,"wall"))
-            nav_sample=summary(intervals(active,"sample_ns",1e-9))
+            nav_wall=summary(intervals(all_active,"wall"))
+            nav_sample=summary(intervals(all_active,"sample_ns",1e-9))
             clock_wall=summary(intervals(self.clock_rows,"wall"))
             clock_sample=summary(intervals(self.clock_rows,"sample_ns",1e-9))
-            clock_age=summary(r["clock_sample_age_s"] for r in active if r["clock_sample_age_s"] is not None)
-            receipt_age=summary(r["clock_receipt_age_wall_s"] for r in active if r["clock_receipt_age_wall_s"] is not None)
+            clock_age=summary(r["clock_sample_age_s"] for r in all_active if r["clock_sample_age_s"] is not None)
+            receipt_age=summary(r["clock_receipt_age_wall_s"] for r in all_active if r["clock_receipt_age_wall_s"] is not None)
             paired_intervals=[abs((b["sample_ns"]-a["sample_ns"])*1e-9-(b["wall"]-a["wall"]))
                               for a,b in zip(self.clock_rows,self.clock_rows[1:])]
             return {"navigation_samples":len(active),"tracking_certificates":len(certificates),
@@ -1733,7 +1812,7 @@ def monitor(args, processes):
                 self.start_future = self.start_client.call_async(Trigger.Request())
 
         def stop_at_requested_stage(self):
-            if (args.image_chain_only or args.scenario!="powerplant"
+            if (getattr(args,"takeoff_fault",None) or args.image_chain_only or args.scenario!="powerplant"
                     or args.stop_after=="mission" or not self.started):
                 return
             nav_distance = truth_distance = 0.0
@@ -1788,7 +1867,8 @@ def monitor(args, processes):
             sample=int(message.timestamp)*1000
             if sample>0 and (self.raw_vehicle_status is None or sample>self.raw_vehicle_status["sample_ns"]):
                 self.raw_vehicle_status={"sample_ns":sample,"receipt_wall":time.monotonic(),
-                                         "arming_state":int(message.arming_state)}
+                                         "arming_state":int(message.arming_state),"nav_state":int(message.nav_state)}
+                self.vehicle_states.append(dict(self.raw_vehicle_status))
 
         def raw_land(self, message):
             sample=int(message.timestamp)*1000
@@ -2131,15 +2211,17 @@ def monitor(args, processes):
             gaps = np.diff([r["wall"] for r in pva]) if len(pva) > 1 else np.array([])
             rate = ((len(pva)-1)/(pva[-1]["wall"]-pva[0]["wall"])) if len(pva)>1 else 0
             finite = [r for r in pva if all(math.isfinite(x) for x in r["velocity"]+r["acceleration"])]
-            max_vxy = max((math.hypot(*r["velocity"][:2]) for r in finite), default=math.inf)
-            max_vz = max((abs(r["velocity"][2]) for r in finite), default=math.inf)
-            max_axy = max((math.hypot(*r["acceleration"][:2]) for r in finite), default=math.inf)
-            max_az = max((abs(r["acceleration"][2]) for r in finite), default=math.inf)
+            max_vxy = max((math.hypot(*r["velocity"][:2]) for r in finite), default=0. if getattr(args,"px4_position_takeoff",False) else math.inf)
+            max_vz = max((abs(r["velocity"][2]) for r in finite), default=0. if getattr(args,"px4_position_takeoff",False) else math.inf)
+            max_axy = max((math.hypot(*r["acceleration"][:2]) for r in finite), default=0. if getattr(args,"px4_position_takeoff",False) else math.inf)
+            max_az = max((abs(r["acceleration"][2]) for r in finite), default=0. if getattr(args,"px4_position_takeoff",False) else math.inf)
             ordered = [p for p in self.phases if p in EXPECTED_PHASES]
             required = EXPECTED_PHASES if args.detection_mode != "none" else [p for p in EXPECTED_PHASES if p != "TARGETING_CYCLE"]
             limited = args.scenario == "powerplant" and args.stop_after != "mission"
             if limited:
                 required = ["START", "SAFE_TAKEOFF", "HOVER_SCAN", "EXPLORE", "LANDING", "COMPLETE"]
+                if args.stop_after=="hover":required.remove("EXPLORE")
+                if getattr(args,"takeoff_fault",None):required.remove("HOVER_SCAN")
             positions = [ordered.index(p) for p in required if p in ordered]
             truth_p95 = float(np.percentile(self.depth_truth_residuals,95)) if self.depth_truth_residuals else math.inf
             nav_p95 = float(np.percentile(self.depth_navigation_residuals,95)) if self.depth_navigation_residuals else math.inf
@@ -2151,6 +2233,7 @@ def monitor(args, processes):
                 self.raw_landed,self.clock_ns,self.clock_wall,time.monotonic(),
                 float(self.motion_parameters["max_land_detection_age_s"]),
                 VehicleStatus.ARMING_STATE_DISARMED)
+            minimum_intervals=1 if getattr(args,"takeoff_fault",None) else 99
             checks = {
                 "actual_gcs_heartbeat_link_healthy": bool(gcs.get("link_healthy") and gcs["evidence_fresh_at_report"]),
                 "px4_datalink_checks_retained": gcs["px4_datalink_policy_verified"],
@@ -2159,16 +2242,16 @@ def monitor(args, processes):
                 "sampled_tracking_certificates_available":evidence["tracking_certificates"]>=100 and evidence["unmatched_navigation_samples"]==0,
                 "measured_tracking_within_uncertainty_bounds":evidence["tracking_certificates"]>=100 and evidence["tracking_violations"]==0,
                 "measured_tracking_within_axis_uncertainty_bounds":evidence["tracking_certificates"]>=100 and evidence["axis_tracking_violations"]==0,
-                "navigation_intervals_within_reaction_budget":all(evidence[k]["count"]>=99 and 0<=evidence[k]["min"] and evidence[k]["max"]<=self.reaction_budget for k in ("navigation_wall_interval_s","navigation_sample_interval_s")),
-                "clock_receipt_within_reaction_budget":all(evidence[k]["count"]>=99 and -.05<=evidence[k]["min"] and evidence[k]["max"]<=self.reaction_budget for k in ("clock_wall_interval_s","clock_sample_interval_s","navigation_clock_sample_age_s","navigation_clock_receipt_age_wall_s","clock_wall_interval_difference_s")),
-                "publication_max_gap_within_reaction_budget":all(evidence[k]["count"]>=99 and 0<=evidence[k]["min"] and evidence[k]["max"]<=self.reaction_budget for k in ("publication_wall_interval_s","publication_sample_interval_s")),
+                "navigation_intervals_within_reaction_budget":all(evidence[k]["count"]>=minimum_intervals and 0<=evidence[k]["min"] and evidence[k]["max"]<=self.reaction_budget for k in ("navigation_wall_interval_s","navigation_sample_interval_s")),
+                "clock_receipt_within_reaction_budget":all(evidence[k]["count"]>=minimum_intervals and -.05<=evidence[k]["min"] and evidence[k]["max"]<=self.reaction_budget for k in ("clock_wall_interval_s","clock_sample_interval_s","navigation_clock_sample_age_s","navigation_clock_receipt_age_wall_s","clock_wall_interval_difference_s")),
+                "publication_max_gap_within_reaction_budget":all(evidence[k]["count"]>=minimum_intervals and 0<=evidence[k]["min"] and evidence[k]["max"]<=self.reaction_budget for k in ("publication_wall_interval_s","publication_sample_interval_s")),
                 "sampled_navigation_matches_model_origin": len(self.reference_errors)>=10 and reference_p95<=.20 and model_mean+.05<body_mean,
                 "truth_depth_mount_wall_projection": len(self.depth_truth_residuals)>=200 and truth_p95<=.08,
                 "navigation_depth_wall_projection": len(self.depth_navigation_residuals)>=200 and nav_p95<=.25,
                 "all_required_phases": all(p in ordered for p in required),
                 "phase_order": len(positions)==len(required) and positions==sorted(positions),
                 "landed_and_disarmed_completion": landing["passed"],
-                "finite_position_velocity_acceleration_yaw": len(pva)>=250 and self.bad_pva==0,
+                "finite_position_velocity_acceleration_yaw": len(pva)>=(10 if getattr(args,"takeoff_fault",None) else 250) and self.bad_pva==0,
                 "command_velocity_limits": max_vxy<=.61 and max_vz<=.31,
                 "command_acceleration_limits": max_axy<=.51 and max_az<=.31,
                 "publication_rate_at_least_40_hz": rate>=40,
@@ -2188,7 +2271,7 @@ def monitor(args, processes):
             if limited:
                 checks["requested_stage_observed"] = bool(self.limited_stage_reached and self.limited_stage_evidence and self.limited_stage_evidence["passed"])
                 checks["stage_landing_service_accepted"] = self.stage_landing_accepted
-                if args.stop_after=="scan":
+                if args.stop_after in ("hover","scan"):
                     # This scope ends immediately after scan completion. A
                     # topology worker need not finish before requesting land.
                     checks.pop("topology_built",None)
@@ -2205,7 +2288,36 @@ def monitor(args, processes):
                 checks["multiple_regions_and_known_portal"] = self.max_regions>=2 and self.max_portals>=1
             if args.detection_mode=="yolo":
                 checks["real_yolo_image_chain"]=chain["passed"]
+            position_takeoff=None
+            mapping_diagnostics=None
+            if getattr(args,"px4_position_takeoff",False):
+                position_takeoff=position_support.takeoff_evidence(self.status_history,self.events,self.setpoints,
+                    self.navigation_rows,flight,getattr(args,"takeoff_fault",None),self.takeoff_fault_rows,
+                    self.vehicle_commands,self.vehicle_states,VehicleStatus.NAVIGATION_STATE_AUTO_LAND)
+                (args.output_dir/"position_takeoff_evidence.json").write_text(json_dumps(clean_json(position_takeoff),indent=2,allow_nan=False))
+                (args.output_dir/"takeoff_injected_navigation.json").write_text(json_dumps(self.takeoff_fault_rows,indent=2,allow_nan=False))
+                (args.output_dir/"vehicle_commands.json").write_text(json_dumps(self.vehicle_commands,indent=2,allow_nan=False))
+                (args.output_dir/"vehicle_states.json").write_text(json_dumps(self.vehicle_states,indent=2,allow_nan=False))
+                checks.pop("takeoff_bootstrap_covers_actual_px4_startup",None)
+                checks.pop("ground_to_strict_runtime_handoff_verified",None)
+                checks.pop("actual_phase_policy_matches",None)
+                checks["stock_takeoff_parameter_readback_complete"]=startup["passed"]
+                if args.stop_after=="hover":
+                    mapping_diagnostics={k:checks.pop(k) for k in ("truth_depth_mount_wall_projection","navigation_depth_wall_projection")}
+                    # This stage deliberately ends at the first strict HOLD. It
+                    # must prove the ACK, not accumulate 100 cruise samples.
+                    checks.pop("sampled_tracking_certificates_available",None)
+                    checks["measured_tracking_within_uncertainty_bounds"]=evidence["tracking_violations"]==0
+                    checks["measured_tracking_within_axis_uncertainty_bounds"]=evidence["axis_tracking_violations"]==0
+                if getattr(args,"takeoff_fault",None):
+                    for key in ("actual_takeoff_and_two_second_stable_hover","requested_stage_observed","stage_landing_service_accepted",
+                        "sampled_tracking_certificates_available","measured_tracking_within_uncertainty_bounds","measured_tracking_within_axis_uncertainty_bounds"):
+                        checks.pop(key,None)
+                    checks["takeoff_guard_caused_real_auto_land"]=position_takeoff["fault_injection"]["passed"]
+                else:
+                    checks["position_takeoff_and_strict_handoff_verified"]=position_takeoff["passed"]
             return {"passed": all(checks.values()), "exit_reason": reason, "checks": checks,
+                    "position_takeoff_evidence":position_takeoff,"mapping_diagnostics":mapping_diagnostics,
                     "acceptance_scope":acceptance_scope(args),"flight_acceptance_executed":self.started,
                     "full_mission_acceptance":bool(not limited and all(checks.values())),
                     "full_scene_exploration_acceptance":False,
