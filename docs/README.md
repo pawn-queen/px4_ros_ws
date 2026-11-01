@@ -33,6 +33,7 @@
 ## 当前状态与历史
 
 - 当前 runtime/validation 边界见 [ADR-0001](adr/0001-runtime-validation-seam.md)。
+- 固定位置起飞与悬停后严格交接见 [ADR-0004](adr/0004-px4-position-takeoff.md)。
 - P0/P1/P2 是历史阶段名，不是当前模块名；新代码不要再用这些前缀。
 - `history/` 下的文档只用于追溯，不要把其中的命令或结论当作当前入口。
 - 验证结论必须区分“软件测试通过”“SITL 通过”“实机通过”，不能互相替代。

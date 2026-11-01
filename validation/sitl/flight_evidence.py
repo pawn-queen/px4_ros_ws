@@ -135,17 +135,20 @@ def physical_flight_evidence(navigation, truth, statuses, parameters):
     return_truth=[truth_home[0],truth_home[1],truth_home[2]+return_height] if truth_home else None
     landing_times=[s['mission_status_stamp_ns'] for s in states if s.get('phase')=='LANDING']
     first_landing=min(landing_times) if landing_times else None
-    def interval(phase,duration,target_nav,target_truth):
+    def interval(phase,duration,target_nav,target_truth,position_tolerance=None):
+        position_tolerance=acceptance if position_tolerance is None else position_tolerance
         run=[];best=[]
         for row in rows:
             s=row['state'];t=row['sample_ns']
             valid=bool(target_nav and target_truth and s.get('phase') in phase
-                and s.get('takeoff_safety_stage')=='AIRBORNE_STRICT'
-                and s.get('motion_mode')=='HOLD' and s.get('motion_stopped')
-                and s.get('motion_stop_certificate_valid')
+                and (s.get('takeoff_safety_stage')=='AIRBORNE_STRICT' or
+                    (parameters.get('px4_takeoff_enabled') is True and s.get('phase')=='SAFE_TAKEOFF'
+                     and s.get('land_detected') is False))
+                and ((s.get('motion_mode')=='HOLD' and s.get('motion_stopped') and s.get('motion_stop_certificate_valid'))
+                    or (parameters.get('px4_takeoff_enabled') is True and s.get('phase')=='SAFE_TAKEOFF'))
                 and row['navigation_speed_mps']<=stop_speed and row['truth_speed_mps']<=stop_speed
-                and _norm(_sub(row['navigation'],target_nav))<=acceptance
-                and _norm(_sub(row['truth'],target_truth))<=acceptance
+                and _norm(_sub(row['navigation'],target_nav))<=position_tolerance
+                and _norm(_sub(row['truth'],target_truth))<=position_tolerance
                 and (first_landing is None or t<first_landing))
             if not valid:
                 run=[];continue
@@ -162,7 +165,8 @@ def physical_flight_evidence(navigation, truth, statuses, parameters):
             'maximum_truth_distance_m':max((_norm(_sub(r['truth'],target_truth)) for r in best),default=None),
             'maximum_navigation_speed_mps':max((r['navigation_speed_mps'] for r in best),default=None),
             'maximum_truth_speed_mps':max((r['truth_speed_mps'] for r in best),default=None)}
-    takeoff=interval(('SAFE_TAKEOFF','HOVER_SCAN'),2.,takeoff_nav,takeoff_truth)
+    takeoff=interval(('SAFE_TAKEOFF','HOVER_SCAN'),2.,takeoff_nav,takeoff_truth,
+        float(parameters.get('px4_takeoff_arrival_tolerance_m',.2)) if parameters.get('px4_takeoff_enabled') is True else None)
     returned=interval(('RETURN_HOME',),.3,return_nav,return_truth)
     returned['landing_followed_stopped_return']=bool(first_landing and returned['end_sample_ns'] and returned['end_sample_ns']<first_landing)
     returned['passed']=bool(returned['passed'] and returned['landing_followed_stopped_return'])

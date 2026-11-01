@@ -1,11 +1,21 @@
 #pragma once
 #include "px4_powerplant_mission_cpp/motion.hpp"
+#include "px4_powerplant_mission_cpp/px4_takeoff.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <thread>
 
 namespace powerplant {
+struct Px4TakeoffRuntimeInput {
+  Px4TakeoffConfig config;
+  Px4TakeoffObservation observation;
+  int64_t started_ros_ns = 0, started_steady_ns = 0;
+  int64_t vehicle_ros_ns = 0, vehicle_steady_ns = 0;
+  int64_t land_ros_ns = 0, land_steady_ns = 0;
+  double max_vehicle_age_s = 1., max_land_age_s = 1.;
+  bool control_requested = false;
+};
 struct MotionRuntimeInput {
   MotionState state;
   MotionSafetyDomain domain;
@@ -21,6 +31,7 @@ struct MotionRuntimeInput {
   // Zero means no count limit; each individual recovery still has a deadline.
   uint32_t max_tracking_recovery_attempts = 0;
   std::string reason;
+  std::optional<Px4TakeoffRuntimeInput> px4_takeoff;
 };
 // The mission owns decisions; this module alone owns the 50Hz execution loop.
 // Immutable inputs avoid sharing the mission's mutable map/camera state.
@@ -28,14 +39,16 @@ class MotionRuntime {
 public:
   using Clock = std::function<int64_t()>;
   using Publish = std::function<void(const MotionSample &, int64_t)>;
+  using Land = std::function<void(int64_t)>;
   using Prepare = std::function<MotionPlanResult(
       const MotionSafetyDomain &, const MotionState &, const Path &, double,
       const MotionLimits &, const Cancel &)>;
-  MotionRuntime(Clock, Publish, Prepare prepare = {});
+  MotionRuntime(Clock, Publish, Prepare prepare = {}, Land land = {});
   ~MotionRuntime();
   void input(MotionRuntimeInput);
   void disable();
   MotionUpdate report() const;
+  std::optional<Px4TakeoffUpdate> takeoff_report() const;
   // Read-only uncertainty budget for a NEW complete geometry proof. Original
   // pose, velocity and covariance matrices are preserved; this never grants
   // motion permission or changes the live stop/publication checks.
@@ -43,11 +56,12 @@ public:
   uint64_t publications() const { return publications_; }
 private:
   void run();
-  Clock clock_; Publish publish_; Prepare prepare_;
+  Clock clock_; Publish publish_; Prepare prepare_; Land land_;
   mutable std::mutex mutex_;
   std::shared_ptr<const MotionRuntimeInput> input_;
   uint64_t reset_serial_ = 0;
   MotionUpdate report_;
+  std::optional<Px4TakeoffUpdate> takeoff_report_;
   struct PlanningBudget {
     uint64_t session = 0;
     int64_t state_epoch = 0, map_epoch = 0;

@@ -62,12 +62,12 @@ def _launch_setup(context, *args, **kwargs):
 
     config_file = _arg(context, "config_file") or str(share / "config/powerplant.yaml")
     localization_config = selected.config_path(share, "localization")
-    motion_config = _arg(context, "motion_config_file") or selected.config_path(share, "motion")
+    motion_config = Path(_arg(context, "motion_config_file") or selected.config_path(share, "motion"))
     for path in (localization_config, motion_config):
         if not path.is_file():
             raise RuntimeError(f"runtime profile {selected.name!r} references missing config: {path}")
 
-    use_sim_time = defaults["use_sim_time"]
+    use_sim_time = defaults["use_sim_time"] == "true"
     use_uwb = defaults["use_uwb"]
     use_gazebo_truth_bridge = defaults["use_gazebo_truth_bridge"]
     use_gazebo_clock_bridge = defaults["use_gazebo_clock_bridge"]

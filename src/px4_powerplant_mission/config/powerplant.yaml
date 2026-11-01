@@ -182,6 +182,10 @@ powerplant_offboard_mission:
   ros__parameters:
     # P2 model limits are enabled only by an explicit calibrated profile.
     motion_model_configured: false
+    # 固定位置起飞仅显式启用；实机默认关闭。
+    px4_takeoff_enabled: false
+    px4_takeoff_timeout_s: 60.0
+    px4_takeoff_arrival_tolerance_m: 0.20
     motion_rounded_envelope_enabled: false
     takeoff_transition_policy_id: legacy
     takeoff_reference_governor_enabled: false

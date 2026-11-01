@@ -243,6 +243,11 @@ void OffboardMissionNode::reset_takeoff_safety() {
   takeoff_support_clearance_lower_m_ = -inf;
   takeoff_handoff_rise_m_ = 0.;
   takeoff_budget_reason_.clear();
+  if (b("px4_takeoff_enabled")) {
+    takeoff_safety_stage_ = MotionCertificateKind::None;
+    takeoff_transition_budget_s_ = 0.;
+    return;
+  }
   try {
     takeoff_transition_budget_s_ = takeoff_transition_budget_s();
     if (!std::isfinite(takeoff_transition_budget_s_) ||
@@ -268,6 +273,8 @@ double OffboardMissionNode::takeoff_ground_remaining_s() const {
 }
 
 bool OffboardMissionNode::takeoff_strict_ready() const {
+  if (b("px4_takeoff_enabled"))
+    return px4_takeoff_strict_ack_;
   if (!b("takeoff_ground_support_enabled"))
     return true;
   if (!motion_ ||
@@ -280,6 +287,7 @@ bool OffboardMissionNode::takeoff_strict_ready() const {
 }
 
 void OffboardMissionNode::update_takeoff_safety() {
+  if (b("px4_takeoff_enabled")) return;
   if (phase_ != Phase::Takeoff || !home_ ||
       !b("takeoff_ground_support_enabled"))
     return;
@@ -547,6 +555,11 @@ void OffboardMissionNode::update_motion_input(const Vec3 &target,
                                               const std::string &reason) {
   if (!motion_)
     return;
+  if (b("px4_takeoff_enabled") && phase_ == Phase::Takeoff &&
+      !px4_takeoff_handoff_started_) {
+    update_px4_takeoff_input();
+    return;
+  }
   if ((target - motion_target_).norm() > 1e-6 ||
       std::abs(wrap_pi(heading - motion_target_yaw_)) > .02 ||
       permit != motion_permit_)

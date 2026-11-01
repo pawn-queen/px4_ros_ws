@@ -86,6 +86,13 @@ bool publication_context_matches(const MotionRuntimeInput &source,
                                   const MotionRuntimeInput &latest) {
   if (&source == &latest)
     return latest.enabled;
+  if (source.px4_takeoff || latest.px4_takeoff)
+    return source.px4_takeoff && latest.px4_takeoff && latest.enabled &&
+        source.session == latest.session &&
+        source.generation == latest.generation &&
+        source.state.epoch == latest.state.epoch &&
+        source.px4_takeoff->started_steady_ns == latest.px4_takeoff->started_steady_ns &&
+        source.state.sample_stamp_ns == latest.state.sample_stamp_ns;
   const bool same_context = latest.enabled && latest.session == source.session &&
       latest.generation == source.generation && latest.permit == source.permit &&
       latest.request_strict_promotion == source.request_strict_promotion &&
@@ -108,9 +115,10 @@ bool publication_context_matches(const MotionRuntimeInput &source,
 }
 }
 
-MotionRuntime::MotionRuntime(Clock clock, Publish publish, Prepare prepare)
+MotionRuntime::MotionRuntime(Clock clock, Publish publish, Prepare prepare, Land land)
     : clock_(std::move(clock)), publish_(std::move(publish)),
       prepare_(prepare ? std::move(prepare) : Prepare(build_motion_plan)),
+      land_(std::move(land)),
       thread_([this] { run(); }), work_thread_([this] { work_loop(); }) {}
 
 MotionRuntime::~MotionRuntime() {
@@ -171,6 +179,7 @@ void MotionRuntime::disable() {
     std::lock_guard<std::mutex> lock(mutex_);
     previous = std::move(input_);
     report_ = {};
+    takeoff_report_.reset();
     planning_budget_.reset();
     strict_promotion_.reset();
     ++reset_serial_;
@@ -182,6 +191,11 @@ void MotionRuntime::disable() {
 MotionUpdate MotionRuntime::report() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return report_;
+}
+
+std::optional<Px4TakeoffUpdate> MotionRuntime::takeoff_report() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return takeoff_report_;
 }
 
 bool MotionRuntime::same_planning_context(
@@ -359,6 +373,11 @@ void MotionRuntime::run() {
   int64_t stopped_since = 0;
   MotionTrackingRecovery tracking_recovery;
   uint64_t handled_soft_stop = 0;
+  Px4PositionTakeoff takeoff_monitor;
+  uint64_t takeoff_session = 0;
+  int64_t takeoff_started = 0;
+  bool takeoff_land_sent = false;
+  bool was_position_takeoff = false;
   auto next = std::chrono::steady_clock::now();
   while (running_) {
     next += std::chrono::milliseconds(20);
@@ -384,6 +403,62 @@ void MotionRuntime::run() {
     }
     try {
       const auto now = clock_(), steady = steady_ns();
+      if (in->px4_takeoff) {
+        // One publication owner for both modes. No strict executor, worker or
+        // geometric certificate is run during the explicitly selected ascent.
+        if (!was_position_takeoff || takeoff_session != in->session ||
+            takeoff_started != in->px4_takeoff->started_steady_ns) {
+          cancel_work();
+          outstanding = 0;
+          retire_work(active_work);
+          retire_input(accepted_context);
+          retire_input(failed_context);
+          initialized = false;
+          const auto &t = *in->px4_takeoff;
+          takeoff_monitor.reset(t.config, t.started_ros_ns, t.started_steady_ns);
+          takeoff_session = in->session;
+          takeoff_started = t.started_steady_ns;
+          takeoff_land_sent = false;
+        }
+        was_position_takeoff = true;
+        auto observation = in->px4_takeoff->observation;
+        const auto fresh = [&](int64_t ros, int64_t wall, double max_age) {
+          return ros > 0 && wall > 0 && now >= ros && steady >= wall &&
+              (now - ros) * 1e-9 <= max_age && (steady - wall) * 1e-9 <= max_age;
+        };
+        observation.navigation_fresh = observation.navigation_fresh &&
+            fresh(in->state.sample_stamp_ns, in->state.receipt_steady_ns,
+                  in->limits.max_state_age_s) &&
+            fresh(in->px4_takeoff->vehicle_ros_ns, in->px4_takeoff->vehicle_steady_ns,
+                  in->px4_takeoff->max_vehicle_age_s);
+        observation.land_state_fresh = observation.land_state_fresh &&
+            fresh(in->px4_takeoff->land_ros_ns, in->px4_takeoff->land_steady_ns,
+                  in->px4_takeoff->max_land_age_s);
+        const auto update = takeoff_monitor.update(observation, now, steady,
+                                                   in->px4_takeoff->control_requested);
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (input_ && publication_context_matches(*in, *input_) &&
+              reset_serial_ == observed_reset) {
+            takeoff_report_ = update;
+            report_ = {}; // A fixed position target is never a strict certificate.
+            if (update.request_land) {
+              if (!takeoff_land_sent && land_) land_(now);
+              takeoff_land_sent = true;
+            } else {
+              publish_(position_takeoff_reference(in->px4_takeoff->config), now);
+              ++publications_;
+            }
+          }
+        }
+        retire_input(in);
+        std::this_thread::sleep_until(next);
+        continue;
+      }
+      if (was_position_takeoff) {
+        initialized = false; // Explicit one-time anchor at the measured hover.
+        was_position_takeoff = false;
+      }
       const MotionState checked_state = certificate_state(in->state);
       if (in->domain.ground_support &&
           in->domain.ground_support->session!=in->session)

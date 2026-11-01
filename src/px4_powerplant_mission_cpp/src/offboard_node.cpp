@@ -150,6 +150,7 @@ OffboardMissionNode::OffboardMissionNode()
         bool ground_changed = false;
         for (const auto &parameter : parameters)
           if (parameter.get_name().rfind("takeoff_", 0) == 0 ||
+              parameter.get_name().rfind("px4_takeoff_", 0) == 0 ||
               parameter.get_name().rfind("motion_", 0) == 0 ||
               parameter.get_name() == "sitl_controller_profile_id" ||
               parameter.get_name() == "px4_timestamp_domain") {
@@ -161,6 +162,23 @@ OffboardMissionNode::OffboardMissionNode()
             }
           }
         if (ground_changed) {
+          const auto next = [&](const std::string &name) {
+            for (const auto &p : parameters)
+              if (p.get_name() == name) return p.as_double();
+            return d(name);
+          };
+          bool position_takeoff = b("px4_takeoff_enabled");
+          for (const auto &p : parameters)
+            if (p.get_name() == "px4_takeoff_enabled") position_takeoff = p.as_bool();
+          const double deadline = next("px4_takeoff_timeout_s");
+          const double arrival = next("px4_takeoff_arrival_tolerance_m");
+          if (!std::isfinite(deadline) || deadline <= 0 ||
+              !std::isfinite(arrival) || arrival <= 0 ||
+              (position_takeoff && arrival >= next("takeoff_height_m"))) {
+            result.successful = false;
+            result.reason = "invalid PX4 takeoff deadline or arrival tolerance";
+            return result;
+          }
           result.reason = ground_support_parameter_reason(parameters);
           result.successful = result.reason.empty();
           if (!result.successful)
@@ -227,6 +245,7 @@ OffboardMissionNode::OffboardMissionNode()
   const auto clock = get_clock();
   const auto hp = heartbeat_pub_;
   const auto sp = setpoint_pub_;
+  const auto cp = command_pub_;
   motion_ = std::make_unique<MotionRuntime>(
       [clock] { return clock->now().nanoseconds(); },
       [hp, sp](const MotionSample &s, int64_t stamp) {
@@ -247,6 +266,14 @@ OffboardMissionNode::OffboardMissionNode()
         heartbeat.position = true;
         hp->publish(heartbeat);
         sp->publish(out);
+      }, MotionRuntime::Prepare{}, [cp](int64_t stamp) {
+        Command cmd;
+        cmd.timestamp = stamp / 1000;
+        cmd.command = Command::VEHICLE_CMD_NAV_LAND;
+        cmd.target_system = cmd.target_component = 1;
+        cmd.source_system = cmd.source_component = 1;
+        cmd.from_external = true;
+        cp->publish(cmd);
       });
   subscribe_vehicle();
   subscribe_map();
@@ -486,12 +513,18 @@ void OffboardMissionNode::on_localization_status(const std::string &text) {
     localization_steady_ = steady_ns();
     independent_healthy_ = p[mission_contract::kUwbInputHealthy].asBool() &&
                            p[mission_contract::kHasIndependentPosition].asBool();
-    if (!independent_healthy_ && active_ && phase_ != Phase::Start)
-      fault("independent localization health lost");
+    if (!independent_healthy_ && active_ && phase_ != Phase::Start) {
+      if (b("px4_takeoff_enabled") && phase_ == Phase::Takeoff)
+        enter_landing("PX4_TAKEOFF_NAVIGATION_UNHEALTHY");
+      else fault("independent localization health lost");
+    }
   } catch (const std::exception &e) {
     independent_healthy_ = false;
-    if (active_ && phase_ != Phase::Start)
-      fault(std::string("invalid localization health: ") + e.what());
+    if (active_ && phase_ != Phase::Start) {
+      if (b("px4_takeoff_enabled") && phase_ == Phase::Takeoff)
+        enter_landing(std::string("PX4_TAKEOFF_NAVIGATION_UNHEALTHY: ") + e.what());
+      else fault(std::string("invalid localization health: ") + e.what());
+    }
   }
 }
 void OffboardMissionNode::on_vehicle(const Status &m) {
@@ -802,6 +835,7 @@ void OffboardMissionNode::event(const std::string &name, JsonValue fields) {
   fields["takeoff_response_sample_count"] = takeoff_response_samples_;
   fields["takeoff_handoff_rise_m"] = takeoff_handoff_rise_m_;
   fields["event"] = name;
+  append_px4_takeoff_evidence(fields);
   fields["phase"] = phase_name(phase_);
   fields["selected_region_id"] = integer(selected_region_id_);
   fields["portal_count"] = integer(topology_ ? topology_->portals.size() : 0);
@@ -831,6 +865,7 @@ void OffboardMissionNode::publish_status(std::optional<Vec3> target,
   p["phase"] = phase_name(phase_);
   p["takeoff_safety_stage"] = b("takeoff_ground_support_enabled")
       ? motion_certificate_kind_name(takeoff_safety_stage_) : "STRICT_ONLY";
+  append_px4_takeoff_evidence(p);
   p["takeoff_ground_support_enabled"] = b("takeoff_ground_support_enabled");
   p["sitl_controller_profile_id"] = s("sitl_controller_profile_id");
   p["takeoff_progress"] = takeoff_progress_name(takeoff_progress_);
