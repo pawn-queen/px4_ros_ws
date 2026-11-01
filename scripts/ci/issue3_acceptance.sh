@@ -186,6 +186,35 @@ for pattern in ('dri/*', 'nvidia*', 'dxg'):
         print(path)
 PYDEV
 } > "$output/gpu.txt" 2>&1
+python3 - "$output/gpu_access.json" <<'PYGPU'
+import grp, json, os, pwd, stat, subprocess, sys
+from pathlib import Path
+devices = []
+for device in sorted([*Path('/dev/dri').glob('renderD*'), *Path('/dev').glob('nvidia[0-9]*')]):
+    metadata = device.stat()
+    row = {'path': str(device), 'mode': stat.filemode(metadata.st_mode),
+           'owner_uid': metadata.st_uid, 'owner_gid': metadata.st_gid,
+           'owner_group': grp.getgrgid(metadata.st_gid).gr_name}
+    try:
+        descriptor = os.open(device, os.O_RDWR | os.O_CLOEXEC)
+        os.close(descriptor)
+        row['open_read_write'] = True
+    except OSError as error:
+        row.update(open_read_write=False, errno=error.errno, error=str(error))
+    devices.append(row)
+configured = subprocess.run(['id', pwd.getpwuid(os.geteuid()).pw_name],
+    capture_output=True, text=True, check=True).stdout.strip()
+service = Path.home() / 'actions-runner/.service'
+report = {'process_uid': os.geteuid(), 'process_groups': [
+    {'gid': gid, 'name': grp.getgrgid(gid).gr_name} for gid in os.getgroups()],
+    'configured_user_groups': configured, 'devices': devices,
+    'runner_service': service.read_text().strip() if service.is_file() else None,
+    'render_device_access_available': any(row['open_read_write'] for row in devices),
+    'scope': 'real device-open probe only; successful EGL rendering still requires runtime evidence'}
+Path(sys.argv[1]).write_text(json.dumps(report, indent=2))
+if not report['render_device_access_available']:
+    raise SystemExit('native GPU device access denied; see gpu_access.json; administrator group/ACL authorization and runner restart required')
+PYGPU
 {
   printf 'host=%s\nuser=%s\nkernel=%s\ncpus=%s\n' "$(hostname)" "$(id -un)" "$(uname -sr)" "$(nproc)"
   printf 'workspace=%s\npx4_root=%s\nscope=%s\n' "$workspace" "$px4_root" "$scope"
