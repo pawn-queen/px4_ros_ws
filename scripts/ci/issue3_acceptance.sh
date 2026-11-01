@@ -73,17 +73,27 @@ if [[ ! -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]]; then
       # curl 使用正常代理配置；官方公共 HTTP 源只用于原 SHA 锁定的包。
       # HTTPS 通道继续校验证书，所有通道都必须逐包匹配原始字节锁。
       python3 - "$workspace/tools/env/ros_dependencies.json" "$lock_dir/ros-deps" "$output" <<'PYDDS'
-import hashlib, json, platform, subprocess, sys, tempfile
+import hashlib, json, platform, shutil, subprocess, sys, tempfile
 from pathlib import Path
 lock, prefix, output = map(Path, sys.argv[1:])
 release = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
 if release.get('VERSION_CODENAME', '').strip('"') != 'noble' or platform.machine() != 'x86_64':
     raise SystemExit('pinned DDS fallback requires Ubuntu noble amd64')
 receipts = []
+cache = prefix.parent / 'dds-package-cache'
+cache.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='native-dds-') as temporary:
     verified = []
     for entry in json.loads(lock.read_text())['packages']:
         target = Path(temporary) / (entry['package'] + '.deb')
+        cached = cache / (entry['sha256'] + '.deb')
+        if cached.exists():
+            if hashlib.sha256(cached.read_bytes()).hexdigest() != entry['sha256']:
+                raise SystemExit('DDS cached SHA256 mismatch: ' + entry['package'])
+            verified.append(cached)
+            receipts.append({'package': entry['package'], 'version': entry['version'],
+                             'url': None, 'sha256': entry['sha256'], 'cached': True})
+            continue
         urls = [entry['url'], entry['url'].replace(
             'https://mirrors.ustc.edu.cn/ros2/ubuntu/',
             'https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu/'), entry['url'].replace(
@@ -95,14 +105,18 @@ with tempfile.TemporaryDirectory(prefix='native-dds-') as temporary:
             protocol = '=https' if url.startswith('https://') else '=http'
             result = subprocess.run(['curl', '-q', '--fail', '--location', '--silent', '--show-error',
                 '--proto', protocol, '--proto-redir', protocol, '--connect-timeout', '10',
-                '--max-time', '30', '--retry', '1', '--output', str(target), url])
+                '--max-time', '90', '--retry', '2', '--retry-all-errors', '--retry-delay', '2',
+                '--output', str(target), url])
             if result.returncode != 0:
                 continue
             if hashlib.sha256(target.read_bytes()).hexdigest() != entry['sha256']:
                 raise SystemExit('DDS fallback SHA256 mismatch: ' + entry['package'])
-            verified.append(target)
+            partial = cached.with_suffix('.part')
+            shutil.copyfile(target, partial)
+            partial.replace(cached)
+            verified.append(cached)
             receipts.append({'package': entry['package'], 'version': entry['version'],
-                             'url': url, 'sha256': entry['sha256']})
+                             'url': url, 'sha256': entry['sha256'], 'cached': False})
             break
         else:
             raise SystemExit('locked DDS dependency unavailable: ' + entry['package'])

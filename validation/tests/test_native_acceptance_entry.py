@@ -147,7 +147,8 @@ def dds_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_text", read_text)
     monkeypatch.setattr(platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(sys, "argv", ["dds-fallback", str(lock), str(prefix), str(output)])
-    return {"lock": lock, "prefix": prefix, "output": output, "payloads": payloads, "events": []}
+    return {"lock": lock, "prefix": prefix, "output": output, "payloads": payloads,
+            "cache": prefix.parent / "dds-package-cache", "events": []}
 
 
 def execute_dds(fixture, monkeypatch, download):
@@ -236,3 +237,58 @@ def test_dds_official_public_fallback_rejects_corrupt_bytes(dds_fallback, monkey
     with pytest.raises(SystemExit, match="SHA256 mismatch: dds-one"):
         execute_dds(dds_fallback, monkeypatch, download)
     assert not any(event[0] == "extract" for event in dds_fallback["events"])
+
+
+def test_dds_verified_complete_cache_needs_no_network(dds_fallback, monkeypatch):
+    cache = dds_fallback["cache"]
+    cache.mkdir()
+    for data in dds_fallback["payloads"].values():
+        (cache / (hashlib.sha256(data).hexdigest() + ".deb")).write_bytes(data)
+
+    def download(url):
+        pytest.fail("complete verified cache must not request network: " + url)
+
+    execute_dds(dds_fallback, monkeypatch, download)
+    events = dds_fallback["events"]
+    assert [event[0] for event in events] == ["extract", "extract"]
+    assert {event[2] for event in events} == set(dds_fallback["payloads"].values())
+
+
+def test_dds_corrupted_cache_is_rejected_without_network_or_extraction(dds_fallback, monkeypatch):
+    cache = dds_fallback["cache"]
+    cache.mkdir()
+    digest = hashlib.sha256(dds_fallback["payloads"]["dds-one"]).hexdigest()
+    (cache / (digest + ".deb")).write_bytes(b"corrupted cached package")
+
+    def download(url):
+        pytest.fail("corrupted cache must fail closed before network: " + url)
+
+    with pytest.raises(SystemExit, match="SHA256 mismatch"):
+        execute_dds(dds_fallback, monkeypatch, download)
+    assert dds_fallback["events"] == []
+    assert not dds_fallback["prefix"].exists()
+
+
+def test_dds_interrupted_download_preserves_verified_cache_for_next_run(dds_fallback, monkeypatch):
+    def first_download(url):
+        name = Path(url).stem
+        return (0, dds_fallback["payloads"][name]) if name == "dds-one" else (35, None)
+
+    with pytest.raises(SystemExit, match="locked DDS dependency unavailable: dds-two"):
+        execute_dds(dds_fallback, monkeypatch, first_download)
+    first = dds_fallback["payloads"]["dds-one"]
+    first_cache = dds_fallback["cache"] / (hashlib.sha256(first).hexdigest() + ".deb")
+    assert first_cache.read_bytes() == first
+    assert not any(event[0] == "extract" for event in dds_fallback["events"])
+    assert not dds_fallback["prefix"].exists()
+
+    dds_fallback["events"].clear()
+
+    def second_download(url):
+        assert Path(url).stem == "dds-two", "verified first package should not be fetched again"
+        return 0, dds_fallback["payloads"]["dds-two"]
+
+    execute_dds(dds_fallback, monkeypatch, second_download)
+    events = dds_fallback["events"]
+    assert [event[0] for event in events] == ["curl", "extract", "extract"]
+    assert {event[2] for event in events if event[0] == "extract"} == set(dds_fallback["payloads"].values())
