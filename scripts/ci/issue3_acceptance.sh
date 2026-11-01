@@ -130,6 +130,24 @@ PYDDS
 fi
 source "$workspace/tools/env/ros_env.sh"
 set -u
+# 系统 SciPy/cv_bridge 与 apt NumPy 使用同一 ABI；保留较后 user-site 中
+# 的 pymavlink，但不让用户 pip NumPy 2 覆盖系统编译扩展的 NumPy 1。
+export PYTHONPATH="/usr/lib/python3/dist-packages${PYTHONPATH:+:$PYTHONPATH}"
+python3 - "$output/python_abi.json" <<'PYABI'
+import importlib, json, sys
+from pathlib import Path
+import numpy as np
+import scipy
+from scipy.sparse import coo_matrix
+if not np.array_equal(coo_matrix(np.eye(2)) @ np.ones(2), np.ones(2)):
+    raise SystemExit('system NumPy/SciPy sparse ABI probe failed')
+modules = {name: str(getattr(importlib.import_module(name), '__file__', None))
+           for name in ('pymavlink', 'rclpy', 'gz.transport13')}
+Path(sys.argv[1]).write_text(json.dumps({'numpy_version': np.__version__,
+    'numpy_path': np.__file__, 'scipy_version': scipy.__version__,
+    'scipy_path': scipy.__file__, 'sparse_operation_passed': True,
+    'required_module_paths': modules}, indent=2))
+PYABI
 python3 - "$output/middleware.json" <<'PYRMW'
 import json, sys
 from pathlib import Path
