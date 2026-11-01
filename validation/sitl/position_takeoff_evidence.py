@@ -1,10 +1,11 @@
 """独立评估位置模式起飞；真值仅用于离线验收，绝不发送给飞行控制。"""
 from __future__ import annotations
 import math
+from numbers import Real
 
 
 def _finite3(v):
-    return isinstance(v,(list,tuple)) and len(v)==3 and all(isinstance(x,(int,float)) and math.isfinite(x) for x in v)
+    return isinstance(v,(list,tuple)) and len(v)==3 and all(isinstance(x,Real) and not isinstance(x,bool) and math.isfinite(x) for x in v)
 
 
 def _distance(a,b):

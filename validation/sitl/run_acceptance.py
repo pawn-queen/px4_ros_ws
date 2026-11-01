@@ -1715,7 +1715,10 @@ def monitor(args, processes):
                         "p99":float(np.percentile(values,99)) if values else None}
             def intervals(rows,field,scale=1):
                 return [(b[field]-a[field])*scale for a,b in zip(rows,rows[1:])]
-            execution_pva=[r for r in self.setpoints if r["execution_active"]]
+            # Publication timing covers actual warmup AND flight output. A
+            # 50 Hz guard can stop before the 10 Hz task status reports armed;
+            # receipt-side execution_active is not evidence of missing output.
+            execution_pva=self.setpoints
             nav_wall=summary(intervals(all_active,"wall"))
             nav_sample=summary(intervals(all_active,"sample_ns",1e-9))
             clock_wall=summary(intervals(self.clock_rows,"wall"))
@@ -1725,6 +1728,7 @@ def monitor(args, processes):
             paired_intervals=[abs((b["sample_ns"]-a["sample_ns"])*1e-9-(b["wall"]-a["wall"]))
                               for a,b in zip(self.clock_rows,self.clock_rows[1:])]
             return {"navigation_samples":len(active),"tracking_certificates":len(certificates),
+                    "publication_timing_scope":"all_actual_setpoints_including_offboard_warmup",
                     "unmatched_navigation_samples":unmatched,"excluded_after_reference_end":excluded,
                     "tracking_violations":sum(not c["accepted"] for c in certificates),
                     "axis_tracking_violations":sum(not(c["position_axes_accepted"] and c["velocity_axes_accepted"]) for c in certificates),
@@ -2173,6 +2177,15 @@ def monitor(args, processes):
             return summary
 
         def result(self, reason):
+            # Keep a consistent receipt-time snapshot before CPU-heavy contact,
+            # ray and trajectory analysis. Processing time cannot retroactively
+            # invalidate a PX4 sample that was fresh when COMPLETE was observed.
+            landing_evaluation_wall=time.monotonic()
+            landing=landing_completion_evidence(copy.deepcopy(self.latest),copy.deepcopy(self.raw_vehicle_status),
+                copy.deepcopy(self.raw_landed),self.clock_ns,self.clock_wall,landing_evaluation_wall,
+                float(self.motion_parameters["max_land_detection_age_s"]),VehicleStatus.ARMING_STATE_DISARMED)
+            landing["evaluated_at_wall_monotonic"]=landing_evaluation_wall
+            landing["evaluated_clock_ns"]=self.clock_ns
             self.consume_contacts()
             self.consume_exploration_pairs()
             contacts=self.contact_evidence.result(self.status_history,self.events) if self.contact_evidence else None
@@ -2229,10 +2242,6 @@ def monitor(args, processes):
             model_mean = float(np.mean(self.reference_errors)) if self.reference_errors else math.inf
             body_mean = float(np.mean(self.body_reference_errors)) if self.body_reference_errors else math.inf
             braking = self.braking_evidence()
-            landing = landing_completion_evidence(self.latest,self.raw_vehicle_status,
-                self.raw_landed,self.clock_ns,self.clock_wall,time.monotonic(),
-                float(self.motion_parameters["max_land_detection_age_s"]),
-                VehicleStatus.ARMING_STATE_DISARMED)
             minimum_intervals=1 if getattr(args,"takeoff_fault",None) else 99
             checks = {
                 "actual_gcs_heartbeat_link_healthy": bool(gcs.get("link_healthy") and gcs["evidence_fresh_at_report"]),
@@ -2398,6 +2407,7 @@ def monitor(args, processes):
     fault_recovery_started = None
     fault_land_future = None
     fault_land_accepted = False
+    completion_wait_started = None
     try:
         while time.monotonic()-started < args.timeout+args.startup_timeout:
             failures = processes.failed()
@@ -2427,8 +2437,20 @@ def monitor(args, processes):
                 elif fault_land_future is not None and fault_land_future.done() and not fault_land_accepted:
                     break
             if not args.image_chain_only and node.latest.get("phase") == "COMPLETE":
-                reason = "mission_fault_recovered_land" if fault_recovery_started is not None else "complete"
-                break
+                # DDS landed/status deliveries are independent of task status.
+                # Wait boundedly for an actually fresh pair; the original age
+                # limit remains unchanged and no old sample is re-stamped.
+                complete_now=time.monotonic()
+                completion=landing_completion_evidence(node.latest,node.raw_vehicle_status,node.raw_landed,
+                    node.clock_ns,node.clock_wall,complete_now,
+                    float(node.motion_parameters["max_land_detection_age_s"]),VehicleStatus.ARMING_STATE_DISARMED)
+                if completion_wait_started is None:completion_wait_started=complete_now
+                if completion["passed"]:
+                    reason = "mission_fault_recovered_land" if fault_recovery_started is not None else "complete"
+                    break
+                if complete_now-completion_wait_started>=3.:
+                    reason = "complete_landing_evidence_timeout"
+                    break
             if not args.image_chain_only and not node.started and time.monotonic()-started > args.startup_timeout:
                 reason = "startup_or_health_timeout"; break
         report = node.result(reason)

@@ -120,3 +120,65 @@ def test_arrival_proof_uses_new_point_two_metre_limit():
         states.append({'mission_status_stamp_ns':t,'phase':'SAFE_TAKEOFF','home_enu_m':[0.,0.,0.],
             'takeoff_safety_stage':'PX4_ASCENT','land_detected':False,'motion_mode':'DISABLED','localization_epoch':1})
     assert not flight.physical_flight_evidence(nav,truth,states,{'px4_takeoff_enabled':True,'takeoff_height_m':5.})['actual_takeoff_and_stable_hover']['passed']
+
+
+def test_real_ros_float32_references_are_valid_numbers():
+    import numpy as np
+    values=list(fixture())
+    for reference in values[2]:
+        for field in ('position','velocity','acceleration'):
+            reference[field]=list(np.asarray(reference[field],dtype=np.float32))
+    assert evidence.takeoff_evidence(*values)['passed']
+
+
+def test_guard_drift_actual_execution_method_measures_published_warmup():
+    """Replay the 125-message native trace's actual method without ROS setup.
+
+    Its fast guard stopped before the delayed 10 Hz armed task state, so no
+    reference's receipt-side execution_active flag ever became true.
+    """
+    import ast
+    import io
+    from types import SimpleNamespace
+    import numpy as np
+    source=ast.parse((SITL/'run_acceptance.py').read_text())
+    monitor=next(n for n in ast.walk(source) if isinstance(n,ast.ClassDef) and n.name=='Monitor')
+    method=next(n for n in monitor.body if isinstance(n,ast.FunctionDef) and n.name=='execution_evidence')
+    namespace=dict(acceptance.__dict__);namespace.update(np=np,args=SimpleNamespace(px4_position_takeoff=True))
+    exec(compile(ast.Module(body=[method],type_ignores=[]),str(SITL/'run_acceptance.py'),'exec'),namespace)
+    refs=[{'timestamp':8_140_000+i*20_000,'wall':116570.380381729+i*.02,
+        'phase':'SAFE_TAKEOFF','execution_active':False,'position_only_takeoff':True} for i in range(125)]
+    monitor=SimpleNamespace(setpoints=refs,navigation_rows=[],status_history=[],
+        motion_parameters={'takeoff_transition_policy_id':'legacy'},tracking_file=io.StringIO(),
+        clock_rows=[],latest={'phase':'COMPLETE'},reaction_budget=.3,
+        position_tolerance=.1,velocity_tolerance=.25,sigma_multiplier=2.)
+    result=namespace['execution_evidence'](monitor)
+    assert result['publication_wall_interval_s']['count']==124
+    assert result['publication_wall_interval_s']['max']<.021
+    assert result['publication_sample_interval_s']['count']==124
+    assert result['publication_sample_interval_s']['max']==pytest.approx(.02)
+
+
+def test_result_freezes_complete_receipt_before_expensive_contact_analysis():
+    """Native guard_drift was fresh at COMPLETE (.9466 s), then aged in result()."""
+    import ast
+    from types import SimpleNamespace
+    source=ast.parse((SITL/'run_acceptance.py').read_text())
+    monitor=next(n for n in ast.walk(source) if isinstance(n,ast.ClassDef) and n.name=='Monitor')
+    method=next(n for n in monitor.body if isinstance(n,ast.FunctionDef) and n.name=='result')
+    clock=[116584.864211218];observed=[]
+    def spy(*args,**kwargs):
+        value=acceptance.landing_completion_evidence(*args,**kwargs);observed.append(value);return value
+    namespace=dict(acceptance.__dict__)
+    namespace.update(time=SimpleNamespace(monotonic=lambda:clock[0]),landing_completion_evidence=spy,
+        VehicleStatus=SimpleNamespace(ARMING_STATE_DISARMED=1))
+    exec(compile(ast.Module(body=[method],type_ignores=[]),str(SITL/'run_acceptance.py'),'exec'),namespace)
+    class HeavyAnalysisStarted(Exception):pass
+    def heavy():clock[0]+=.2;raise HeavyAnalysisStarted()
+    node=SimpleNamespace(latest={'phase':'COMPLETE'},
+        raw_vehicle_status={'sample_ns':22_460_000_000,'receipt_wall':116584.697800179,'arming_state':1},
+        raw_landed={'sample_ns':21_680_000_000,'receipt_wall':116583.917578191,'landed':True},
+        clock_ns=22_624_000_000,clock_wall=116584.863,
+        motion_parameters={'max_land_detection_age_s':1.},consume_contacts=heavy)
+    with pytest.raises(HeavyAnalysisStarted):namespace['result'](node,'complete')
+    assert observed and observed[0]['passed']

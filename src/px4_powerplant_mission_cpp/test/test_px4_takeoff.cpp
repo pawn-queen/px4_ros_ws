@@ -157,7 +157,9 @@ TEST(Px4TakeoffMonitor, ArrivalNeedsFreshAirborneEvidenceHeightAndFullSpeed) {
   EXPECT_EQ(f.tick(2.).stage, Px4TakeoffStage::Climbing);
   f.state.landed = false;
   f.state.land_state_fresh = false;
-  EXPECT_EQ(f.tick(3.).stage, Px4TakeoffStage::Climbing);
+  const auto waiting_for_land_status = f.tick(3.);
+  EXPECT_EQ(waiting_for_land_status.stage, Px4TakeoffStage::Settling);
+  EXPECT_FALSE(waiting_for_land_status.ready_for_handoff);
   f.state.land_state_fresh = true;
   f.state.position_enu.z() = 4.79;
   EXPECT_EQ(f.tick(4.).stage, Px4TakeoffStage::Climbing);
@@ -187,6 +189,67 @@ TEST(Px4TakeoffMonitor, HoverDwellNeedsAdvancingSamplesAndResetsOnMotion) {
   EXPECT_TRUE(f.tick(6.04).ready_for_handoff);
   f.state.landed = true;
   EXPECT_FALSE(f.tick(6.06).ready_for_handoff);
+}
+
+TEST(Px4TakeoffMonitor, LandStatusCadenceGapDoesNotEraseFreshNavigationHoverEvidence) {
+  // Native PX4 publishes VehicleLandDetected at 1Hz. An observation can be
+  // briefly older than the 1.0s freshness limit before the next status arrives,
+  // while navigation continues to prove the same stationary airborne pose.
+  for (int navigation_hz : {30, 50}) {
+    SCOPED_TRACE(navigation_hz);
+    Flight f;
+    f.airborne();
+    Px4TakeoffUpdate result;
+    for (int i = 0; i <= 2 * navigation_hz; ++i) {
+      const int stale_samples = navigation_hz == 50 ? 2 : 1;
+      f.state.land_state_fresh =
+          i % navigation_hz < navigation_hz - stale_samples;
+      result = f.tick(2. + double(i) / navigation_hz);
+      ASSERT_FALSE(result.request_land);
+      if (!f.state.land_state_fresh)
+        EXPECT_FALSE(result.ready_for_handoff);
+    }
+    ASSERT_TRUE(f.state.land_state_fresh);
+    EXPECT_TRUE(result.ready_for_handoff);
+    EXPECT_EQ(result.stage, Px4TakeoffStage::ReadyForHandoff);
+    EXPECT_NEAR(result.hover_elapsed_s, 2., 1e-9);
+  }
+}
+
+TEST(Px4TakeoffMonitor, CompletedHoverStillNeedsCurrentFreshAirborneStatusAtHandoff) {
+  Flight f;
+  f.airborne();
+  EXPECT_FALSE(f.tick(2.).ready_for_handoff);
+  // A historical landed=false cannot authorize the current strict handoff.
+  f.state.land_state_fresh = false;
+  const auto no_current_status = f.tick(5.);
+  EXPECT_FALSE(no_current_status.ready_for_handoff);
+  EXPECT_EQ(no_current_status.stage, Px4TakeoffStage::Settling);
+  EXPECT_NEAR(no_current_status.hover_elapsed_s, 3., 1e-9);
+  f.state.land_state_fresh = true;
+  EXPECT_TRUE(f.tick(5.02).ready_for_handoff);
+}
+
+TEST(Px4TakeoffMonitor, PositiveLandingOrMeasuredMovementStillRestartsHoverDwell) {
+  for (bool landing : {false, true}) {
+    SCOPED_TRACE(landing);
+    Flight f;
+    f.airborne();
+    EXPECT_FALSE(f.tick(2.).ready_for_handoff);
+    EXPECT_TRUE(f.tick(4.).ready_for_handoff);
+    if (landing)
+      f.state.landed = true;
+    else
+      f.state.velocity_enu.z() = f.config.settle_speed_mps + .01;
+    const auto interrupted = f.tick(4.02);
+    EXPECT_FALSE(interrupted.ready_for_handoff);
+    EXPECT_DOUBLE_EQ(interrupted.hover_elapsed_s, 0.);
+    f.state.landed = false;
+    f.state.velocity_enu.setZero();
+    EXPECT_FALSE(f.tick(4.04).ready_for_handoff);
+    EXPECT_FALSE(f.tick(6.02).ready_for_handoff);
+    EXPECT_TRUE(f.tick(6.04).ready_for_handoff);
+  }
 }
 
 TEST(Px4TakeoffMonitor, FixedTimeoutIncludesWarmupAndCannotBeRenewedByProgress) {

@@ -116,7 +116,12 @@ Px4TakeoffUpdate Px4PositionTakeoff::update(const Px4TakeoffObservation &state,
   if (!state.armed || !state.offboard)
     return reject("PX4_TAKEOFF_CONTROL_LOST");
 
-  const bool arrived = state.land_state_fresh && !state.landed &&
+  // Navigation supplies the continuous stationary-hover evidence. The lower
+  // rate land status authorizes the handoff only at the current update; its
+  // inter-message freshness gap must not erase otherwise continuous measured
+  // position/velocity evidence. A positive landed flag still resets the dwell,
+  // and a stale landed=false can never authorize the strict handoff itself.
+  const bool arrived = !state.landed &&
       std::abs(state.position_enu.z() - target_z) <= config_.arrival_tolerance_m &&
       state.velocity_enu.norm() <= config_.settle_speed_mps;
   if (!arrived) {
@@ -129,7 +134,8 @@ Px4TakeoffUpdate Px4PositionTakeoff::update(const Px4TakeoffObservation &state,
   if (!hover_start_sample_ns_)
     hover_start_sample_ns_ = state.sample_stamp_ns;
   result_.hover_elapsed_s = (state.sample_stamp_ns - hover_start_sample_ns_) * 1e-9;
-  result_.ready_for_handoff = result_.hover_elapsed_s >= config_.hover_s;
+  result_.ready_for_handoff = state.land_state_fresh &&
+      result_.hover_elapsed_s >= config_.hover_s;
   result_.stage = result_.ready_for_handoff ? Px4TakeoffStage::ReadyForHandoff
                                           : Px4TakeoffStage::Settling;
   return result_;
