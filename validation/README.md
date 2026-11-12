@@ -34,6 +34,19 @@ python3 -m pytest -q \
   validation/tests/test_ground_support_audit.py
 ```
 
+## SITL 地面阶跃响应标定
+
+`validation/sitl/calibrate_ground_response.py` 对运行中的 SITL 做地面 Offboard 阶跃实测，推导并冻结
+`src/px4_powerplant_mission/config/p2_sitl_ground_response.yaml`；纯推导规则在 `validation/sitl/ground_response.py`，
+边界与硬上界在 `validation/tests/test_ground_response.py`。必须在带插件（电机/IMU）的模型上运行，且每次试验前落地。验收侧用
+`run_acceptance.py --ground-response-profile <冻结 YAML>` 接入；主机 `/tmp/px4-sock-0` 被其他用户占用时加
+`--px4-instance 1`。
+
+## 验证记录
+
+本机 SITL 原生位置起飞 GUI 闭环（时间线与可复现配置）见
+[docs/validation/sitl-native-takeoff.md](../docs/validation/sitl-native-takeoff.md)。
+
 ## 边界
 
 - `validation/tests/test_ros_contract.py` 需要真实 ROS/DDS 运行时，不进 GitHub 离线 CI。

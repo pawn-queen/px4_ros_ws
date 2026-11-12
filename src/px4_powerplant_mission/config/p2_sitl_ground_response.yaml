@@ -1,0 +1,109 @@
+powerplant_voxel_mapper:
+  ros__parameters:
+    camera_translation_flu:
+    - 0.13233
+    - 0.0
+    - 0.26078
+    camera_rotation_rpy_rad:
+    - 0.0
+    - 0.0
+    - 0.0
+    lidar_translation_flu:
+    - 0.0
+    - 0.0
+    - 0.42
+    lidar_rotation_rpy_rad:
+    - 0.0
+    - 0.0
+    - 0.0
+powerplant_offboard_mission:
+  ros__parameters:
+    px4_timestamp_domain: ros
+    motion_model_configured: true
+    motion_rounded_envelope_enabled: true
+    motion_takeoff_bootstrap_height_m: 0.3
+    motion_takeoff_bootstrap_duration_s: 5.0
+    motion_tracking_position_tolerance_m: 0.35
+    motion_tracking_soft_guard_enabled: true
+    takeoff_response_sync_enabled: true
+    takeoff_transition_budget_enabled: false
+    motion_body_radius_m: 0.5
+    motion_body_z_min_m: -0.06
+    motion_body_z_max_m: 0.5
+    camera_translation_flu:
+    - 0.13233
+    - 0.0
+    - 0.26078
+    camera_rotation_rpy_rad:
+    - 0.0
+    - 0.0
+    - 0.0
+    rgb_camera_translation_flu:
+    - 0.13233
+    - 0.0
+    - 0.26078
+    rgb_camera_rotation_rpy_rad:
+    - 0.0
+    - 0.0
+    - 0.0
+    takeoff_response_probe_height_m: 0.35
+    takeoff_handoff_min_rise_m: 0.7
+    takeoff_ground_land_max_age_s: 10.0
+    takeoff_ground_transition_timeout_s: 45.0
+    takeoff_region_radius_m: 2.0
+    takeoff_region_height_m: 6.6
+    takeoff_ground_support_enabled: true
+ground_response_provenance:
+  schema_version: 1
+  id: p2-sitl-ground-response-v1
+  status: frozen
+  source_motion: /home/duoxuanyi/px4_ros_ws/src/px4_powerplant_mission/config/p2_simulation.yaml
+  source_motion_sha256: 46fef22b4f4ce337a64f17bdd1f6e42a17dc82b8fd2187c28ec75672112c7ca1
+  trials: /home/duoxuanyi/px4_ros_ws/log/sim_session_20261112_180153/trials_clean.jsonl
+  trials_sha256: eb08847a178a0963b63ae0649cac6682fab873964e6e3906f98e0d2db093ba6f
+  measurements:
+    threshold_m: 0.3
+    lift_delay_s_median: 9.384000000000015
+    lift_delay_s_max: 9.384000000000015
+    position_sigma_m: 0.031209614108582855
+    velocity_sigma_mps: 0.003276566688354987
+    stop_box_min_offset_m: -0.5079760280313383
+    stop_box_max_offset_m: 1.0079760280313383
+    stop_box_horizontal_m: 0.8865397501976411
+    strict_clearance_m: 0.060000000000000005
+    land_topic_period_s: 1.0
+  trial_summary:
+    threshold_m: 0.3
+    delay_s_median: 9.384000000000015
+    delay_s_max: 9.384000000000015
+    magnitudes:
+    - magnitude_m: 0.1
+      trials: 2
+      lifts: 0
+      reliable: false
+      partial: false
+      delay_s: []
+      peak_rise_m: 0.0056944387739160385
+    - magnitude_m: 0.2
+      trials: 2
+      lifts: 1
+      reliable: false
+      partial: true
+      delay_s:
+      - 13.568000000000012
+      peak_rise_m: 0.054886425879958206
+    - magnitude_m: 0.3
+      trials: 2
+      lifts: 2
+      reliable: true
+      partial: false
+      delay_s:
+      - 9.379999999999995
+      - 9.384000000000015
+      peak_rise_m: 0.25300034326131043
+    position_sigma_m: 0.031209614108582855
+    velocity_sigma_mps: 0.003276566688354987
+    land_topic_period_s: 1.0
+  assumptions: ground step response measured on the local SITL plant; bootstrap/probe/handoff
+    are derived from that response, not from the historical 0.02/0.20 m assumptions
+  model_sources: {}

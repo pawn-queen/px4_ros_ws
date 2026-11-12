@@ -157,7 +157,7 @@ def stable_code_lock(manifest):
         if row.get('sha256') and 'runtime' not in Path(row['path']).parts}
 
 
-def validate_acceptance_policy(parameters):
+def validate_acceptance_policy(parameters, ground_response=None):
     policy=parameters.get('takeoff_transition_policy_id','legacy')
     if policy!='legacy' and policy not in TRANSITION_POLICIES:
         raise ValueError('unknown transition policy')
@@ -172,6 +172,13 @@ def validate_acceptance_policy(parameters):
         'motion_takeoff_bootstrap_height_m':.02,'motion_takeoff_bootstrap_duration_s':4.5,
         'takeoff_response_probe_height_m':.20,'takeoff_response_clearance_m':.05,
         'takeoff_response_dwell_s':.3,'takeoff_response_min_samples':3}
+    calibrated = (ground_response or {}).get('parameters') or {}
+    # A frozen ground-response calibration replaces the historical bootstrap /
+    # probe / tolerance assumptions; everything else stays pinned.
+    for name in ('motion_tracking_position_tolerance_m','motion_takeoff_bootstrap_height_m',
+                 'motion_takeoff_bootstrap_duration_s','takeoff_response_probe_height_m'):
+        if name in calibrated:
+            fixed[name]=float(calibrated[name])
     enabled=('motion_tracking_soft_guard_enabled','takeoff_response_sync_enabled',
         'takeoff_transition_budget_enabled','motion_model_configured')
     fixed.update(motion_body_radius_m=.5,motion_map_margin_m=.05,motion_sigma_multiplier=2.)
@@ -184,6 +191,10 @@ def validate_acceptance_policy(parameters):
     bad += [name for name in enabled if parameters.get(name) is not True]
     if bad:raise ValueError('controller profile acceptance policy differs: '+', '.join(bad))
     return {'passed':True,'fixed_parameters':fixed,'enabled_policies':list(enabled),
+        'ground_response_calibration':({'path':(ground_response or {}).get('path'),
+            'sha256':(ground_response or {}).get('sha256'),
+            'parameters':{name:float(value) for name,value in calibrated.items()
+                          if name in fixed}} if calibrated else None),
         'transition_policy':policy,
         'transition_limits':({**TRANSITION_POLICIES[policy],'trigger_ratio':.8,'recover_ratio':.55,'recovery_wait_s':5.} if policy!='legacy' else None),
         'reference_governor_enabled':parameters.get('takeoff_reference_governor_enabled',False),

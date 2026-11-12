@@ -116,3 +116,43 @@ python3 validation/sitl/calibrate_takeoff.py \
 其余主要退出包括4次执行器本地ROS时间停滞、2次45秒交接到期、2次过渡恢复次数耗尽以及过渡硬跟踪失败。接触19/20通过，保留2条未确认；落地上锁收尾新鲜度18/20通过，额外导航/真值投影失败仍记录。全部524项直接软件回归通过不代表物理闭环通过。
 
 按所有候选失败分支停止，没有冻结配置，故未执行消融或正式主链。实际候选时长本组均为1.0，未证明1.25/参考管理的真实收益；几何、参数和算法贡献不作因果成功率声称。原始报告不改写。详见[最新验收](../validation/issue3-actual-plant.md)及工作区`log/issue3_margin_governor/20261029_1336/VALIDATION.md`。
+
+## 地面阶跃响应标定与冻结（2026-11-12）
+
+历史 bootstrap/probe/容差 0.02/0.20/0.10 m 是设计假设，从未对实际机体测量。本轮新增
+`validation/sitl/ground_response.py`（纯推导，无 ROS）与 `validation/sitl/calibrate_ground_response.py`（实测驱动）：
+在地面、解锁前进入 Offboard，以 Gazebo 真值为判据，每档至少 2 次、每次单独落地，记录抬升阈值与响应延迟。
+
+实测（原生 `x500_depth`，PX4 instance 1，RTF≈1）：0.10 m 0/2；0.20 m 1/2（延迟 13.6 s，峰值 0.055 m）；
+0.30 m 2/2（延迟 9.4 s，峰值 ≥0.25 m）。据此反推：bootstrap 0.30 m/5.0 s、容差 0.35 m、探测 0.35 m、
+交接 0.70 m、确认柱体 2.0 m×6.6 m、地面过渡预算 45 s、着地证据窗口 10 s。推导规则与硬上界在
+`validation/tests/test_ground_response.py` 中逐条断言（bootstrap≤容差、探测>bootstrap、交接≤0.75 m、柱体包住停止盒角点等）。
+
+冻结输出：`src/px4_powerplant_mission/config/p2_sitl_ground_response.yaml`，内嵌测量证据、源配置哈希与试验哈希，
+用 `motion_config_file:=` 显式加载；不得与历史 0.02/0.20/0.10 假设混用。
+
+注意：`validation/sitl/controller_profile.py` 的 `validate_acceptance_policy()` 目前仍固定旧常数（含 A–D 白名单），
+本变更没有改动该策略表。正式验收链若要以冻结文件替代，需要在同一变更里同步该表与验收记录；在此之前该文件只能作为
+隔离实验配置使用，不能据此声称主链通过。标定必须在带插件（电机/IMU）的模型上运行，会话目录里的降频模型没有 plugin，
+只能出估计、不能起飞。
+
+### 冻结文件接入验收与策略表（2026-11-12）
+
+`run_acceptance.py` 新增 `--ground-response-profile <冻结 YAML>`：加载并校验冻结状态与哈希后，把其中的
+`motion_*`/`takeoff_*` 常数合并进本次运行的运动配置，再由 `controller_profile.validate_acceptance_policy(..., ground_response=...)`
+用冻结值替换策略表里历史的 0.02/0.10/0.20 假设；未提供冻结文件时策略表仍按原值拒绝。回归见
+`validation/tests/test_ground_response.py::test_acceptance_policy_accepts_the_frozen_calibration_only_with_it`。
+
+本机隔离验收的实际结果：审计给出的可证明柱体上限是**半径 1.5 m、高 6.2 m**（1.6 m 即
+`nominal_body_xy_sweep_contained=false`），而标定常数的严格停止盒半宽约 1.18–1.38 m（对角约 1.82 m），需要
+2.0 m 柱体——冻结文件因此被 `takeoff_domain_audit` 拒绝（`operating_column_contained`、`nominal_body_xy_sweep_contained`）。
+把柱体压回可审计的 1.5×6.2 m 后，严格交接同样无法被授权：停止盒对角超出 1.5 m 柱体，会以 `UNKNOWN_MOTION_ENVELOPE` 结束。
+结论：0.70 m 交接在本场景**不可通过**，原因不是状态机或门槛调节，而是"机体需要 0.30 m 才响应"与"审计自由空间只允许容差 ≲0.10–0.12 m"不可同时成立。
+
+主机适配（不改变算法语义）：`run_acceptance.py` 增加 `--px4-instance`（默认 0）；本机 `/tmp/px4-sock-0` 属其他用户，
+必须用 1，GCS 期望端口随之偏移到 18571，并显式注入 `MAV_SYS_ID=1`。此外本机模型仓库对相机/雷达命名空间有本地定制，
+传感器话题发现（`/sensor/IMX214/image` 等）在完整运行中仍不匹配，需先把资产树对齐到钉住基线才能得到完整飞行报告。
+
+本机带 GUI 的完整闭环（原生位置起飞 → 实测悬停严格交接 → 初扫 → 探索 → 返航降落，261.3 s、零 fault）见
+[SITL 原生位置起飞 GUI 验证](../validation/sitl-native-takeoff.md)；可复现配置为 `config/sitl_native_takeoff.yaml`
+与 `config/sitl_gui_validation.yaml`。

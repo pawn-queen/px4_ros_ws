@@ -1,0 +1,66 @@
+# SITL native position takeoff profile (ADR-0004, GUI validation 2026-11-12).
+# Loaded with `motion_config_file:=` next to config/sitl_gui_validation.yaml.
+# It enables the native takeoff path and disables the legacy ground-support /
+# response-sync / transition-budget machinery. The 3.0 m confirmed column is a
+# GUI-validation value; the audited powerplant scenario only proves 1.5 m, so the
+# isolated acceptance (takeoff_domain_audit) rejects this profile as-is.
+powerplant_voxel_mapper:
+  ros__parameters:
+    camera_translation_flu:
+    - 0.13233
+    - 0.0
+    - 0.26078
+    camera_rotation_rpy_rad:
+    - 0.0
+    - 0.0
+    - 0.0
+    lidar_translation_flu:
+    - 0.0
+    - 0.0
+    - 0.42
+    lidar_rotation_rpy_rad:
+    - 0.0
+    - 0.0
+    - 0.0
+powerplant_offboard_mission:
+  ros__parameters:
+    px4_timestamp_domain: system
+    motion_model_configured: true
+    motion_rounded_envelope_enabled: true
+    motion_takeoff_bootstrap_height_m: 0.02
+    motion_takeoff_bootstrap_duration_s: 4.5
+    motion_tracking_position_tolerance_m: 0.15
+    motion_tracking_soft_guard_enabled: true
+    takeoff_response_sync_enabled: false
+    takeoff_transition_budget_enabled: false
+    motion_body_radius_m: 0.5
+    motion_body_z_min_m: -0.06
+    motion_body_z_max_m: 0.5
+    camera_translation_flu:
+    - 0.13233
+    - 0.0
+    - 0.26078
+    camera_rotation_rpy_rad:
+    - 0.0
+    - 0.0
+    - 0.0
+    rgb_camera_translation_flu:
+    - 0.13233
+    - 0.0
+    - 0.26078
+    rgb_camera_rotation_rpy_rad:
+    - 0.0
+    - 0.0
+    - 0.0
+    px4_takeoff_enabled: true
+    px4_takeoff_timeout_s: 75.0
+    px4_takeoff_arrival_tolerance_m: 0.3
+    takeoff_region_confirmed: true
+    takeoff_region_radius_m: 3.0
+    takeoff_region_height_m: 6.5
+    takeoff_response_probe_height_m: 0.2
+    takeoff_handoff_min_rise_m: 0.25
+    takeoff_ground_support_enabled: false
+    motion_tracking_soft_trigger_ratio: 0.85
+    motion_tracking_soft_recover_ratio: 0.7
+    motion_tracking_recovery_wait_s: 5.0

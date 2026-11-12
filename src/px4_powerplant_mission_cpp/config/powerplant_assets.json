@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "asset_root_hint": "/home/pawn/drone-simulation/Tools/simulation/gz",
-  "model_git_commit": "69f6511d0b11e2189b204ce6b10f12cbef24f119",
+  "model_git_commit": "7cc07d907ba7435196fe6c24c8eea905c7d4cda7",
   "asset_commit_pending": false,
   "files": [
     {

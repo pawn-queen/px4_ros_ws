@@ -411,10 +411,16 @@ bool OffboardMissionNode::scan_first_segment_ready() const {
     const double heading = yaw_ + direction * pi / 4;
     const Vec3 goal = *scan_anchor_ + Vec3(length * std::cos(heading),
                                            length * std::sin(heading), 0);
-    if (path_is_known_free(map, {*scan_anchor_, goal}, cfg) &&
-        build_motion_plan(motion_domain(), motion_state(),
-                          {*scan_anchor_, goal}, heading, motion_limits())
-            .plan)
+    const bool path_ok = path_is_known_free(map, {*scan_anchor_, goal}, cfg);
+    const auto checked = path_ok
+        ? build_motion_plan(motion_domain(), motion_state(),
+                            {*scan_anchor_, goal}, heading, motion_limits())
+        : MotionPlanResult{};
+    const bool plan_ok = path_ok && checked.plan;
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+        "scan segment dir=%d path=%d plan=%d reason=%s", direction, path_ok,
+        plan_ok, checked.reason.c_str());
+    if (path_ok && plan_ok)
       return true;
   }
   return false;
@@ -433,10 +439,20 @@ void OffboardMissionNode::update_scan() {
   if (!std::isfinite(required) || required <= 0 || required > 1)
     throw std::invalid_argument(
         "initial scan coverage fraction must be in (0,1]");
+  // Evaluate each gate once and reuse it for the throttled diagnostic; the
+  // segment check builds motion plans, so a second call would double its cost.
+  const bool data_ok = data;
+  const bool camera_ok = camera_ready();
+  const bool coverage_ok = scan_coverage_.fraction() >= required;
+  const bool segment_ok = data_ok && camera_ok && coverage_ok &&
+                          scan_first_segment_ready();
+  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+      "scan gate: pose=%d(%s) data=%d(%s) camera=%d coverage=%.3f segment=%d rotating=%d yaw_rate=%.3f speed=%.3f",
+      pose, pose_reason.c_str(), data_ok, data_reason.c_str(), camera_ok,
+      scan_coverage_.fraction(), segment_ok, rotating_, yaw_rate_, speed_);
   // Completion is evidence-based. A nominal sequence of yaw targets alone
   // cannot authorize exploration, nor can repeated old images fill sectors.
-  if (data && camera_ready() && scan_coverage_.fraction() >= required &&
-      scan_first_segment_ready()) {
+  if (data_ok && camera_ok && coverage_ok && segment_ok) {
     if (rotating_) {
       rotating_ = false;
       hover_since_ = 0;
