@@ -1,6 +1,6 @@
 # px4_powerplant_mission
 
-面向 PX4 的 ROS2 Jazzy 任务包，定位与外部视觉支持仿真和实机共用。仿真入口为 `PX4_GZ_WORLD=powerplant make px4_sitl gz_x500_depth`。默认由独立的 `px4_powerplant_mission_cpp` 包执行体素建图、三维规划和 Offboard 控制；定位、UWB、外部视觉桥和 YOLO 继续使用 Python。它不包含硬件驱动；新入口 `profile=simulation` 使用仿真 UWB，`profile=hardware` 接入独立的 UWB Host；旧 `localization_profile` 参数保留兼容。雷达/深度相机/相机通过 Gazebo bridge 或真实驱动接入。定位部署、接口变更、时间与标定要求见 [定位部署说明](LOCALIZATION_DEPLOYMENT.md)。当前工程已在 `drone-simulation/Tools/simulation/gz/models/x500_depth/model.sdf` 中给 `x500_depth` 增加了 360 度平面 `mapping_lidar`，原启动命令不需要改。
+面向 PX4 的 ROS2 Jazzy 任务包，定位与外部视觉支持仿真和实机共用。仿真入口为 `PX4_GZ_WORLD=powerplant make px4_sitl gz_x500_depth`。默认由独立的 `px4_powerplant_mission_cpp` 包执行体素建图、三维规划和 Offboard 控制；定位、UWB、外部视觉桥和 YOLO 继续使用 Python。它不包含硬件驱动；新入口 `profile=simulation` 使用仿真 UWB，`profile=hardware` 接入独立的 UWB Host；旧 `localization_profile` 参数保留兼容。雷达/深度相机/相机通过 Gazebo bridge 或真实驱动接入。定位部署、接口变更、时间与标定要求见 [定位部署说明](LOCALIZATION_DEPLOYMENT.md)。当前工程已在 PX4 checkout 的 `Tools/simulation/gz/models/x500_depth/model.sdf` 中给 `x500_depth` 增加了 360 度平面 `mapping_lidar`，原启动命令不需要改。
 
 ## 包结构
 
@@ -14,7 +14,7 @@ Python 包保留定位、UWB、外部视觉和 YOLO；建图与控制由独立�
 - C++ 包 `offboard_mission_node`：任务状态机、Offboard 控制、探索/巡检/返航（默认控制器）。
 - `config/powerplant.yaml`：所有话题名、坐标系、UWB anchor、建图分辨率和探索边界参数。
 - `launch/powerplant_system.launch.py`：启动任务栈。
-- `launch/gz_sensor_bridge.launch.py`：可选启动 Gazebo sensor 到 ROS2 的桥接。
+- `launch/gz_sensor_bridge.launch.py`：把 Gazebo 相机、深度和雷达桥接到 ROS 2；建图依赖它。
 
 ## 坐标约定
 
@@ -27,10 +27,33 @@ PX4 uORB 使用 `NED/FRD`，本包内部和对外发布使用 ROS 常用的 `ENU
 
 ## 运行顺序
 
-先构建工作区：
+下面所有命令都不写死用户目录：仓库位置由 `git rev-parse --show-toplevel` 得到，PX4 位置从 `PX4_ROOT` 读取。换机器时通常只需要重设 `PX4_ROOT`，并确认 PX4 已构建、且带有本项目的 `powerplant` world 与 `mapping_lidar` 模型。
+
+依赖：ROS 2 Jazzy、`ros_gz_bridge`、Gazebo Harmonic（`gz sim` ≥ 8）、Micro XRCE-DDS Agent、已构建的 PX4 SITL。
+
+### 0. 设置路径变量
+
+在仓库根目录执行（每个终端各执行一次）：
 
 ```bash
-cd /home/pawn/px4_ros_ws
+# 仓库根目录；clone 到任意目录都可以
+export WS_ROOT=$(git rev-parse --show-toplevel)
+
+# 已构建的 PX4 checkout；也可以先在 shell 里 export PX4_ROOT=...
+export PX4_ROOT=${PX4_ROOT:-/path/to/PX4-Autopilot}
+
+test -x "$PX4_ROOT/build/px4_sitl_default/bin/px4" \
+  || echo "PX4 未构建：$PX4_ROOT"
+test -f "$PX4_ROOT/Tools/simulation/gz/worlds/powerplant.sdf" \
+  || echo "该 checkout 没有 powerplant world"
+```
+
+`config/powerplant_assets.json` 固定了 `Tools/simulation/gz` 的提交与资产哈希；换机器时用同一个提交，否则场景资产或雷达缺失，验收模式会直接拒绝。
+
+### 1. 构建工作区（一次）
+
+```bash
+cd "$WS_ROOT"
 deactivate 2>/dev/null || true
 source /opt/ros/jazzy/setup.bash
 CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 colcon build --symlink-install \
@@ -39,56 +62,72 @@ CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 colcon build --symlink-install \
 source install/setup.bash
 ```
 
-上述命令同时构建 C++ 包及依赖，并限制包之间和 C++ 编译器内部的并发。WSL 上请在编译结束后再运行测试或 Gazebo，避免同时占用大量内存。
+这条命令同时构建 C++ 包和 `px4_msgs`（`px4_powerplant_mission` 的 `exec_depend` 包含 `px4_powerplant_mission_cpp`），并限制包之间与 C++ 编译器内部的并发。WSL 上请在编译结束后再启动 Gazebo，避免内存争用。
 
-以下参数仅用于本项目带独立 Gazebo 真值姿态的 SITL，不可照搬到单 Tag 实机。首次运行该仿真前，在 PX4 shell 或 QGC 参数页设置：目标是：不要求 GPS/磁罗盘，把 ROS 室内定位作为 EKF external vision 输入：
-
-```bash
-param set EKF2_EV_CTRL 11
-param set EKF2_EV_QMIN 0
-param set EKF2_HGT_REF 3
-param set EKF2_GPS_CTRL 0
-param set SYS_HAS_GPS 0
-param set SYS_HAS_MAG 0
-param set EKF2_MAG_TYPE 5
-param set SIM_GZ_EN_ODOM 1
-param set COM_RC_IN_MODE 4
-param set COM_ARM_WO_GPS 2
-param set COM_ARM_ODID 0
-param set COM_HOME_IN_AIR 1
-param save
-reboot
-```
-
-其中 `EKF2_EV_CTRL=11` 表示融合 external vision 的水平位置、高度和 yaw，不融合速度；当前仿真链路会把 Gazebo 真值姿态作为 UWB pose 的仿真 yaw 来源，避免把 PX4 自己的 yaw 再回灌给 EKF。如果把 `powerplant_uwb_simulator.publish_truth_orientation` 改成 `false`，对应把 `EKF2_EV_CTRL` 改为 `3`，只融合 external vision 的水平位置和高度。默认导航姿态来自 PX4 完整四元数；关闭真值姿态后，仍需 PX4 自身具备可靠姿态和航向。单 Tag 不提供航向。
-
-终端 1，启动 PX4 DDS Agent：
+### 2. 终端 1：DDS 桥
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 MicroXRCEAgent udp4 -p 8888
 ```
 
-终端 2，启动 PX4 Gazebo：
+### 3. 终端 2：PX4 + Gazebo（默认带 GUI）
 
 ```bash
-cd /home/pawn/drone-simulation
-PX4_GZ_WORLD=powerplant make px4_sitl gz_x500_depth
+cd "$PX4_ROOT"
+export PX4_GZ_WORLD=powerplant
+export PX4_PARAM_EKF2_EV_CTRL=11 PX4_PARAM_EKF2_EV_QMIN=0 PX4_PARAM_EKF2_HGT_REF=3 \
+       PX4_PARAM_EKF2_GPS_CTRL=0 PX4_PARAM_SYS_HAS_GPS=0 PX4_PARAM_SYS_HAS_MAG=0 \
+       PX4_PARAM_EKF2_MAG_TYPE=5 PX4_PARAM_SIM_GZ_EN_ODOM=1 PX4_PARAM_COM_RC_IN_MODE=4 \
+       PX4_PARAM_COM_ARM_WO_GPS=2 PX4_PARAM_COM_ARM_ODID=0 PX4_PARAM_COM_HOME_IN_AIR=1
+make px4_sitl gz_x500_depth
 ```
 
-终端 3，启动本任务栈：
+PX4 会在 `PX4_GZ_STANDALONE` 未设置时用 `powerplant` world 启动 Gazebo 服务器；`HEADLESS` 未设置时同时打开 Gazebo GUI。同一个 world 已经在运行时，PX4 会复用现有 Gazebo，不会再起一个。无显示器、或 WSL 没有 WSLg 时改用 `HEADLESS=1 make px4_sitl gz_x500_depth`，任务栈与 RViz 仍可正常运行。
+
+参数通过 `PX4_PARAM_*` 环境变量在每次启动时注入，等价于 `param set` + `save` + `reboot`，但不写进 PX4 的持久参数，换机器或换 rootfs 行为一致。`EKF2_EV_CTRL=11` 表示融合 external vision 的水平位置、高度和 yaw，不融合速度；当前链路把 Gazebo 真值姿态当作 UWB pose 的仿真 yaw 来源，避免把 PX4 自己的 yaw 回灌给 EKF。若把 `powerplant_uwb_simulator.publish_truth_orientation` 改成 `false`，对应把 `EKF2_EV_CTRL` 改为 `3`，只融合水平位置和高度，此时仍需 PX4 自身具备可靠姿态和航向；单 Tag 不提供航向。
+
+### 4. 终端 3：Gazebo → ROS 传感器桥
 
 ```bash
-cd /home/pawn/px4_ros_ws
+cd "$WS_ROOT"
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-ros2 launch px4_powerplant_mission powerplant_system.launch.py
+ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py
 ```
 
-这个 launch 会默认启动 Gazebo 真值桥接及 `/world/powerplant/clock` 到 ROS `/clock` 的桥接。UWB、定位、外部视觉桥、建图、YOLO 和 Offboard 节点统一使用 `use_sim_time`，使传感器和状态采样处于同一时钟域；原生节点另用单调接收时限检测数据停止和仿真时钟冻结，旧融合计数不能刷新健康。UWB 默认使用 `/world/powerplant/dynamic_pose/info` 的模型位姿；`/model/x500_depth/odometry_with_covariance` 仍保留为可选 odometry 后备源。如果你已经在别处桥接同一 truth topic，可加 `use_gazebo_truth_bridge:=false`；如果已经有 `/clock` 发布者，可加 `use_gazebo_clock_bridge:=false`。默认不会启动 YOLO 和飞控。需要时显式打开：
+`powerplant_system.launch.py` 只桥接 `/clock` 和 Gazebo 真值位姿，不桥接相机、深度和雷达；没有这一条，建图收不到 `/mapping_lidar`、`/depth_camera`。
+
+### 5. 终端 4：任务栈（定位 + 建图 + 控制）
 
 ```bash
-ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
+cd "$WS_ROOT"
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch px4_powerplant_mission powerplant_system.launch.py use_control:=true
+```
+
+`powerplant_system.launch.py` 默认启动 Gazebo 真值桥和 `/world/powerplant/clock` → `/clock` 桥；UWB、定位、外部视觉桥、建图、YOLO 和 Offboard 节点统一使用 `use_sim_time`，传感器与状态采样处于同一时钟域。UWB 默认使用 `/world/powerplant/dynamic_pose/info` 的模型位姿，`/model/x500_depth/odometry_with_covariance` 只作为可选后备。已经在别处桥接同一真值话题时加 `use_gazebo_truth_bridge:=false`；已有 `/clock` 发布者时加 `use_gazebo_clock_bridge:=false`。YOLO 与控制默认关闭，控制由 `use_control:=true` 打开。
+
+巡检拍照目录在 `config/powerplant.yaml` 的 `inspection_photo_dir` 中仍是绝对路径；换机器后要改成实际目录，或用 `config_file:=` 指向复制并改过的 YAML，否则拍照写盘会失败。
+
+### 6. 终端 5（可选）：RViz
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source "$WS_ROOT/install/setup.bash"
+ros2 launch px4_powerplant_mission visualization.launch.py
+```
+
+RViz 只负责显示、不产生数据：`/powerplant/control/planned_path` 需要 `use_control:=true`；地图为空通常说明传感器桥没起或建图尚未收敛。显示项与排查见[可视化窗口](#可视化窗口)。
+
+### 7. 触发任务
+
+任务栈启动后仍然不会自动飞（`auto_start=false`）；确认定位与 preflight 通过后再手动触发：
+
+```bash
+ros2 service call /start_powerplant_mission std_srvs/srv/Trigger
+ros2 service call /land_powerplant_mission std_srvs/srv/Trigger
 ```
 
 Python 与 C++ 的定位状态/YOLO 检测 JSON 字段由 [mission contract](../../docs/design/mission-contract.md) 统一；新消息写 `contract_version=1`，旧字段保留。
@@ -99,17 +138,14 @@ Python 与 C++ 的定位状态/YOLO 检测 JSON 字段由 [mission contract](../
 
 起飞响应同步使用同一 C++ 执行核心：参考领先时执行已验证制动，在实际响应恢复后从 HOLD 重新规划；启动 2cm 参考不能冒充已经离地。隔离验收入口在实际场景地面审计通过后，生成临时运动配置开启反馈探测与一次性过渡预算，严格阶段基础位置容差仍为 0.10m；经实际支持审计的SITL过渡可选择A—D白名单（0.10/0.12/0.15m，D半径0.48m），固定预算上限45秒，地面过渡限高仍为0.75m。普通 launch 在没有该审计时保持严格模式并可正常等待授权；硬件缺省不启用这些仿真专用选项，原 12s 缺省不变。独立 `config/p2_sitl_controller.yaml` 由隔离验收脚本读取，仅在临时 PX4 rootfs 解锁前应用，不能作为硬件 ROS 参数文件。流程、标定次序和实际验收范围见 [起飞响应说明](../../docs/design/takeoff-response-sync.md) 与 [Issue #3 验收记录](../../docs/validation/issue3-actual-plant.md)。
 
-飞控节点启动后仍不会自动执行任务，默认需要服务触发：
+YOLO 默认关闭。开启时必须显式指定解释器：launch 的 `yolo_python` 默认值是开发机上的绝对路径，换机器不会自动生效。依赖装在系统 Python 时：
 
 ```bash
-ros2 service call /start_powerplant_mission std_srvs/srv/Trigger
-ros2 service call /land_powerplant_mission std_srvs/srv/Trigger
+ros2 launch px4_powerplant_mission powerplant_system.launch.py \
+  use_control:=true use_yolo:=true yolo_python:=python3
 ```
 
-如果按“非虚拟环境”启动 ROS 任务栈，也可以直接 `use_yolo:=true`；launch 默认会用
-`/home/pawn/px4_ros_ws/.venv/bin/python` 运行 YOLO 节点，避免系统 Python 缺少
-`ultralytics` 时产生启动错误。若已经把 YOLO 依赖安装到系统 Python，可覆盖
-`yolo_python:=python3`。
+依赖装在仓库内虚拟环境时，改用 `yolo_python:="$WS_ROOT/.venv/bin/python"`。
 
 如果 QGC 仍显示 `Heading estimate invalid`、`Found 0 compass` 或 `No valid position estimate`，先确认 `/fmu/in/vehicle_visual_odometry` 正在发布，再等 EKF 收敛几秒：
 
@@ -141,7 +177,7 @@ ros2 topic echo /powerplant/localization/odom nav_msgs/msg/Odometry --once --tim
 
 默认 `localization_node` 从 PX4 获取完整位置与姿态，并保留状态的采样时间。外部视觉桥直接检查并转发独立 UWB 测量，避免将含 PX4 信息的导航结果回灌。两个节点共用 UWB frame、时间、位置协方差与硬件健康检查；停止/故障或 UWB 超时会使导航位置方差退化。`navigation_mode=adaptive` 保留旧自适应融合供对照，结果只用于导航，不进入 EV。详细接口和硬件配置见 [定位部署说明](LOCALIZATION_DEPLOYMENT.md)。
 
-外部视觉桥继续向 PX4 发布逐轴位置方差，但没有经真实数据标定的 0–100 质量分数，因此 `VehicleOdometry.quality=0`。本工程要求 `EKF2_EV_QMIN=0`（上面的参数命令已显式设置）；若已有非零门限，PX4 会停止融合这些 external vision 观测。不要把未标定的分数填成 100 来绕过该门限。
+外部视觉桥继续向 PX4 发布逐轴位置方差，但没有经真实数据标定的 0–100 质量分数，因此 `VehicleOdometry.quality=0`。本工程要求 `EKF2_EV_QMIN=0`（第 3 步的 `PX4_PARAM_EKF2_EV_QMIN=0` 已显式设置）；若已有非零门限，PX4 会停止融合这些 external vision 观测。不要把未标定的分数填成 100 来绕过该门限。
 
 本包提供 Gazebo 模拟逐锚距离，外部 Host 已提供真实串口观测、时间戳及日志接口，但尚未用实测数据完成本项目飞行链路标定；学习式 NLOS 识别与因子图应在这些数据及所需传感器到位后再评估。`publish_truth_orientation=true` 注入的是 Gazebo 真值姿态，UWB 测距本身不提供横滚、俯仰或偏航。
 
@@ -177,50 +213,30 @@ P1 的视场默认要求与成功融合深度匹配的真实 CameraInfo（`explo
 
 ## 可视化窗口
 
-建议先关掉卡住的 ROS2 daemon，后续诊断命令都可以复用同一个终端环境：
+建议先停掉卡住的 ROS 2 daemon；后续诊断命令都复用同一个终端环境：
 
 ```bash
-cd /home/pawn/px4_ros_ws
 source /opt/ros/jazzy/setup.bash
-source install/setup.bash
+source "$WS_ROOT/install/setup.bash"   # WS_ROOT 见「运行顺序」
 ros2 daemon stop
 export ROS2CLI_ENABLE_DAEMON=0
 ```
 
-### 启动顺序
+### 启动前提
 
-RViz 只负责显示，不会主动创建地图或路径。先按正常流程启动 PX4/Gazebo 和任务栈。若需要看到
-`/powerplant/control/planned_path`，任务栈必须带 `use_control:=true`，因为该 topic 由
-`offboard_mission_node` 发布（C++）；仅运行默认 `ros2 launch px4_powerplant_mission powerplant_system.launch.py`
-时不会启动飞控节点，也就不会有路径 topic。
+按[运行顺序](#运行顺序)启动 PX4/Gazebo、传感器桥和任务栈之后，再打开 RViz。RViz 只负责显示，不会主动创建地图或路径：
 
-```bash
-cd /home/pawn/px4_ros_ws
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
-```
-
-`use_control:=true` 只启动 Offboard 节点；默认 `auto_start=false`，不会自动解锁和起飞，仍需手动调用
-`/start_powerplant_mission`。
-
-如果图像、深度图或雷达 topic 没有出现，再启动 Gazebo sensor bridge：
-
-```bash
-cd /home/pawn/px4_ros_ws
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py
-```
+- `/powerplant/control/planned_path` 由 C++ `offboard_mission_node` 发布，任务栈必须带 `use_control:=true`；
+- 地图为空通常是 `gz_sensor_bridge.launch.py` 没启动，或建图尚未收敛；
+- `map` 与定位 TF 使用仿真时间，RViz 需要 `use_sim_time=true`（`visualization.launch.py` 默认已开启）。
 
 ### RViz 一键窗口
 
 推荐直接用本包的 RViz 配置启动，它已经预置栅格、路径、定位、UWB anchor 和点云显示：
 
 ```bash
-cd /home/pawn/px4_ros_ws
 source /opt/ros/jazzy/setup.bash
-source install/setup.bash
+source "$WS_ROOT/install/setup.bash"
 ros2 launch px4_powerplant_mission visualization.launch.py
 ```
 
@@ -260,7 +276,7 @@ ros2 topic list --no-daemon | grep planned_path
 如果看不到 `/powerplant_offboard_mission`，重启任务栈并加上：
 
 ```bash
-ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
+ros2 launch px4_powerplant_mission powerplant_system.launch.py use_control:=true
 ```
 
 如果 node 存在但 topic 还没显示，读取一次消息：
@@ -385,21 +401,20 @@ ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py \
 工作区构建继续使用系统 Python，YOLO 依赖不要参与 `colcon build`。如果希望不使用虚拟环境运行 YOLO，需要把推理依赖安装到系统/用户 Python：
 
 ```bash
-cd /home/pawn/px4_ros_ws
+cd "$WS_ROOT"
 python3 -m pip install --user --break-system-packages -r src/px4_powerplant_mission/requirements-yolo.txt
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install --packages-select px4_powerplant_mission --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
 source install/setup.bash
-ros2 launch px4_powerplant_mission powerplant_system.launch.py use_yolo:=true use_control:=true
+ros2 launch px4_powerplant_mission powerplant_system.launch.py \
+  use_yolo:=true use_control:=true yolo_python:=python3
 ```
 
-默认会使用 `/home/pawn/px4_ros_ws/.venv/bin/python` 运行 YOLO。也可以显式覆盖启动参数：
+`yolo_python` 的默认值是开发机上的绝对路径，换机器不会自动生效：依赖装在系统 Python 时用 `yolo_python:=python3`，装在仓库虚拟环境时用：
 
 ```bash
 ros2 launch px4_powerplant_mission powerplant_system.launch.py \
-  use_yolo:=true \
-  use_control:=true \
-  yolo_python:=/home/pawn/px4_ros_ws/.venv/bin/python
+  use_yolo:=true use_control:=true yolo_python:="$WS_ROOT/.venv/bin/python"
 ```
 
 P2 仿真安装与运动参数由 `config/p2_simulation.yaml` 覆盖；`hardware` 使用 `p2_hardware.yaml`，缺省 `motion_model_configured=false`。实机须提供相对PX4导航参考点的实测外参、机体包络、制动/时延与误差范围后启用。相机旋转参数是相机FLU到机体FLU的安装旋转；内部已处理光学轴转换，不能重复填入optical轴转换。仍须独立确认起飞区，不能只为通过检查修改确认值。
