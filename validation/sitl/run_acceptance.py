@@ -55,6 +55,9 @@ _contact_spec.loader.exec_module(contact_support)
 _controller_spec=importlib.util.spec_from_file_location("controller_profile", Path(__file__).with_name("controller_profile.py"))
 controller_support=importlib.util.module_from_spec(_controller_spec)
 _controller_spec.loader.exec_module(controller_support)
+_ground_spec=importlib.util.spec_from_file_location("ground_response", Path(__file__).with_name("ground_response.py"))
+ground_support=importlib.util.module_from_spec(_ground_spec)
+_ground_spec.loader.exec_module(ground_support)
 _flight_spec=importlib.util.spec_from_file_location("flight_evidence", Path(__file__).with_name("flight_evidence.py"))
 flight_support=importlib.util.module_from_spec(_flight_spec)
 _flight_spec.loader.exec_module(flight_support)
@@ -506,6 +509,8 @@ def parse_args():
                    help="explicit isolated MPC_THR_HOVER calibration; default retains the airframe value")
     p.add_argument("--px4-z-velocity-integral", type=float, default=None,
                    help="explicit isolated MPC_Z_VEL_I_ACC calibration; default retains the airframe value")
+    p.add_argument("--ground-response-profile", type=Path, default=None,
+                   help="frozen ground step-response calibration (config/p2_sitl_ground_response.yaml)")
     p.add_argument("--controller-profile", type=Path, default=None,
                    help="explicit isolated controller YAML; frozen profile required for formal mission")
     p.add_argument("--px4-position-takeoff", action="store_true",
@@ -518,6 +523,8 @@ def parse_args():
     p.add_argument("--controller-calibration-candidate", type=float, choices=controller_support.CANDIDATES, default=None,
                    help="formal nonzero integral calibration candidate; requires profile and stop-after scan")
     p.add_argument("--startup-timeout", type=float, default=90)
+    p.add_argument("--px4-instance", type=int, default=0,
+                   help="PX4 daemon instance; use 1 where the default instance 0 socket is owned by another user")
     p.add_argument("--ros-domain", type=int, default=25)
     p.add_argument("--agent-port", type=int, default=8889)
     p.add_argument("--inject-obstacle", action="store_true")
@@ -779,6 +786,13 @@ def prepare(args):
         mission.update({"explore_min_x_m":12.0,"explore_max_x_m":24.0,
             "explore_min_y_m":-9.0,"explore_max_y_m":12.0,
             "explore_min_z_m":3.5,"explore_max_z_m":7.0})
+    if getattr(args,"ground_response_profile",None) is not None:
+        args.resolved_ground_response=ground_support.load_frozen(args.ground_response_profile)
+        for name,value in args.resolved_ground_response["parameters"].items():
+            (profile if name.startswith("motion_") else mission)[name]=value
+        (output/"ground_response_profile.json").write_text(json_dumps(
+            {key:args.resolved_ground_response[key]
+             for key in ("path","sha256","parameters","measurements")},indent=2,allow_nan=False))
     mapper = config["powerplant_voxel_mapper"]["ros__parameters"]
     # This isolated lockstep simulator and PX4 share the Gazebo boot clock.
     # Hardware retains system↔boot synchronization in the shared defaults.
@@ -855,8 +869,11 @@ def prepare(args):
     motion_profile_path = runtime / "p2_sitl_motion.yaml"
     motion_profile_path.write_text(yaml.safe_dump(motion_profile, sort_keys=False))
     args.resolved_motion_profile_path = motion_profile_path
+    ground=getattr(args,"resolved_ground_response",None)
+    if ground is not None:
+        ground["acceptance_policy"]=controller_support.validate_acceptance_policy({**mission,**profile},ground_response=ground)
     if getattr(args,"resolved_controller_profile",None) is not None:
-        args.resolved_controller_profile["acceptance_policy"]=controller_support.validate_acceptance_policy({**mission,**profile})
+        args.resolved_controller_profile["acceptance_policy"]=controller_support.validate_acceptance_policy({**mission,**profile},ground_response=ground)
     config_path = runtime / "powerplant_p2_sitl.yaml"
     config_path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False))
     if takeoff_audit is not None:
@@ -882,6 +899,7 @@ def prepare(args):
         "HEADLESS": "1", "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
         "POWERPLANT_SITL_EFFECTIVE_CONFIG": str(config_path),
         "POWERPLANT_SITL_MOTION_PROFILE": str(motion_profile_path),
+        "PX4_PARAM_MAV_SYS_ID": "1",
         "PX4_PARAM_UXRCE_DDS_PRT": str(args.agent_port),
         "PX4_PARAM_UXRCE_DDS_SYNCT": "0",
         "PX4_UXRCE_DDS_PORT": str(args.agent_port),
@@ -912,9 +930,10 @@ def prepare(args):
     commands = [
         ("agent", ["MicroXRCEAgent", "udp4", "-p", str(args.agent_port)], runtime),
         ("gazebo", gz, runtime),
-        ("px4", [str(binary), "-d", "-i", "0", "-w", str(rootfs), str(build / "etc")], rootfs),
+        ("px4", [str(binary), "-d", "-i", str(args.px4_instance), "-w", str(rootfs), str(build / "etc")], rootfs),
         ("gcs", [sys.executable, str(Path(__file__).resolve().parent / "gcs_heartbeat.py"),
-                 "--output-dir", str(output), "--startup-timeout", str(args.startup_timeout)], runtime),
+                 "--output-dir", str(output), "--startup-timeout", str(args.startup_timeout),
+                 "--expected-px4-port", str(18570 + args.px4_instance)], runtime),
         ("sensors", ["ros2", "launch", "px4_powerplant_mission", "gz_sensor_bridge.launch.py"], runtime),
         ("mission", ["ros2", "launch", "px4_powerplant_mission", "powerplant_system.launch.py",
                      f"config_file:={config_path}", f"motion_config_file:={motion_profile_path}", "localization_profile:=simulation",
@@ -2555,6 +2574,7 @@ def main():
             report['full_mission_acceptance']=bool(report['full_mission_acceptance'] and identity_valid)
         report["sensor_profile"]=args.sensor_profile
         report["acceptance_scope"]=acceptance_scope(args)
+        report["px4_instance"]=args.px4_instance
         report["render_context"]=manifest["render_context"]
         profile_evidence=sensor_profile_evidence(manifest["sensor_profile"],report.get("observed_sensors",{}))
         report["sensor_profile_validation"]=profile_evidence
@@ -2565,6 +2585,10 @@ def main():
         report["requested_performance_scope"]=manifest["sensor_profile"]["performance_scope"]
         controller=controller_profile_evidence(args,report.get("gcs_evidence",{}).get("read_only_px4_parameters",{}))
         report["isolated_controller_profile"]=controller
+        ground=getattr(args,"resolved_ground_response",None)
+        report["ground_response_profile"]=({"path":ground["path"],"sha256":ground["sha256"],
+            "parameters":ground["parameters"],"measurements":ground["measurements"],
+            "acceptance_policy":ground.get("acceptance_policy")} if ground else None)
         report["checks"]["actual_controller_profile_matches_requested"]=controller["passed"]
         report["passed"]=bool(report["passed"] and controller["passed"])
         if "full_mission_acceptance" in report:
