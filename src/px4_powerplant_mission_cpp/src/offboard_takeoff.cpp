@@ -78,6 +78,15 @@ bool OffboardMissionNode::update_px4_takeoff() {
     event("px4_takeoff_abort");
     enter_landing(reason);
   };
+  // The monitor's own request_land already knows why the attempt must end.
+  // Checking it before the generic health summary keeps the recorded reason at
+  // the cause; otherwise landing commands change the PX4 mode first and the
+  // summary reports the symptom ("PX4 left Offboard") instead.
+  const auto report = motion_->takeoff_report();
+  if (report && report->request_land) {
+    abort(report->reason);
+    return true;
+  }
   const auto health = motion_health_reason();
   if (!health.empty()) {
     abort("PX4_TAKEOFF_NAVIGATION_OR_CONTROL_UNHEALTHY: " + health);
@@ -100,14 +109,16 @@ bool OffboardMissionNode::update_px4_takeoff() {
     abort("PX4_TAKEOFF_OVERSHOOT");
     return true;
   }
-  const auto report = motion_->takeoff_report();
-  if (report && report->request_land) {
-    abort(report->reason);
+  const auto report_land = motion_->takeoff_report();
+  if (report_land && report_land->request_land) {
+    abort(report_land->reason);
     return true;
   }
   // The same fixed deadline covers warming, climb, settling AND strict HOLD.
-  if (std::max((ns() - px4_takeoff_started_ros_) * 1e-9,
-               (steady_ns() - px4_takeoff_started_steady_) * 1e-9) >
+  // It is measured in flight (ROS) time: a slower-than-real-time simulation
+  // must not spend the budget on wall time. The monitor rejects a frozen ROS
+  // clock separately instead of silently extending the deadline.
+  if ((ns() - px4_takeoff_started_ros_) * 1e-9 >
       px4_takeoff_config_.timeout_s) {
     abort("PX4_TAKEOFF_TIMEOUT");
     return true;

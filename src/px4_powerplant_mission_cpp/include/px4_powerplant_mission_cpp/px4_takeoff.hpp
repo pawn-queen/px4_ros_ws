@@ -13,6 +13,11 @@ struct Px4TakeoffConfig {
   double max_horizontal_drift_m = 1., max_tilt_rad = .35;
   double arrival_tolerance_m = .2, settle_speed_mps = .1;
   double hover_s = 2., timeout_s = 45., control_ack_timeout_s = 5.;
+  // The deadline follows the flight (ROS) clock: a slower-than-real-time
+  // simulation must not consume a flight budget with wall time. Steady time is
+  // only a backstop for a frozen ROS clock; a stall longer than this rejects
+  // the attempt instead of silently extending the deadline.
+  double clock_stall_s = 2.;
 };
 
 struct Px4TakeoffObservation {
@@ -53,6 +58,7 @@ private:
   int64_t started_ros_ns_ = 0, started_steady_ns_ = 0;
   int64_t control_requested_ros_ns_ = 0, control_requested_steady_ns_ = 0;
   int64_t hover_start_sample_ns_ = 0, last_sample_ns_ = 0;
+  int64_t last_ros_ns_ = 0, last_ros_advance_steady_ns_ = 0;
   bool initialized_ = false, control_acknowledged_ = false;
 };
 

@@ -265,13 +265,41 @@ TEST(Px4TakeoffMonitor, FixedTimeoutIncludesWarmupAndCannotBeRenewedByProgress) 
   EXPECT_EQ(f.tick(8.001).reason, "PX4_TAKEOFF_TIMEOUT");
 }
 
-TEST(Px4TakeoffMonitor, WallDeadlineStillExpiresWhenSimulationClockStalls) {
+TEST(Px4TakeoffMonitor, FrozenFlightClockRejectsInsteadOfExtendingTheDeadline) {
   Flight f;
   f.airborne(1.);
   ASSERT_FALSE(f.tick(2.).request_land);
+  // ROS time stops advancing while wall time keeps going: the monitor must not
+  // silently extend the flight budget, but the reason is the clock stall, not
+  // a flight-time timeout.
   EXPECT_EQ(f.monitor.update(f.state, ros_origin + 2000000000LL,
                             steady_origin + 46000000000LL, true).reason,
-            "PX4_TAKEOFF_TIMEOUT");
+            "PX4_TAKEOFF_CLOCK_STALL");
+}
+
+TEST(Px4TakeoffMonitor, DeadlineFollowsFlightClockNotWallClock) {
+  Px4PositionTakeoff monitor;
+  Px4TakeoffConfig config;
+  config.timeout_s = 60.;
+  monitor.reset(config, ros_origin, steady_origin);
+  auto state = navigation();
+  state.armed = state.offboard = true;
+  state.landed = false;
+  Px4TakeoffUpdate result;
+  // 0.5 s of flight time per 1 s of wall time, which is what a slower-than-
+  // real-time simulation looks like. The old max(ros, steady) deadline would
+  // expire after 60 s of wall time, i.e. with only 30 s of flight elapsed.
+  for (int i = 1; i <= 110; ++i) {
+    result = monitor.update(state, ros_origin + int64_t(i) * 500000000LL,
+                            steady_origin + int64_t(i) * 1000000000LL, true);
+    ASSERT_FALSE(result.request_land) << "tick " << i;
+  }
+  EXPECT_NEAR(result.elapsed_s, 55., 1e-9);
+  const auto expired =
+      monitor.update(state, ros_origin + 61000000000LL,
+                     steady_origin + 122000000000LL, true);
+  EXPECT_TRUE(expired.request_land);
+  EXPECT_EQ(expired.reason, "PX4_TAKEOFF_TIMEOUT");
 }
 
 TEST(Px4TakeoffMonitor, ClockAndMeasurementRegressionCannotReviveHover) {

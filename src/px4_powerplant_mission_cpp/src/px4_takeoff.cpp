@@ -13,13 +13,15 @@ void validate(const Px4TakeoffConfig &c) {
       !positive(c.max_tilt_rad) || !positive(c.arrival_tolerance_m) ||
       c.arrival_tolerance_m >= c.height_m || !positive(c.settle_speed_mps) ||
       !positive(c.hover_s) || !positive(c.timeout_s) ||
-      !positive(c.control_ack_timeout_s))
+      !positive(c.control_ack_timeout_s) || !positive(c.clock_stall_s))
     throw std::invalid_argument("invalid PX4 position takeoff configuration");
 }
 
-double elapsed(int64_t ros, int64_t steady, int64_t start_ros,
-               int64_t start_steady) {
-  return std::max(double(ros - start_ros), double(steady - start_steady)) * 1e-9;
+// The takeoff budget is a flight-time budget. Wall (steady) time only guards
+// against a frozen flight clock, so it must not consume the deadline when the
+// simulation runs slower than real time.
+double flight_elapsed(int64_t ros, int64_t start_ros) {
+  return double(ros - start_ros) * 1e-9;
 }
 } // namespace
 
@@ -56,6 +58,8 @@ void Px4PositionTakeoff::reset(const Px4TakeoffConfig &config, int64_t ros_ns,
   started_steady_ns_ = steady_ns;
   control_requested_ros_ns_ = control_requested_steady_ns_ = 0;
   hover_start_sample_ns_ = last_sample_ns_ = 0;
+  last_ros_ns_ = ros_ns;
+  last_ros_advance_steady_ns_ = steady_ns;
   control_acknowledged_ = false;
   initialized_ = true;
 }
@@ -77,7 +81,17 @@ Px4TakeoffUpdate Px4PositionTakeoff::update(const Px4TakeoffObservation &state,
     return result_;
   if (ros_ns < started_ros_ns_ || steady_ns < started_steady_ns_)
     return reject("PX4_TAKEOFF_CLOCK_REGRESSION");
-  result_.elapsed_s = elapsed(ros_ns, steady_ns, started_ros_ns_, started_steady_ns_);
+  if (ros_ns > last_ros_ns_) {
+    last_ros_ns_ = ros_ns;
+    last_ros_advance_steady_ns_ = steady_ns;
+  } else if (last_ros_advance_steady_ns_ > 0 &&
+             (steady_ns - last_ros_advance_steady_ns_) * 1e-9 >
+                 config_.clock_stall_s) {
+    // A frozen flight clock must not freeze the deadline as well; steady time
+    // is only used to prove the ROS clock itself stopped advancing.
+    return reject("PX4_TAKEOFF_CLOCK_STALL");
+  }
+  result_.elapsed_s = flight_elapsed(ros_ns, started_ros_ns_);
   if (result_.elapsed_s > config_.timeout_s)
     return reject("PX4_TAKEOFF_TIMEOUT");
   if (!state.navigation_healthy || !state.navigation_fresh ||
@@ -108,8 +122,8 @@ Px4TakeoffUpdate Px4PositionTakeoff::update(const Px4TakeoffObservation &state,
   if (!control_acknowledged_) {
     result_.stage = Px4TakeoffStage::WaitingForControl;
     if (control_requested_ros_ns_ &&
-        elapsed(ros_ns, steady_ns, control_requested_ros_ns_,
-                control_requested_steady_ns_) > config_.control_ack_timeout_s)
+        flight_elapsed(ros_ns, control_requested_ros_ns_) >
+            config_.control_ack_timeout_s)
       return reject("PX4_TAKEOFF_CONTROL_ACK_TIMEOUT");
     return result_;
   }
