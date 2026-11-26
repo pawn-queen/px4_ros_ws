@@ -51,7 +51,7 @@ powerplant_offboard_mission:
     takeoff_ground_land_max_age_s: 10.0
     takeoff_ground_transition_timeout_s: 45.0
     takeoff_region_radius_m: 2.0
-    takeoff_region_height_m: 6.6
+    takeoff_region_height_m: 6.2
     takeoff_ground_support_enabled: true
 ground_response_provenance:
   schema_version: 1

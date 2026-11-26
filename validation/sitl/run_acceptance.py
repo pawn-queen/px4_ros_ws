@@ -19,6 +19,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -488,6 +489,10 @@ def parse_args():
     p.add_argument("--scenario", choices=("room", "two_rooms", "powerplant"), default="room")
     p.add_argument("--detection-mode", choices=("replay", "yolo", "none"), default=None)
     p.add_argument("--powerplant-asset-lock", type=Path, default=PACKAGE/"config/powerplant_assets.json")
+    p.add_argument("--config-file", type=Path, default=None,
+                   help="base powerplant config for this run (default: config/powerplant.yaml)")
+    p.add_argument("--motion-profile", type=Path, default=None,
+                   help="base motion profile for this run (default: config/p2_simulation.yaml)")
     p.add_argument("--roi-access-test", action="store_true", help="powerplant only: overlay a task ROI outside the launch point")
     p.add_argument("--stop-after", choices=("hover", "scan", "roi-access", "mission"), default=None,
                    help="powerplant defaults to scan; regression rooms default to complete mission")
@@ -523,6 +528,10 @@ def parse_args():
     p.add_argument("--controller-calibration-candidate", type=float, choices=controller_support.CANDIDATES, default=None,
                    help="formal nonzero integral calibration candidate; requires profile and stop-after scan")
     p.add_argument("--startup-timeout", type=float, default=90)
+    p.add_argument("--takeoff-region-radius-m", type=float, default=None,
+                   help="override the confirmed operating column radius for this run")
+    p.add_argument("--takeoff-region-height-m", type=float, default=None,
+                   help="override the confirmed operating column height for this run")
     p.add_argument("--px4-instance", type=int, default=0,
                    help="PX4 daemon instance; use 1 where the default instance 0 socket is owned by another user")
     p.add_argument("--ros-domain", type=int, default=25)
@@ -749,7 +758,8 @@ def prepare(args):
     local_models,sensor_metadata = sensor_profile(args,runtime)
     build = args.px4_root / "build/px4_sitl_default"
     binary = build / "bin/px4"
-    config = yaml.safe_load((WORKSPACE / "src/px4_powerplant_mission/config/powerplant.yaml").read_text())
+    config_source = args.config_file or (WORKSPACE / "src/px4_powerplant_mission/config/powerplant.yaml")
+    config = yaml.safe_load(config_source.read_text())
     mission = config["powerplant_offboard_mission"]["ros__parameters"]
     if getattr(args,"controller_profile",None) is not None:
         selected=controller_support.load_profile(args.controller_profile,args.controller_calibration_candidate)
@@ -762,7 +772,8 @@ def prepare(args):
         args.resolved_controller_profile=controller_support.resolve_profile(selected,model)
         mission["sitl_controller_profile_id"]=args.resolved_controller_profile["profile_id"]
         (output/"sitl_controller_derivation.json").write_text(json_dumps(args.resolved_controller_profile,indent=2,allow_nan=False))
-    motion_profile = yaml.safe_load((WORKSPACE/"src/px4_powerplant_mission/config/p2_simulation.yaml").read_text())
+    motion_source = args.motion_profile or (WORKSPACE/"src/px4_powerplant_mission/config/p2_simulation.yaml")
+    motion_profile = yaml.safe_load(motion_source.read_text())
     profile = motion_profile["powerplant_offboard_mission"]["ros__parameters"]
     body_audit=verified_body_envelope(args.px4_root/"Tools/simulation/gz/models",{**mission,**profile},
                                       BODY_ENVELOPE_JSON)
@@ -786,6 +797,10 @@ def prepare(args):
         mission.update({"explore_min_x_m":12.0,"explore_max_x_m":24.0,
             "explore_min_y_m":-9.0,"explore_max_y_m":12.0,
             "explore_min_z_m":3.5,"explore_max_z_m":7.0})
+    if args.takeoff_region_radius_m is not None:
+        mission["takeoff_region_radius_m"]=args.takeoff_region_radius_m
+    if args.takeoff_region_height_m is not None:
+        mission["takeoff_region_height_m"]=args.takeoff_region_height_m
     if getattr(args,"ground_response_profile",None) is not None:
         args.resolved_ground_response=ground_support.load_frozen(args.ground_response_profile)
         for name,value in args.resolved_ground_response["parameters"].items():
@@ -899,6 +914,9 @@ def prepare(args):
         "HEADLESS": "1", "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1",
         "POWERPLANT_SITL_EFFECTIVE_CONFIG": str(config_path),
         "POWERPLANT_SITL_MOTION_PROFILE": str(motion_profile_path),
+        # Keep the DDS topic namespace flat (/fmu/...); PX4 otherwise derives
+        # px4_<instance> from -i and the stack would never see vehicle status.
+        "PX4_UXRCE_DDS_NS": "",
         "PX4_PARAM_MAV_SYS_ID": "1",
         "PX4_PARAM_UXRCE_DDS_PRT": str(args.agent_port),
         "PX4_PARAM_UXRCE_DDS_SYNCT": "0",
@@ -2534,11 +2552,28 @@ def main():
                 while time.monotonic()<deadline:
                     query=subprocess.run(["gz","topic","-l"],env=env,capture_output=True,text=True,timeout=5)
                     topics=query.stdout.splitlines()
-                    images=[t.strip() for t in topics if "/sensor/IMX214/image" in t or t.strip()=="/camera"]
-                    infos=[t.strip() for t in topics if "/sensor/IMX214/camera_info" in t or t.strip()=="/camera/camera_info"]
-                    depth_infos=[t.strip() for t in topics if "/sensor/StereoOV7251/camera_info" in t or t.strip() in ("/depth_camera/camera_info","/camera_info")]
+                    # ros_gz publishes sensor topics under their scoped world path
+                    # (/world/<w>/model/<m>/link/<l>/sensor/<s>/<topic>); match
+                    # the expected short name as a path suffix, not an exact string.
+                    def gz_find(suffix, exact=()):
+                        return [x.strip() for x in topics
+                                if x.strip() in exact or (suffix and x.strip().endswith(suffix))]
+                    def gz_norm(value):
+                        # PX4 names the gazebo model after its instance
+                        # (x500_depth_<i>); instrumentation is keyed to
+                        # x500_depth_0, so compare with the model segment masked.
+                        return re.sub(r"/model/[^/]+/", "/model/*/", value)
+                    def gz_has(name):
+                        short = name.lstrip('/')
+                        return any(gz_norm(x.strip()) == gz_norm(name)
+                                   or gz_norm(x.strip()).endswith('/' + short)
+                                   for x in topics)
+                    images=gz_find("/sensor/IMX214/image", ("/camera",))
+                    infos=gz_find("/sensor/IMX214/camera_info", ("/camera/camera_info",))
+                    depth_infos=gz_find("/sensor/StereoOV7251/camera_info",
+                                        ("/depth_camera/camera_info", "/camera_info"))
                     expected_contacts={x["topic"] for x in (manifest.get("contact_instrumentation") or {}).get("sensors",[])}
-                    if images and infos and depth_infos and expected_contacts<=set(topics):
+                    if images and infos and depth_infos and all(gz_has(c) for c in expected_contacts):
                         argv=argv+[f"rgb_gz_topic:={images[0]}",f"rgb_info_gz_topic:={infos[0]}",
                                    f"depth_info_gz_topic:={depth_infos[0]}"]
                         manifest["resolved_sensor_topics"]={"rgb":images[0],"rgb_info":infos[0],

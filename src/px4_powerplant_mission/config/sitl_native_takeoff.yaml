@@ -57,7 +57,7 @@ powerplant_offboard_mission:
     px4_takeoff_arrival_tolerance_m: 0.3
     takeoff_region_confirmed: true
     takeoff_region_radius_m: 3.0
-    takeoff_region_height_m: 6.5
+    takeoff_region_height_m: 6.2
     takeoff_response_probe_height_m: 0.2
     takeoff_handoff_min_rise_m: 0.25
     takeoff_ground_support_enabled: false

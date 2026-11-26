@@ -290,6 +290,8 @@ def test_takeoff_aabb_audit_only_zero_candidates_is_a_free_space_proof():
 
 def tiny_takeoff_scene(tmp_path):
     assets,world,_=locked_scene(tmp_path)
+    # The audited prism is +-4 m; keep the fixture obstacle outside it.
+    world.write_text(world.read_text().replace('<pose>4 0 0 0 0 0</pose>', '<pose>6 0 0 0 0 0</pose>'))
     folder=assets/'models/device'
     def write_stl(path,x):
         vertices=(x,-1,-1,x,1,-1,x,0,1)

@@ -73,13 +73,26 @@ def triangle_component_seed_audit(triangles, seed):
         "method":"exact-coordinate connectivity; seed strictly exterior to every component AABB"}
 
 
-def audit_takeoff_domain(world, models, parameters, home=(0.0,0.0,0.1), *, evidence_min_z_m=.04):
+# The audited region is bounded by this prism: columns, body sweeps and scene
+# meshes are only proven inside it. +-4 m covers the 3.0 m operating column the
+# mission chain needs (strict stop box + drift + scan translation) with the
+# 0.5 m body radius; it was +-2 m when only a 1.5 m column was contemplated.
+EVIDENCE_PRISM_HALF_WIDTH_M = 4.0
+EVIDENCE_PRISM_MAX_Z_M = 6.3
+
+
+def audit_takeoff_domain(world, models, parameters, home=(0.0,0.0,0.1), *,
+                         evidence_min_z_m=.04, evidence_half_width_m=EVIDENCE_PRISM_HALF_WIDTH_M):
     import numpy as np
     world,models=Path(world).resolve(),Path(models).resolve()
     values,parameters_hash=parameter_fingerprint(parameters)
-    if not math.isfinite(evidence_min_z_m) or not 0 <= evidence_min_z_m < 6.3:
+    if not math.isfinite(evidence_min_z_m) or not 0 <= evidence_min_z_m < EVIDENCE_PRISM_MAX_Z_M:
         raise RuntimeError("invalid audited above-ground lower height")
-    minimum=np.array([-2.,-2.,evidence_min_z_m]);maximum=np.array([2.,2.,6.3])
+    if (not math.isfinite(evidence_half_width_m)
+            or not 1. <= evidence_half_width_m <= 32.):
+        raise RuntimeError("invalid audited prism half width")
+    minimum=np.array([-evidence_half_width_m,-evidence_half_width_m,evidence_min_z_m])
+    maximum=np.array([evidence_half_width_m,evidence_half_width_m,EVIDENCE_PRISM_MAX_Z_M])
     home=np.asarray(home,dtype=float)
     if home.shape!=(3,) or not np.isfinite(home).all(): raise RuntimeError("invalid takeoff home")
     radius,height=values["takeoff_region_radius_m"],values["takeoff_region_height_m"]

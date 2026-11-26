@@ -82,7 +82,7 @@ def scene(tmp_path,monkeypatch):
     extra=''.join(f'<model name="indoor_enclosure_{name}"><pose>100 0 10 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>1 1 1</size></box></geometry></collision></link></model>'
         for name in ('west','east','north','south','ceiling'))
     extra+='<model name="ground"><link name="link"><collision name="floor"><geometry><plane><normal>0 0 1</normal><size>140 140</size></plane></geometry></collision></link></model>'
-    world=tmp_path/'powerplant.sdf';world.write_text('<sdf version="1.9"><world name="powerplant"><include><uri>model://device</uri><pose>4 0 0 0 0 0</pose></include>'+extra+'</world></sdf>')
+    world=tmp_path/'powerplant.sdf';world.write_text('<sdf version="1.9"><world name="powerplant"><include><uri>model://device</uri><pose>6 0 0 0 0 0</pose></include>'+extra+'</world></sdf>')
     expansion=expanded_body()
     sources={}
     for name in ('x500_depth','x500','x500_base','OakD-Lite'):
