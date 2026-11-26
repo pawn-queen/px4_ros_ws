@@ -13,6 +13,7 @@
 | 新增/归档资产、权重或 evidence | [ADR-0003](adr/0003-artifact-placement.md) |
 | 改 Python/C++ JSON 契约 | [mission contract](design/mission-contract.md)、[ADR-0002](adr/0002-mission-contract.md) |
 | 改造定位源 / 引入 SLAM | [SLAM 计划](design/slam-plan.md)、[ADR-0005](adr/0005-slam-pose-source.md) |
+| 把分析/数据迁到远端工作站 | [ADR-0006](adr/0006-analysis-and-data-offload.md) |
 | 查历史 P0/P1/P2 | [设计文档](design)、[验证记录](validation)、[历史](history) |
 | 做研究/实验 | [研究文档](research) |
 | 参与开发/CI/发布 | [CONTRIBUTING](CONTRIBUTING.md)、[CI 架构](CI_ARCHITECTURE.md)、[分支规范](BRANCHING.md)、[发布流程](RELEASE_PROCESS.md) |
