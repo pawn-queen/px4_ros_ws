@@ -195,9 +195,10 @@ void OffboardMissionNode::append_px4_takeoff_evidence(JsonValue &p) const {
   p["px4_takeoff_landed"] = land_.landed;
   p["px4_takeoff_armed"] = vehicle_.arming_state == Status::ARMING_STATE_ARMED;
   p["px4_takeoff_offboard"] = vehicle_.nav_state == Status::NAVIGATION_STATE_OFFBOARD;
-  p["px4_takeoff_elapsed_s"] = px4_takeoff_started_steady_ > 0
-      ? std::max((ns() - px4_takeoff_started_ros_) * 1e-9,
-                 (steady_ns() - px4_takeoff_started_steady_) * 1e-9) : 0.;
+  // Flight time, matching the deadline itself. Wall time is only a frozen-clock
+  // backstop inside the monitor and must not appear as the reported budget use.
+  p["px4_takeoff_elapsed_s"] = px4_takeoff_started_ros_ > 0
+      ? (ns() - px4_takeoff_started_ros_) * 1e-9 : 0.;
   p["px4_takeoff_fixed_timeout_s"] = px4_takeoff_config_.timeout_s;
   p["px4_takeoff_hover_elapsed_s"] = report ? report->hover_elapsed_s : 0.;
   p["px4_takeoff_target_enu_m"] = home_

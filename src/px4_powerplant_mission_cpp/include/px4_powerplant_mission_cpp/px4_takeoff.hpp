@@ -12,6 +12,10 @@ struct Px4TakeoffConfig {
   double height_m = 5., yaw_rad = 0.;
   double max_horizontal_drift_m = 1., max_tilt_rad = .35;
   double arrival_tolerance_m = .2, settle_speed_mps = .1;
+  // A single noisy velocity sample must not restart the hover dwell. A speed
+  // violation only resets it after it has persisted for this long; a positive
+  // landing still restarts it immediately.
+  double settle_grace_s = .5;
   double hover_s = 2., timeout_s = 45., control_ack_timeout_s = 5.;
   // The deadline follows the flight (ROS) clock: a slower-than-real-time
   // simulation must not consume a flight budget with wall time. Steady time is
@@ -59,6 +63,7 @@ private:
   int64_t control_requested_ros_ns_ = 0, control_requested_steady_ns_ = 0;
   int64_t hover_start_sample_ns_ = 0, last_sample_ns_ = 0;
   int64_t last_ros_ns_ = 0, last_ros_advance_steady_ns_ = 0;
+  int64_t arrival_violation_sample_ns_ = 0;
   bool initialized_ = false, control_acknowledged_ = false;
 };
 

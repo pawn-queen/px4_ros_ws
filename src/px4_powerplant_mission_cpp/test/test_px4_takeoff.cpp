@@ -162,14 +162,18 @@ TEST(Px4TakeoffMonitor, ArrivalNeedsFreshAirborneEvidenceHeightAndFullSpeed) {
   EXPECT_FALSE(waiting_for_land_status.ready_for_handoff);
   f.state.land_state_fresh = true;
   f.state.position_enu.z() = 4.79;
-  EXPECT_EQ(f.tick(4.).stage, Px4TakeoffStage::Climbing);
+  // A brief height excursion is noise; only a sustained one restarts the dwell.
+  EXPECT_EQ(f.tick(4.).stage, Px4TakeoffStage::Settling);
+  EXPECT_EQ(f.tick(4.6).stage, Px4TakeoffStage::Climbing);
   f.state.position_enu.z() = 5.;
   f.state.velocity_enu = Vec3(.08, .08, 0.); // Each axis is small; norm is too high.
+  // No dwell is running here, so a high-speed sample cannot preserve one.
   EXPECT_EQ(f.tick(5.).stage, Px4TakeoffStage::Climbing);
+  EXPECT_EQ(f.tick(5.7).stage, Px4TakeoffStage::Climbing);
   f.state.velocity_enu.setZero();
-  EXPECT_EQ(f.tick(6.).stage, Px4TakeoffStage::Settling);
-  EXPECT_FALSE(f.tick(7.99).ready_for_handoff);
-  EXPECT_TRUE(f.tick(8.).ready_for_handoff);
+  EXPECT_EQ(f.tick(5.72).stage, Px4TakeoffStage::Settling);
+  EXPECT_FALSE(f.tick(5.72 + 1.99).ready_for_handoff);
+  EXPECT_TRUE(f.tick(5.72 + 2.).ready_for_handoff);
 }
 
 TEST(Px4TakeoffMonitor, HoverDwellNeedsAdvancingSamplesAndResetsOnMotion) {
@@ -182,13 +186,15 @@ TEST(Px4TakeoffMonitor, HoverDwellNeedsAdvancingSamplesAndResetsOnMotion) {
   EXPECT_FALSE(duplicate.ready_for_handoff);
   EXPECT_DOUBLE_EQ(duplicate.hover_elapsed_s, 0.);
   f.state.velocity_enu.z() = .11;
-  EXPECT_EQ(f.tick(4.02).stage, Px4TakeoffStage::Climbing);
+  // Brief motion is tolerated; sustained motion restarts the dwell.
+  EXPECT_EQ(f.tick(4.02).stage, Px4TakeoffStage::Settling);
+  EXPECT_EQ(f.tick(4.6).stage, Px4TakeoffStage::Climbing);
   f.state.velocity_enu.setZero();
-  EXPECT_FALSE(f.tick(4.04).ready_for_handoff);
-  EXPECT_FALSE(f.tick(6.02).ready_for_handoff);
-  EXPECT_TRUE(f.tick(6.04).ready_for_handoff);
+  EXPECT_FALSE(f.tick(4.62).ready_for_handoff);
+  EXPECT_FALSE(f.tick(6.60).ready_for_handoff);
+  EXPECT_TRUE(f.tick(6.62).ready_for_handoff);
   f.state.landed = true;
-  EXPECT_FALSE(f.tick(6.06).ready_for_handoff);
+  EXPECT_FALSE(f.tick(6.64).ready_for_handoff);
 }
 
 TEST(Px4TakeoffMonitor, LandStatusCadenceGapDoesNotEraseFreshNavigationHoverEvidence) {
@@ -230,26 +236,46 @@ TEST(Px4TakeoffMonitor, CompletedHoverStillNeedsCurrentFreshAirborneStatusAtHand
   EXPECT_TRUE(f.tick(5.02).ready_for_handoff);
 }
 
-TEST(Px4TakeoffMonitor, PositiveLandingOrMeasuredMovementStillRestartsHoverDwell) {
-  for (bool landing : {false, true}) {
-    SCOPED_TRACE(landing);
-    Flight f;
-    f.airborne();
-    EXPECT_FALSE(f.tick(2.).ready_for_handoff);
-    EXPECT_TRUE(f.tick(4.).ready_for_handoff);
-    if (landing)
-      f.state.landed = true;
-    else
-      f.state.velocity_enu.z() = f.config.settle_speed_mps + .01;
-    const auto interrupted = f.tick(4.02);
-    EXPECT_FALSE(interrupted.ready_for_handoff);
-    EXPECT_DOUBLE_EQ(interrupted.hover_elapsed_s, 0.);
-    f.state.landed = false;
-    f.state.velocity_enu.setZero();
-    EXPECT_FALSE(f.tick(4.04).ready_for_handoff);
-    EXPECT_FALSE(f.tick(6.02).ready_for_handoff);
-    EXPECT_TRUE(f.tick(6.04).ready_for_handoff);
-  }
+TEST(Px4TakeoffMonitor, PositiveLandingRestartsHoverDwellImmediately) {
+  Flight f;
+  f.airborne();
+  EXPECT_FALSE(f.tick(2.).ready_for_handoff);
+  EXPECT_TRUE(f.tick(4.).ready_for_handoff);
+  f.state.landed = true;
+  const auto interrupted = f.tick(4.02);
+  EXPECT_FALSE(interrupted.ready_for_handoff);
+  EXPECT_DOUBLE_EQ(interrupted.hover_elapsed_s, 0.);
+  f.state.landed = false;
+  EXPECT_FALSE(f.tick(4.04).ready_for_handoff);
+  EXPECT_FALSE(f.tick(6.02).ready_for_handoff);
+  EXPECT_TRUE(f.tick(6.04).ready_for_handoff);
+}
+
+TEST(Px4TakeoffMonitor, BriefVelocityNoiseDoesNotRestartHoverDwell) {
+  Flight f;
+  f.airborne();
+  EXPECT_FALSE(f.tick(2.).ready_for_handoff);
+  // A single sample just above the settle speed is noise, not loss of hover.
+  f.state.velocity_enu.z() = f.config.settle_speed_mps + .01;
+  const auto noisy = f.tick(2.4);
+  EXPECT_FALSE(noisy.ready_for_handoff);
+  EXPECT_EQ(noisy.stage, Px4TakeoffStage::Settling);
+  f.state.velocity_enu.setZero();
+  const auto dwelling = f.tick(2.5);
+  EXPECT_NEAR(dwelling.hover_elapsed_s, .5, 1e-9);
+  EXPECT_FALSE(dwelling.ready_for_handoff);
+  EXPECT_TRUE(f.tick(4.).ready_for_handoff);
+}
+
+TEST(Px4TakeoffMonitor, SustainedVelocityViolationRestartsHoverDwell) {
+  Flight f;
+  f.airborne();
+  EXPECT_FALSE(f.tick(2.).ready_for_handoff);
+  f.state.velocity_enu.z() = f.config.settle_speed_mps + .01;
+  EXPECT_FALSE(f.tick(2.2).ready_for_handoff);
+  const auto reset = f.tick(2.8);
+  EXPECT_FALSE(reset.ready_for_handoff);
+  EXPECT_DOUBLE_EQ(reset.hover_elapsed_s, 0.);
 }
 
 TEST(Px4TakeoffMonitor, FixedTimeoutIncludesWarmupAndCannotBeRenewedByProgress) {

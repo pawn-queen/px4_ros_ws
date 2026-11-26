@@ -12,8 +12,9 @@ void validate(const Px4TakeoffConfig &c) {
       !positive(c.height_m) || !positive(c.max_horizontal_drift_m) ||
       !positive(c.max_tilt_rad) || !positive(c.arrival_tolerance_m) ||
       c.arrival_tolerance_m >= c.height_m || !positive(c.settle_speed_mps) ||
-      !positive(c.hover_s) || !positive(c.timeout_s) ||
-      !positive(c.control_ack_timeout_s) || !positive(c.clock_stall_s))
+      !positive(c.settle_grace_s) || !positive(c.hover_s) ||
+      !positive(c.timeout_s) || !positive(c.control_ack_timeout_s) ||
+      !positive(c.clock_stall_s))
     throw std::invalid_argument("invalid PX4 position takeoff configuration");
 }
 
@@ -58,6 +59,7 @@ void Px4PositionTakeoff::reset(const Px4TakeoffConfig &config, int64_t ros_ns,
   started_steady_ns_ = steady_ns;
   control_requested_ros_ns_ = control_requested_steady_ns_ = 0;
   hover_start_sample_ns_ = last_sample_ns_ = 0;
+  arrival_violation_sample_ns_ = 0;
   last_ros_ns_ = ros_ns;
   last_ros_advance_steady_ns_ = steady_ns;
   control_acknowledged_ = false;
@@ -135,16 +137,30 @@ Px4TakeoffUpdate Px4PositionTakeoff::update(const Px4TakeoffObservation &state,
   // inter-message freshness gap must not erase otherwise continuous measured
   // position/velocity evidence. A positive landed flag still resets the dwell,
   // and a stale landed=false can never authorize the strict handoff itself.
-  const bool arrived = !state.landed &&
+  const bool measured_arrival = !state.landed &&
       std::abs(state.position_enu.z() - target_z) <= config_.arrival_tolerance_m &&
       state.velocity_enu.norm() <= config_.settle_speed_mps;
-  if (!arrived) {
-    hover_start_sample_ns_ = 0;
+  if (!measured_arrival) {
+    const bool restart = state.landed || !hover_start_sample_ns_;
+    if (!restart) {
+      if (!arrival_violation_sample_ns_)
+        arrival_violation_sample_ns_ = state.sample_stamp_ns;
+      if ((state.sample_stamp_ns - arrival_violation_sample_ns_) * 1e-9 <=
+          config_.settle_grace_s) {
+        // One noisy velocity sample must not erase a dwell that is otherwise
+        // continuous; the handoff itself still requires an in-window sample.
+        result_.stage = Px4TakeoffStage::Settling;
+        result_.ready_for_handoff = false;
+        return result_;
+      }
+    }
+    hover_start_sample_ns_ = arrival_violation_sample_ns_ = 0;
     result_.hover_elapsed_s = 0.;
     result_.stage = Px4TakeoffStage::Climbing;
     result_.ready_for_handoff = false;
     return result_;
   }
+  arrival_violation_sample_ns_ = 0;
   if (!hover_start_sample_ns_)
     hover_start_sample_ns_ = state.sample_stamp_ns;
   result_.hover_elapsed_s = (state.sample_stamp_ns - hover_start_sample_ns_) * 1e-9;
