@@ -17,6 +17,7 @@ def _launch_setup(context, *args, **kwargs):
         ("rgb_info_gz_topic", "sensor_msgs/msg/CameraInfo", "gz.msgs.CameraInfo"),
         ("scan_gz_topic", "sensor_msgs/msg/LaserScan", "gz.msgs.LaserScan"),
         ("points_gz_topic", "sensor_msgs/msg/PointCloud2", "gz.msgs.PointCloudPacked"),
+        ("imu_gz_topic", "sensor_msgs/msg/Imu", "gz.msgs.IMU"),
     ]
     for launch_arg, ros_type, gz_type in topic_specs:
         topic = LaunchConfiguration(launch_arg).perform(context)
@@ -48,12 +49,14 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("rgb_info_gz_topic", default_value="/world/powerplant/model/x500_depth_0/link/camera_link/sensor/IMX214/camera_info"),
             DeclareLaunchArgument("scan_gz_topic", default_value="/mapping_lidar"),
             DeclareLaunchArgument("points_gz_topic", default_value=""),
+            DeclareLaunchArgument("imu_gz_topic", default_value=""),
             DeclareLaunchArgument("depth_ros_topic", default_value="/depth_camera"),
             DeclareLaunchArgument("depth_info_ros_topic", default_value="/depth_camera/camera_info"),
             DeclareLaunchArgument("rgb_ros_topic", default_value="/camera"),
             DeclareLaunchArgument("rgb_info_ros_topic", default_value="/camera/camera_info"),
             DeclareLaunchArgument("scan_ros_topic", default_value="/mapping_lidar"),
             DeclareLaunchArgument("points_ros_topic", default_value="/points"),
+            DeclareLaunchArgument("imu_ros_topic", default_value="/slam/input/imu"),
             OpaqueFunction(function=_launch_setup),
         ]
     )

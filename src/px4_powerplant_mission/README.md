@@ -98,6 +98,8 @@ ros2 launch px4_powerplant_mission gz_sensor_bridge.launch.py
 
 `powerplant_system.launch.py` 只桥接 `/clock` 和 Gazebo 真值位姿，不桥接相机、深度和雷达；没有这一条，建图收不到 `/mapping_lidar`、`/depth_camera`。
 
+采集独立 RGB-D SLAM 航线时，在上述传感器桥命令末尾追加 `imu_gz_topic:=/world/powerplant/model/x500_depth_0/link/base_link/sensor/imu_sensor/imu`，并在下面的任务栈命令使用 `use_control:=false`，由专项采集程序发送航线指令。SLAM 构建、独立 TF 与话题说明见[仿真 SLAM 包](../px4_powerplant_slam/README.md)。
+
 ### 5. 终端 4：任务栈（定位 + 建图 + 控制）
 
 ```bash

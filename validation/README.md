@@ -8,6 +8,7 @@
 |---|---|
 | `baseline/` | 可重复的本地回归入口 |
 | `probes/` | 跨进程 ROS 传输探针 |
+| [`slam/`](slam/README.md) | 原生电厂 RGB-D SLAM 采集、标定与盲验 |
 | `sitl/` | PX4/Gazebo SITL 验收、标定、GCS 和飞行证据 |
 | `model/` | 机体包络、接触、起飞域和物理审计 |
 | `sensors/` | 传感器样本与雷达方向验证 |
