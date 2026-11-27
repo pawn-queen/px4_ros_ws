@@ -493,7 +493,11 @@ bool OffboardMissionNode::plan_changes_relevant(
     return reject("task_roi_revision");
   if (!home_air() || (result.home - *home_air()).norm() > 1e-6)
     return reject("home_moved");
-  if (xy_variance_ > result.variance + 1e-9)
+  // The snapshot variance bounds the risk estimate; it is not an equality
+  // constraint. Requiring no growth at all rejected every plan while the EKF
+  // covariance jittered, which a multi-second plan on a slower host makes
+  // certain. Allow a meaningful margin before treating the plan as stale.
+  if (xy_variance_ > result.variance + std::max(1e-4, .1 * result.variance))
     return reject("variance_grew");
   if (result.variance_growth !=
       std::max(0.0, d("explore_localization_variance_growth_m2_per_m")))
@@ -555,8 +559,10 @@ bool OffboardMissionNode::plan_changes_relevant(
   };
   for (const auto &k : changed) {
     const Vec3 point = center(k, maps_.map.resolution);
-    if ((point - plan.goal_xyz).norm() <=
-        c.sensor_range_m + c.camera_translation_flu.norm() + pad)
+    // Only the goal's own clearance region matters: a surface update metres
+    // away from the viewpoint does not make it a worse observation target, but
+    // a change where the vehicle would hold position does.
+    if ((point - plan.goal_xyz).norm() <= pad)
       return reject("change_near_goal");
     if (near_path(point, plan.full_path_xyz))
       return reject("change_near_path");
