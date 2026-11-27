@@ -548,7 +548,14 @@ struct MissionTestAccess {
     pose(n, 0, 10); // Absolute ENU altitude is deliberately above the floor.
     n.set_parameter(rclcpp::Parameter("landing_confirm_dwell_s", 0.0));
     n.enter_landing("test");
+    // The landing deadline is a flight-time deadline; age the ROS start so the
+    // 20 s limit is exercised without relying on wall time. Drop the pre-landing
+    // vehicle status so the later "pre-command status is insufficient" step keeps
+    // its meaning under the aged start.
+    n.landing_started_ = n.ns() - 30000000000LL;
     n.landing_started_steady_ = steady_ns() - 30000000000;
+    n.vehicle_stamp_ = 0;
+    n.vehicle_steady_ = 0;
     n.update_landing();
     EXPECT_EQ(n.phase_, Phase::Landing);
     EXPECT_TRUE(n.landing_timeout_reported_);

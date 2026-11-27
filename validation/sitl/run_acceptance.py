@@ -256,13 +256,16 @@ def landing_completion_evidence(state, status, landed, clock_ns, clock_wall,
                 and -.05<=(clock_ns-sample)*1e-9<=max_age_s)
     clock_fresh=(isinstance(clock_wall,(int,float)) and math.isfinite(clock_wall)
                  and 0<=now_wall-clock_wall<=max_age_s)
-    checks={"task_reports_complete":state.get("phase")=="COMPLETE",
-            "fresh_simulation_clock":bool(clock_fresh),
+    task_complete = state.get("phase") == "COMPLETE"
+    checks={"fresh_simulation_clock":bool(clock_fresh),
             "fresh_px4_vehicle_status":fresh(status),
             "fresh_px4_landing_measurement":fresh(landed),
             "px4_disarmed":bool(status and status.get("arming_state")==disarmed_state),
             "px4_landed":bool(landed and landed.get("landed") is True)}
+    # Task completeness is reported separately: a mission that ended at its
+    # exploration budget must not be described as an unconfirmed landing.
     return {"passed":all(checks.values()),"checks":checks,
+            "task_reports_complete":task_complete,
             "vehicle_status":status,"landing_measurement":landed,
             "scope":"independent PX4 landed/disarmed sample and receipt evidence"}
 

@@ -250,12 +250,11 @@ bool OffboardMissionNode::map_fresh() const {
   return maps_.fresh(ns(), d("explore_max_map_age_s"));
 }
 double OffboardMissionNode::remaining_flight() const {
+  // Flight-time budget: wall time must not shorten it on a slower-than-real-time
+  // simulation. A frozen clock is caught by the localization freshness checks
+  // long before this budget would matter.
   double remaining =
       std::max(0.0, d("explore_max_duration_s") - age(mission_started_));
-  if (mission_steady_ > 0)
-    remaining = std::min(
-        remaining, std::max(0.0, d("explore_max_duration_s") -
-                                     (steady_ns() - mission_steady_) * 1e-9));
   if (battery_connected_ && age(battery_stamp_) >= 0 &&
       age(battery_stamp_) <= d("explore_battery_max_age_s") &&
       std::isfinite(battery_time_) && battery_time_ > 0)

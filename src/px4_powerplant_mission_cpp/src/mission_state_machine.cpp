@@ -631,9 +631,10 @@ void OffboardMissionNode::enter_target() {
 }
 bool OffboardMissionNode::exploration_task_budget_exhausted() const {
   const double budget = d("explore_task_duration_s");
+  // Flight time, like every other mission budget: a slower-than-real-time
+  // simulation must not spend the exploration allowance with wall time.
   return budget > 0 && explore_task_started_ > 0 &&
-      std::max(age(explore_task_started_),
-               (steady_ns() - explore_task_steady_) * 1e-9) >= budget;
+      age(explore_task_started_) >= budget;
 }
 void OffboardMissionNode::enter_return(const std::string &reason) {
   if (b("takeoff_ground_support_enabled") &&
@@ -686,10 +687,16 @@ void OffboardMissionNode::enter_landing(const std::string &reason) {
   event("landing", p);
 }
 void OffboardMissionNode::update_landing() {
+  // vehicle_land_detected publishes at about 1 Hz while max_land_detection_age_s
+  // is 1.0 s. Requiring every 50 Hz tick to see a message younger than one
+  // period leaves no margin for jitter, so the continuous dwell could never
+  // complete. A two-period gate keeps the dwell meaningful without accepting a
+  // stale sensor.
+  const double land_gate_s = 2. * d("max_land_detection_age_s");
   const bool confirmed =
       vehicle_fresh() &&
-      receipt_fresh(land_stamp_, land_steady_, d("max_land_detection_age_s")) &&
-      stamp_reason(land_sample_, ns(), d("max_land_detection_age_s"),
+      receipt_fresh(land_stamp_, land_steady_, land_gate_s) &&
+      stamp_reason(land_sample_, ns(), land_gate_s,
                    d("max_future_stamp_skew_s")).empty() &&
       vehicle_stamp_ >= landing_started_ && land_stamp_ >= landing_started_ &&
       land_sample_ >= landing_started_ &&
@@ -708,11 +715,13 @@ void OffboardMissionNode::update_landing() {
     p["disarmed"] = true;
     event("mission_complete", p);
   } else if (!landing_timeout_reported_ &&
-             (age(landing_started_) > d("land_complete_timeout_s") ||
-              (steady_ns() - landing_started_steady_) * 1e-9 >
-                  d("land_complete_timeout_s"))) {
+             age(landing_started_) > d("land_complete_timeout_s")) {
     landing_timeout_reported_ = true;
     auto p = object();
+    p["landed_measured"] = land_.landed;
+    p["disarmed_measured"] =
+        vehicle_.arming_state == Status::ARMING_STATE_DISARMED;
+    p["land_receipt_age_s"] = age(land_stamp_);
     p["reason"] =
         "landing not confirmed by fresh landed and disarmed PX4 state";
     event("landing_unconfirmed", p);
