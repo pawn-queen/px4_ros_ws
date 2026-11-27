@@ -363,6 +363,7 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
   const auto limits = motion_limits();
   const double capture_cost =
       d("inspection_capture_timeout_s") * i("inspection_max_view_attempts");
+  plan_submitted_ns_ = ns();
   planning_ = true;
   planning_phase_ = phase;
   planner_.submit([map = std::move(map), c, start, home, phase, revision,
@@ -474,19 +475,29 @@ void OffboardMissionNode::submit_plan(Phase phase, const Path &goals,
   });
 }
 bool OffboardMissionNode::plan_changes_relevant(
-    const PlanResult &result) const {
+    const PlanResult &result, std::string *why) const {
   (void)planning_map();
   (void)task_roi();
-  if (result.map_epoch != maps_.map_epoch ||
-      result.camera_revision != camera_revision_ ||
-      result.navigation_domain_revision != navigation_domain_revision_ ||
-      result.task_roi_revision != task_roi_revision_ ||
-      !home_air() ||
-      (result.home - *home_air()).norm() > 1e-6 ||
-      xy_variance_ > result.variance + 1e-9 ||
-      result.variance_growth !=
-          std::max(0.0, d("explore_localization_variance_growth_m2_per_m")))
+  const auto reject = [why](const char *reason) {
+    if (why)
+      *why = reason;
     return true;
+  };
+  if (result.map_epoch != maps_.map_epoch)
+    return reject("map_epoch");
+  if (result.camera_revision != camera_revision_)
+    return reject("camera_revision");
+  if (result.navigation_domain_revision != navigation_domain_revision_)
+    return reject("navigation_domain_revision");
+  if (result.task_roi_revision != task_roi_revision_)
+    return reject("task_roi_revision");
+  if (!home_air() || (result.home - *home_air()).norm() > 1e-6)
+    return reject("home_moved");
+  if (xy_variance_ > result.variance + 1e-9)
+    return reject("variance_grew");
+  if (result.variance_growth !=
+      std::max(0.0, d("explore_localization_variance_growth_m2_per_m")))
+    return reject("variance_growth_changed");
   auto c = config();
   const auto &old = result.configuration;
   if (old.clearance_radius_m != c.clearance_radius_m ||
@@ -507,7 +518,7 @@ bool OffboardMissionNode::plan_changes_relevant(
       old.clearance_weight != c.clearance_weight ||
       old.localization_weight != c.localization_weight ||
       old.reserve_weight != c.reserve_weight)
-    return true;
+    return reject("configuration_changed");
   if (result.frontier) {
     const Key goal = key(result.frontier->goal_xyz, maps_.map.resolution);
     const int bin =
@@ -517,15 +528,15 @@ bool OffboardMissionNode::plan_changes_relevant(
     auto seen = c.visited_yaw_masks.find(goal);
     if (seen != c.visited_yaw_masks.end() &&
         (seen->second & (uint64_t(1) << bin)))
-      return true;
+      return reject("already_visited_view");
   }
   if (result.revision == maps_.observation_revision)
     return false;
   if (!result.frontier)
-    return true; // A global failure has no finite dependency region to reuse.
+    return reject("global_failure_without_region");
   Keys changed;
   if (!maps_.changes_since(result.revision, changed))
-    return true;
+    return reject("map_delta_unavailable");
   const auto &plan = *result.frontier;
   const double pad =
       c.clearance_radius_m + std::sqrt(3.0) * maps_.map.resolution;
@@ -545,10 +556,12 @@ bool OffboardMissionNode::plan_changes_relevant(
   for (const auto &k : changed) {
     const Vec3 point = center(k, maps_.map.resolution);
     if ((point - plan.goal_xyz).norm() <=
-            c.sensor_range_m + c.camera_translation_flu.norm() + pad ||
-        near_path(point, plan.full_path_xyz) ||
-        near_path(point, plan.return_path_xyz))
-      return true;
+        c.sensor_range_m + c.camera_translation_flu.norm() + pad)
+      return reject("change_near_goal");
+    if (near_path(point, plan.full_path_xyz))
+      return reject("change_near_path");
+    if (near_path(point, plan.return_path_xyz))
+      return reject("change_near_return_path");
   }
   return false;
 }
@@ -650,10 +663,20 @@ void OffboardMissionNode::prepare_explore() {
     planning_ = false;
     if (result->phase != phase_)
       return;
-    if (plan_changes_relevant(*result)) {
+    std::string reject_reason;
+    if (plan_changes_relevant(*result, &reject_reason)) {
       ++rejected_plan_results_;
       explore_plan_stamp_ = 0;
       explore_wait_ = "planning dependencies changed; recomputing viewpoint";
+      auto fields = object();
+      fields["reason"] = reject_reason;
+      fields["plan_latency_s"] = std::max(0.0, (ns() - plan_submitted_ns_) * 1e-9);
+      fields["frontier_count"] = integer(int64_t(result->frontier_count));
+      fields["candidate_count"] = integer(int64_t(result->candidate_count));
+      fields["map_revision_delta"] =
+          integer(maps_.observation_revision - result->revision);
+      fields["rejected_total"] = integer(int64_t(rejected_plan_results_));
+      event("explore_plan_rejected", fields);
       return;
     }
     if (result->topology) {

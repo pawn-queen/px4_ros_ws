@@ -217,6 +217,7 @@ private:
   mutable std::vector<double> navigation_column_signature_;
   PlanningFailure explore_failure_ = PlanningFailure::WaitingForMap;
   uint64_t reused_plan_results_ = 0, rejected_plan_results_ = 0;
+  int64_t plan_submitted_ns_ = 0;
   Phase planning_phase_ = Phase::Idle;
   std::shared_ptr<const TopologySnapshot> topology_;
   uint64_t selected_region_id_ = 0;
@@ -373,7 +374,7 @@ private:
   void observe_viewpoint_depth(const JsonValue &);
   bool scan_first_segment_ready() const;
   bool camera_ready() const;
-  bool plan_changes_relevant(const PlanResult &) const;
+  bool plan_changes_relevant(const PlanResult &, std::string *why = nullptr) const;
   void refresh_view_memory();
   void on_detection(const std::string &);
   void start(Trigger::Response &);
